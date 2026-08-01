@@ -14,11 +14,15 @@ A colony's tick runs in a deliberate order:
 3. **Refining** turns some of that ore into the steel, alloys, electronics and
    fuel that everything is actually priced in. This is where a world stops
    being a pile of rock and becomes an economy.
-4. **Research** buys progress with materials, out of the stockpile where the
+4. **Agriculture and consumption.** Food is grown at whatever rate the world
+   allows and then eaten, and what fraction of the requirement was met becomes
+   the colony's **standard of living** -- which is what decides whether the
+   population grows, stalls or falls.
+5. **Research** buys progress with materials, out of the stockpile where the
    laboratories stand.
-5. **Construction** spends whatever industry-work refining left.
+6. **Construction** spends whatever industry-work refining left.
 
-Steps 3 and 5 draw on the same industry-work pool, split by
+Steps 3 and 6 draw on the same industry-work pool, split by
 :attr:`Rates.refining_share_of_industry`. That competition is the point: a
 colony cannot both process everything it digs and build at full speed.
 
@@ -26,8 +30,10 @@ The pacing rules live here more than anywhere else:
 
 * Population grows **logistically** against effective habitability, so a colony
   plateaus instead of compounding forever.
-* Every civ pays **superlinear administrative drag** on its colony count
-  (:meth:`Rates.colony_overhead`), applied as a divisor on output and research.
+* **Nothing artificial slows a wide empire.** A civ holding twelve colonies gets
+  the output of twelve colonies. What slows it down is real -- distance, supply
+  lines that have to be defended, and worlds that cost more to hold than they
+  yield.
 * A hostile world **taxes the workforce**. Habitability is not just a population
   cap: at low habitability a large share of the colony is occupied simply
   staying alive, and is therefore not mining, building or researching.
@@ -37,8 +43,19 @@ from __future__ import annotations
 
 import math
 
+from galaxysim.colony.agriculture import HYDROPONICS, quality, regime
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION, building_type
+from galaxysim.colony.industry import (
+    cost_of_level,
+    development,
+    effect_scale,
+    levels_in_use,
+    max_total_levels,
+    productivity,
+    work_of_level,
+)
 from galaxysim.colony.labor import (
+    AGRICULTURE,
     EXTRACTION,
     INDUSTRY,
     LIFE_SUPPORT,
@@ -46,9 +63,13 @@ from galaxysim.colony.labor import (
     normalize,
     workers_in,
 )
+from galaxysim.colony.population import capacity, growth_per_hour
 from galaxysim.materials import (
+    FERTILISER,
     FLEET_COST_PER_STRENGTH,
     FLEET_UPKEEP_PER_STRENGTH,
+    FOOD,
+    FREIGHTER_COST_PER_CAPACITY,
     RESEARCH_COST_PER_PROGRESS,
     WATER,
     accelerant_multiplier,
@@ -62,7 +83,11 @@ from galaxysim.materials import (
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
 from galaxysim.model.entities import Building, Civ, Colony, Fleet, IntentKind, IntentStatus
-from galaxysim.worldgen.serialize import deposits_from_json, has_surface_water
+from galaxysim.worldgen.serialize import (
+    deposits_from_json,
+    has_surface_water,
+    survey_from_json,
+)
 
 
 def resolve(ctx: TickContext) -> None:
@@ -81,8 +106,6 @@ def _produce(ctx: TickContext, civ: Civ) -> None:
     if not colonies:
         return
 
-    # Superlinear in colony count -- the anti-wide-expansion brake.
-    drag = 1.0 / (1.0 + ctx.rates.colony_overhead(len(colonies)))
     research_gain = 0.0
 
     for colony in colonies:
@@ -93,10 +116,15 @@ def _produce(ctx: TickContext, civ: Civ) -> None:
         if colony.population <= 0:
             continue
 
+        # Farm, then eat. A colony's standard of living is how much of what its
+        # people need it actually met this hour, and that is what decides
+        # whether the population grows, stalls or falls.
+        _farm(ctx, colony, allocation, effects)
+        colony.standard_of_living = _feed(ctx, colony)
         _grow_population(ctx, colony, effects)
-        _extract(ctx, colony, allocation, effects, drag)
+        _extract(ctx, colony, allocation, effects)
         _refine(ctx, colony)
-        research_gain += _research_output(ctx, colony, allocation, effects) * drag
+        research_gain += _research_output(ctx, colony, allocation, effects)
 
     # Knowledge is the one thing that is civ-wide: a discovery is known
     # everywhere the moment it is made. Note what is *not* civ-wide: the
@@ -132,15 +160,19 @@ def colony_effects(colony: Colony) -> "ColonyEffects":
         if not building.is_complete:
             continue
         spec = building_type(building.kind)
+        # Everything an industry does scales with how far it has been developed,
+        # on a square-root curve -- so a level-100 mine is worth ten level-1
+        # mines rather than a hundred.
+        scale = effect_scale(building.level)
         for sector, bonus in sorted(spec.sector_bonus.items()):
-            sector_bonus[sector] = sector_bonus.get(sector, 0.0) + bonus
+            sector_bonus[sector] = sector_bonus.get(sector, 0.0) + bonus * scale
         for resource, bonus in sorted(spec.resource_bonus.items()):
-            resource_bonus[resource] = resource_bonus.get(resource, 0.0) + bonus
-        habitability_offset += spec.habitability_offset
-        refining_bonus += spec.refining_bonus
-        recycling += spec.life_support_recycling
+            resource_bonus[resource] = resource_bonus.get(resource, 0.0) + bonus * scale
+        habitability_offset += spec.habitability_offset * scale
+        refining_bonus += spec.refining_bonus * scale
+        recycling += spec.life_support_recycling * scale
         grants.update(spec.grants)
-        throughput += spec.cargo_throughput
+        throughput += spec.cargo_throughput * scale
 
     return ColonyEffects(
         sector_bonus=sector_bonus,
@@ -284,32 +316,121 @@ def _run_life_support(
     )
 
 
-def _grow_population(ctx: TickContext, colony: Colony, effects: ColonyEffects) -> None:
-    """Logistic growth toward the world's carrying capacity."""
-    capacity = effective_habitability(colony, effects) * ctx.rates.population_capacity_factor
-    if capacity <= 0:
-        # A world with no natural or artificial habitability supports no
-        # natural growth at all -- such a colony only grows by immigration.
+def _farm(
+    ctx: TickContext, colony: Colony, allocation: dict[str, float], effects: ColonyEffects
+) -> None:
+    """Grow this tick's food, at whatever rate the world allows.
+
+    The world is most of the answer. Open farmland on a compatible biosphere
+    feeds a colony with a tenth of its people; the same colony on a bare rock
+    puts most of them into hydroponics and still imports fertiliser. That gap is
+    the concrete payoff for finding an edible biosphere -- a thing habitability
+    alone does not capture, since a world can be perfectly breathable and still
+    a terrible farm.
+    """
+    workers = workers_in(colony.population, allocation, AGRICULTURE)
+    if workers <= 0:
         return
 
-    headroom = 1.0 - (colony.population / capacity)
-    if headroom <= 0:
-        # Over capacity. Let it decay back down rather than pinning it, so
-        # losing habitability actually costs something.
-        colony.population = max(
-            0.0,
-            colony.population
-            + ctx.per_tick(colony.population * ctx.rates.population_growth_per_hour * headroom),
-        )
-        return
-
-    growth_per_hour = (
-        colony.population
-        * ctx.rates.population_growth_per_hour
-        * headroom
-        * (1.0 - colony.world.hazard)
+    grown = ctx.per_tick(
+        workers
+        * ctx.rates.food_per_farmer_per_hour
+        * agricultural_quality(ctx, colony)
+        * productivity_of(ctx, colony)
+        * effects.sector(AGRICULTURE)
     )
-    colony.population += ctx.per_tick(growth_per_hour)
+    if grown <= 0:
+        return
+
+    # Where there is no native ecology, the nutrients have to come from
+    # somewhere. A shortfall does not stop the harvest, it shrinks it -- so a
+    # colony cut off from fertiliser gets hungrier rather than instantly starving.
+    if _needs_fertiliser(ctx, colony):
+        wanted = grown * ctx.rates.fertiliser_per_food
+        available = colony.stockpile.get(FERTILISER, 0.0)
+        if wanted > 0:
+            supplied = min(wanted, available)
+            draw(colony.stockpile, {FERTILISER: supplied})
+            grown *= max(0.2, supplied / wanted)
+
+    deposit(colony.stockpile, {FOOD: grown})
+
+
+def _needs_fertiliser(ctx: TickContext, colony: Colony) -> bool:
+    """True where nothing native is doing the soil chemistry for free."""
+    return ctx.cached_effects(
+        ("farm-inputs", colony.world_id),
+        lambda: regime(survey_from_json(colony.world.survey)) != "open farmland"
+        if colony.world.survey
+        else True,
+    )
+
+
+def agricultural_quality(ctx: TickContext, colony: Colony) -> float:
+    """How productive a farmer is on this world. Memoized for the tick."""
+    return ctx.cached_effects(
+        ("farm", colony.world_id),
+        lambda: quality(survey_from_json(colony.world.survey)) if colony.world.survey else HYDROPONICS,
+    )
+
+
+def _feed(ctx: TickContext, colony: Colony) -> float:
+    """Eat, and return how well fed the colony ended up: 0 to 1.
+
+    Standard of living is the single number that carries "is this place working
+    for the people living in it" into the growth curve. Meet the requirement and
+    the colony grows normally; fall short and growth scales down, then reverses.
+    Nobody dies instantly of a bad harvest -- that is what the stores are for --
+    but a colony that stays hungry shrinks.
+    """
+    need = ctx.per_tick(colony.population * ctx.rates.food_per_person_per_hour)
+    if need <= 0:
+        return 1.0
+
+    available = colony.stockpile.get(FOOD, 0.0)
+    eaten = min(need, available)
+    draw(colony.stockpile, {FOOD: eaten})
+    return min(1.0, eaten / need)
+
+
+def _grow_population(ctx: TickContext, colony: Colony, effects: ColonyEffects) -> None:
+    """Logistic growth toward whichever ceiling actually binds.
+
+    On a living world that is the land: real surface area at a real density,
+    scaled by habitability. On a dead one it is the habitats, which hold three
+    orders of magnitude fewer people -- so a barren world plateaus as an outpost
+    however long it is left alone, and only terraforming changes that.
+
+    See :mod:`galaxysim.colony.population`.
+    """
+    ceiling = capacity(
+        colony.world,
+        colony.infrastructure,
+        habitability=effective_habitability(colony, effects),
+    )
+    # Hungry people do not have children, and stay hungry long enough and there
+    # are fewer of them. Below subsistence the multiplier goes negative, so the
+    # same logistic formula runs the population back down without a special case.
+    living = colony.standard_of_living
+    threshold = ctx.rates.subsistence_threshold
+    wellbeing = (
+        (living - threshold) / (1.0 - threshold) if living >= threshold
+        else (living - threshold) / threshold
+    )
+
+    colony.population = max(
+        0.0,
+        colony.population
+        + ctx.per_tick(
+            growth_per_hour(
+                colony.population,
+                ceiling,
+                base_rate=ctx.rates.population_growth_per_hour,
+                standard_of_living=wellbeing,
+                hazard=colony.world.hazard,
+            )
+        ),
+    )
 
 
 def _extract(
@@ -317,7 +438,6 @@ def _extract(
     colony: Colony,
     allocation: dict[str, float],
     effects: ColonyEffects,
-    drag: float,
 ) -> None:
     """Mine the world with whoever is assigned to it.
 
@@ -342,9 +462,9 @@ def _extract(
     worker_hours = ctx.per_tick(
         ctx.rates.extraction_per_worker_per_hour
         * workers
-        * colony.infrastructure
+        * productivity_of(ctx, colony)
         * effects.sector(EXTRACTION)
-    ) * drag
+    )
 
     deposit(
         colony.stockpile,
@@ -425,27 +545,37 @@ def _research_output(
     capacity = ctx.per_tick(
         ctx.rates.research_per_colony_per_hour
         * math.sqrt(workers)
-        * colony.infrastructure
+        * productivity_of(ctx, colony)
         * effects.sector(RESEARCH)
     )
     if capacity <= 0:
         return 0.0
 
-    # How much of that capacity the stockpile can actually supply. The binding
-    # constraint is whichever input runs out first, so a colony short of one
-    # thing is short of research -- there is no substituting polymers for
-    # electronics.
-    affordable = capacity
+    # How much of that capacity the stockpile can actually supply.
+    #
+    # **Averaged across the basket, not limited by the scarcest item.** That is
+    # deliberate and it is the rule the whole research economy rests on: a civ
+    # whose crust lacks one element must work harder, and is never locked out.
+    # Taking the minimum instead -- which this did at first -- meant a homeworld
+    # with no calcium made no ceramics, and therefore did no research at all,
+    # forever. A civilization does not stop having ideas because one warehouse
+    # is empty; it substitutes, badly, and goes slower.
+    covered = 0.0
     for material, per_progress in sorted(RESEARCH_COST_PER_PROGRESS.items()):
         if per_progress <= 0:
             continue
-        affordable = min(affordable, colony.stockpile.get(material, 0.0) / per_progress)
+        want = capacity * per_progress
+        covered += min(1.0, colony.stockpile.get(material, 0.0) / want) if want > 0 else 1.0
+    coverage = covered / len(RESEARCH_COST_PER_PROGRESS)
 
-    progress = max(0.0, min(capacity, affordable))
+    progress = max(0.0, capacity * coverage)
     if progress <= 0:
         return 0.0
 
-    draw(colony.stockpile, {m: c * progress for m, c in RESEARCH_COST_PER_PROGRESS.items()})
+    # Spend what is actually there, up to the share this much progress wanted.
+    for material, per_progress in sorted(RESEARCH_COST_PER_PROGRESS.items()):
+        wanted = capacity * per_progress * coverage
+        draw(colony.stockpile, {material: min(wanted, colony.stockpile.get(material, 0.0))})
 
     # Rare materials never gate research -- they only speed it up, out of
     # whatever this colony happens to be sitting on. A civ that draws a
@@ -455,6 +585,31 @@ def _research_output(
         draw(colony.stockpile, consumed)
 
     return progress * multiplier
+
+
+def development_of(colony: Colony) -> float:
+    """How built-out this colony is, 0 to 1.
+
+    Levels standing against levels the world and the population could support.
+    A capital sits high; a fresh landing sits near zero and climbs as it builds.
+    """
+    return development(
+        sum(b.level for b in colony.buildings if b.is_complete),
+        max_total_levels(colony.population, colony.world.land_area_km2),
+    )
+
+
+def productivity_of(ctx: TickContext, colony: Colony) -> float:
+    """How much a worker here gets done, from how well equipped the place is.
+
+    This is what replaced raw ``infrastructure`` as an output multiplier. It is
+    bounded, and it has to be: the industries that raise it *also* raise their
+    own sector bonuses, and letting both grow without limit made the two
+    compound into a hundredfold runaway on a developed capital.
+    """
+    return ctx.cached_effects(
+        ("productivity", colony.id), lambda: productivity(development_of(colony))
+    )
 
 
 def construction_output(ctx: TickContext, colony: Colony) -> float:
@@ -476,7 +631,7 @@ def industry_output(ctx: TickContext, colony: Colony) -> float:
     return ctx.per_tick(
         ctx.rates.industry_per_worker_per_hour
         * workers
-        * colony.infrastructure
+        * productivity_of(ctx, colony)
         * effects_for(ctx, colony).sector(INDUSTRY)
     )
 
@@ -557,42 +712,56 @@ def _start_structures(ctx: TickContext) -> None:
             _fail(ctx, intent, str(exc), "Construction order")
             continue
 
-        # Slots count everything standing or underway, so you cannot queue five
-        # buildings on a three-slot world and have them all appear.
-        used = len(colony.buildings)
-        if used >= colony.world.slots:
+        # Not slots: people and ground. An industry needs staff to run it and
+        # land to stand on, and a colony that has run out of either cannot
+        # develop further until it grows.
+        ceiling = max_total_levels(colony.population, colony.world.land_area_km2)
+        if levels_in_use(colony.buildings) >= ceiling:
             _fail(
                 ctx,
                 intent,
-                f"{colony.world.name} has no free slots ({used}/{colony.world.slots})",
+                f"{colony.name} cannot staff or site more industry "
+                f"({levels_in_use(colony.buildings)}/{ceiling} levels)",
                 "Construction order",
             )
             continue
 
-        if any(b.kind == kind for b in colony.buildings):
-            _fail(ctx, intent, f"{colony.name} already has a {spec.name}", "Construction order")
+        # An existing industry is deepened rather than duplicated.
+        existing = next((b for b in colony.buildings if b.kind == kind), None)
+        if existing is not None and not existing.is_complete:
+            intent.result = f"{colony.name} is already expanding its {spec.name}"
             continue
 
-        if not can_afford(colony.stockpile, spec.cost):
+        level = (existing.level + 1) if existing is not None else 1
+        cost = cost_of_level(spec.cost, level)
+        if not can_afford(colony.stockpile, cost):
             intent.result = f"insufficient resources at {colony.name}"
             continue
 
-        spend(colony.stockpile, spec.cost)
-        ctx.session.add(
-            Building(
-                colony_id=colony.id,
-                kind=kind,
-                work_remaining=spec.work,
-                started_tick=ctx.tick,
+        spend(colony.stockpile, cost)
+        if existing is not None:
+            existing.level = level
+            existing.work_remaining = work_of_level(spec.work, level)
+            existing.completed_tick = None
+            ctx.invalidate_colony(colony.id)
+        else:
+            ctx.session.add(
+                Building(
+                    colony_id=colony.id,
+                    kind=kind,
+                    level=1,
+                    work_remaining=work_of_level(spec.work, 1),
+                    started_tick=ctx.tick,
+                )
             )
-        )
         intent.status = IntentStatus.IN_PROGRESS.value
         intent.result = ""
         ctx.log(
             "construction_started",
-            f"Began building a {spec.name} at {colony.name}",
+            f"{colony.name} began "
+            + (f"expanding its {spec.name} to level {level}" if existing else f"a {spec.name}"),
             civ_id=colony.civ_id,
-            payload={"colony_id": colony.id, "kind": kind},
+            payload={"colony_id": colony.id, "kind": kind, "level": level},
         )
 
 
@@ -623,7 +792,17 @@ def _start_fleets(ctx: TickContext) -> None:
             )
             continue
 
+        # Strength is priced per point; hold is priced per tonne, and *beyond*
+        # what the ship's own strength already provides. Without the second half
+        # a player could order a strength-1 ship with a billion tonnes of hold
+        # for the price of a gunboat -- cargo capacity was free, which made
+        # freighters free, which made logistics free.
         cost = {r: amount * strength for r, amount in FLEET_COST_PER_STRENGTH.items()}
+        default_hold = strength * ctx.rates.cargo_capacity_per_strength
+        extra_hold = max(0.0, float(intent.payload.get("cargo_capacity", default_hold)) - default_hold)
+        for resource, per_tonne in sorted(FREIGHTER_COST_PER_CAPACITY.items()):
+            cost[resource] = cost.get(resource, 0.0) + per_tonne * extra_hold
+
         # Built here, paid for here. A yard can only use what has been shipped
         # to it.
         if not can_afford(colony.stockpile, cost):
@@ -675,14 +854,26 @@ def _advance_construction(ctx: TickContext) -> None:
                 building.work_remaining = max(0.0, building.work_remaining - share)
                 if building.is_complete:
                     building.completed_tick = ctx.tick
+                    # Infrastructure is what the industries standing here add up
+                    # to, so finishing a level raises it by that level's share.
+                    # Incremental rather than recomputed, because the expedition
+                    # equipment a colony landed with is part of the same figure.
+                    colony.infrastructure += effect_scale(building.level) - effect_scale(
+                        building.level - 1
+                    )
+                    colony.development = development_of(colony)
                     # A finished building changes what the colony derives.
                     ctx.invalidate_colony(colony.id)
                     spec = building_type(building.kind)
                     ctx.log(
                         "construction_completed",
-                        f"{spec.name} finished at {colony.name}",
+                        f"{spec.name} at {colony.name} reached level {building.level}",
                         civ_id=colony.civ_id,
-                        payload={"colony_id": colony.id, "kind": building.kind},
+                        payload={
+                            "colony_id": colony.id,
+                            "kind": building.kind,
+                            "level": building.level,
+                        },
                     )
 
             for intent in fleet_orders:

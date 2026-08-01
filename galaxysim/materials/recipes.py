@@ -163,6 +163,17 @@ RECIPES: dict[str, Recipe] = {
             description="Bulk cement and prefab. Heavy, cheap, and needed everywhere.",
         ),
         Recipe(
+            "silicate_ceramics",
+            "Silicate ceramics",
+            inputs={SILICON: 9.0, MAGNESIUM: 3.0},
+            outputs={CERAMICS: 8.0},
+            work=2.5,
+            description="Magnesium silicates -- steatite and cordierite -- for worlds "
+            "with no calcium. Slightly worse than the calcium route and available "
+            "almost everywhere, which is the point: research runs on ceramics, and "
+            "no crust should be able to lock a civilization out of thinking.",
+        ),
+        Recipe(
             "alloy_steel",
             "Alloy steel",
             inputs={STEEL: 6.0, NICKEL: 2.0, TITANIUM: 1.0},

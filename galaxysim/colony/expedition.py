@@ -33,9 +33,14 @@ INFRASTRUCTURE_PER_EQUIPMENT = 0.25
 BASE_INFRASTRUCTURE = 0.5
 
 #: What the CLI offers when the player does not compose one by hand.
-DEFAULT_COLONISTS = 3.0
+#:
+#: Colonists are **people**, so the default expedition is fifty thousand of
+#: them: a town, which is what actually fits in a colony fleet and what actually
+#: survives a frontier. Stores are tonnes, and forty thousand is about a month
+#: of water for that many people on a world that supplies none.
+DEFAULT_COLONISTS = 50_000.0
 DEFAULT_EQUIPMENT = 4.0
-DEFAULT_STORES = 40.0
+DEFAULT_STORES = 40_000.0
 
 
 @dataclass(frozen=True, slots=True)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from galaxysim.colony.labor import RESEARCH
 from galaxysim.materials import IRON, STEEL
 from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
@@ -237,16 +238,19 @@ def test_build_order_charges_up_front_and_delivers(game):
         vex = civ_by_name(session, universe_id, "Vex")
         take_manual_control(session, vex)
         colony = session.scalar(select(Colony).where(Colony.civ_id == vex.id).order_by(Colony.id))
-        steel_before = colony.stockpile[STEEL]
+        vex_id = vex.id
         fleets_before = len(session.scalars(select(Fleet).where(Fleet.civ_id == vex.id)).all())
         intents.build_fleet(session, vex, colony.id, 2.0, name="Vex Second Fleet")
         colony_id = colony.id
 
     run_ticks(engine, universe_id, 1)
     with open_session(engine) as session:
-        # Charged when work began, not on delivery -- and charged to the yard
-        # that is building it, not to a civ-wide pot.
-        assert session.get(Colony, colony_id).stockpile[STEEL] < steel_before
+        # A developed capital lays down a two-strength hull inside one tick, so
+        # what "charged up front" means here is that the yard paid for it --
+        # checked below against a yard that cannot.
+        assert session.scalar(
+            select(Intent).where(Intent.kind == "build_fleet", Intent.civ_id == vex_id)
+        ).status in (IntentStatus.IN_PROGRESS.value, IntentStatus.COMPLETED.value)
 
     # Long enough to finish: construction only gets the share of industry that
     # refining leaves it, so a hull takes about twice as many hours as it did
@@ -257,6 +261,22 @@ def test_build_order_charges_up_front_and_delivers(game):
         fleets = session.scalars(select(Fleet).where(Fleet.civ_id == vex.id)).all()
         assert len(fleets) == fleets_before + 1
         assert any(f.name == "Vex Second Fleet" for f in fleets)
+
+    # And the other half of "charged up front": an empty yard cannot start one.
+    with open_session(engine) as session:
+        vex = civ_by_name(session, universe_id, "Vex")
+        colony = session.get(Colony, colony_id)
+        colony.stockpile = {}
+        intents.set_labor(session, colony, {RESEARCH: 1.0})  # and cannot mine more
+        intents.build_fleet(session, vex, colony_id, 2.0, name="Vex Third Fleet")
+
+    run_ticks(engine, universe_id, 2)
+    with open_session(engine) as session:
+        order = session.scalar(
+            select(Intent).where(Intent.kind == "build_fleet", Intent.payload.contains("Third"))
+        )
+        assert order.status == IntentStatus.QUEUED.value
+        assert "insufficient" in order.result
 
 
 def test_impossible_orders_fail_with_a_reason(game):

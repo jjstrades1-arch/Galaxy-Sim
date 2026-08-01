@@ -31,7 +31,12 @@ from galaxysim.materials.catalogue import (
 
 # --- ships -------------------------------------------------------------------
 
-#: Per point of fleet strength. Warships are alloy and electronics heavy.
+#: Tonnes per point of fleet strength. Warships are alloy and electronics heavy.
+#:
+#: Strength has no absolute meaning -- combat compares one fleet's to another's --
+#: so it is allowed to grow with the civilization building it. A homeworld of
+#: seven billion fields strength in the thousands; a frontier outpost fields
+#: single digits. What keeps that honest is upkeep, below.
 FLEET_COST_PER_STRENGTH: dict[str, float] = {
     ALLOYS: 6.0,
     STEEL: 10.0,
@@ -49,14 +54,22 @@ FREIGHTER_COST_PER_CAPACITY: dict[str, float] = {
 #: Ongoing, per point of fleet strength per real hour. Without upkeep a fleet is
 #: free once built, hoarding is strictly correct, and a civilization accumulates
 #: ships without limit.
+#:
+#: Set at roughly 1.5% of build cost per hour, so a ship costs as much to keep
+#: for three days as it did to build. That *ratio* is what bounds a navy rather
+#: than any absolute figure -- strength is allowed to grow with the civilization
+#: building it, and upkeep grows with it, so a civ can sustain a fleet drawing
+#: about a tenth of its refined output whatever its size.
 FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {
-    FUEL: 0.09,
-    ALLOYS: 0.02,
+    FUEL: 0.24,
+    ALLOYS: 0.05,
 }
 
 # --- expeditions -------------------------------------------------------------
 
-#: Per colonist. People need to be housed, fed and carried.
+#: Per colonist -- and a colonist is now one person, so these are tonnes per
+#: head: shelter to build, food and water for the crossing and the first months.
+#: Three tonnes a person needs no scaling apology; it is about right.
 COLONIST_COST: dict[str, float] = {CONSTRUCTION: 0.9, FOOD: 1.2, WATER: 1.0}
 
 #: Per unit of equipment, which becomes the colony's starting infrastructure.

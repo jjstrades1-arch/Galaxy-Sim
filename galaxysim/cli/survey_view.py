@@ -13,6 +13,8 @@ player can see exactly why a world scored what it did.
 
 from __future__ import annotations
 
+from galaxysim.core.units import format_count  # re-exported for the CLI
+
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
@@ -47,17 +49,6 @@ ELEMENT_LABEL = {
 }
 
 
-def format_count(value: float) -> str:
-    """Population and similar magnitudes in human units."""
-    if value >= 1e12:
-        return f"{value / 1e12:.2f}T"
-    if value >= 1e9:
-        return f"{value / 1e9:.2f}B"
-    if value >= 1e6:
-        return f"{value / 1e6:.2f}M"
-    if value >= 1e3:
-        return f"{value / 1e3:.1f}k"
-    return f"{value:,.0f}"
 
 
 def render(console: Console, survey: Survey, name: str, discovered_tick: int | None = None) -> None:

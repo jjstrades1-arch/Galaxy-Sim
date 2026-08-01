@@ -62,6 +62,7 @@ class IntentKind(str, enum.Enum):
     BUILD_STRUCTURE = "build_structure"
     TRANSFER_CARGO = "transfer_cargo"
     SUPPLY_ROUTE = "supply_route"
+    MIGRATE = "migrate"
     ATTACK = "attack"
     RESEARCH = "research"
 
@@ -238,10 +239,6 @@ class World(Base):
     carrying_capacity: Mapped[float] = mapped_column(Float, default=0.0)
     #: 0.0-1.0 environmental danger, applied against colony growth.
     hazard: Mapped[float] = mapped_column(Float, default=0.0)
-    #: How many structures this world can host. Part of its identity, not a
-    #: global constant: a cramped gas giant supports far less than a
-    #: terrestrial, so what a world is *for* is decided partly here.
-    slots: Mapped[int] = mapped_column(Integer, default=4)
     description: Mapped[str] = mapped_column(Text, default="")
 
     system: Mapped[StarSystem] = relationship(back_populates="worlds")
@@ -284,6 +281,19 @@ class Colony(Base):
     #: Fractions of the population assigned to each labor sector, normalized to
     #: sum to 1. See :mod:`galaxysim.colony.labor`.
     labor: Mapped[dict] = mapped_column(JSONDict, default=dict)
+
+    #: 0-1: how much of what this world could support has actually been built.
+    #: Derived from industry levels against the staffing and land limits, and
+    #: refreshed whenever a level completes. Display only -- output is scaled by
+    #: ``infrastructure``, which this is a readable summary of.
+    development: Mapped[float] = mapped_column(Float, default=0.0)
+
+    #: 0-1: how much of what its people needed this colony actually met last
+    #: tick. Growth scales with it, and below
+    #: :attr:`Rates.subsistence_threshold` the population falls. Written by the
+    #: production resolver every tick; stored so a player can see *why* a colony
+    #: is shrinking rather than only that it is.
+    standard_of_living: Mapped[float] = mapped_column(Float, default=1.0)
 
     #: Recipe key -> relative weight: which refining chains this colony's
     #: industry runs, and in what proportion. Empty means "work through
@@ -331,7 +341,16 @@ class Building(Base):
     )
     #: Matches a kind in :data:`galaxysim.colony.buildings.BUILDING_TYPES`.
     kind: Mapped[str] = mapped_column(String(40))
-    #: Industry-work still needed. Zero means finished and contributing.
+    #: How far this industry has been developed. A building is not a thing you
+    #: have or do not have -- it is a sector of the colony's economy that grows
+    #: with the colony. Level 1 is a mining town; level 200 is a world's entire
+    #: extractive industry. Each level costs more than the last and contributes
+    #: less, and the total across all industries is bounded by how many people
+    #: are here to staff it and how much ground there is to put it on.
+    #: See :mod:`galaxysim.colony.industry`.
+    level: Mapped[int] = mapped_column(Integer, default=1)
+    #: Industry-work still needed *for the level being built*. Zero means the
+    #: current level is finished and contributing.
     work_remaining: Mapped[float] = mapped_column(Float, default=0.0)
     started_tick: Mapped[int] = mapped_column(Integer, default=0)
     completed_tick: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -375,6 +394,12 @@ class Fleet(Base):
     #: needing a second one.
     cargo: Mapped[dict] = mapped_column(JSONDict, default=dict)
     cargo_capacity: Mapped[float] = mapped_column(Float, default=0.0)
+    #: People aboard. Migration reuses the hold rather than adding a second kind
+    #: of ship: a freighter carrying settlers is not simultaneously carrying ore,
+    #: which is the trade-off that makes running population convoys a real
+    #: decision instead of a free one. See
+    #: :data:`galaxysim.engine.rates.Rates.tonnes_per_passenger`.
+    passengers: Mapped[float] = mapped_column(Float, default=0.0)
 
     x: Mapped[float] = mapped_column(Float)
     y: Mapped[float] = mapped_column(Float)
@@ -404,8 +429,15 @@ class Fleet(Base):
         return sum(self.cargo.values())
 
     @property
+    def passenger_tonnage(self) -> float:
+        """Hold taken up by people, their air, water and belongings."""
+        from galaxysim.engine.rates import DEFAULT_RATES
+
+        return self.passengers * DEFAULT_RATES.tonnes_per_passenger
+
+    @property
     def cargo_space(self) -> float:
-        return max(0.0, self.cargo_capacity - self.cargo_tonnage)
+        return max(0.0, self.cargo_capacity - self.cargo_tonnage - self.passenger_tonnage)
 
     def __repr__(self) -> str:
         return f"<Fleet {self.name!r} str={self.strength:.1f}>"

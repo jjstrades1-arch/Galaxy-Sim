@@ -39,6 +39,7 @@ DEFAULT_PLAN: tuple[str, ...] = (
     "smelting",
     "construction",
     "ceramics",
+    "silicate_ceramics",
     "polymers",
     "light_alloys",
     "alloy_steel",

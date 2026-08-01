@@ -23,6 +23,8 @@ from sqlalchemy import Engine, select
 from galaxysim.ai import take_all_turns
 from galaxysim.bootstrap import add_civ, create_universe
 from galaxysim.colony.buildings import BUILDING_TYPES, building_type
+from galaxysim.colony.industry import binding_limit, levels_in_use, max_total_levels
+from galaxysim.colony.population import capacity
 from galaxysim.colony.expedition import (
     DEFAULT_COLONISTS,
     DEFAULT_EQUIPMENT,
@@ -173,10 +175,10 @@ def status() -> None:
         )
 
         totals = queries.total_stockpile(session, civ.id)
-        stock = ", ".join(f"{k} {v:,.0f}" for k, v in sorted(totals.items())) or "nothing"
+        stock = ", ".join(f"{k} {format_count(v)}t" for k, v in sorted(totals.items())) or "nothing"
         console.print(
             f"Held across all colonies: {stock}\n"
-            f"Research: {civ.research_progress:,.1f} paid for and unspent, "
+            f"Research: {format_count(civ.research_progress)} paid for and unspent, "
             f"{civ.techs_known} techs, {civ.research_invested:,.1f} invested"
         )
         console.print(
@@ -192,14 +194,16 @@ def status() -> None:
             )
             for colony in colonies:
                 held = ", ".join(
-                    f"{k} {v:,.0f}" for k, v in sorted(colony.stockpile.items()) if v >= 1
+                    f"{k} {format_count(v)}t"
+                    for k, v in sorted(colony.stockpile.items())
+                    if v >= 1
                 )
                 table.add_row(
                     str(colony.id),
                     colony.name,
                     colony.world.name,
                     colony.world.world_type,
-                    f"{colony.population:,.1f}",
+                    format_count(colony.population),
                     f"{colony.infrastructure:.1f}",
                     held or "[dim]empty[/dim]",
                 )
@@ -349,12 +353,15 @@ def colonize(
         loadout = Loadout(colonists=colonists, equipment=equipment, stores=stores)
         verdict = assess(loadout, world, DEFAULT_RATES)
 
-        manifest = ", ".join(f"{v:,.0f} {k}" for k, v in sorted(verdict.cost.items()))
+        manifest = ", ".join(
+            f"{format_count(v)}t {MATERIALS[k].name}" for k, v in sorted(verdict.cost.items())
+        )
         console.print(
             f"[bold]{world.name}[/bold] ({world.world_type}, "
-            f"habitability {world.habitability:.2f}, {world.slots} slots)\n"
-            f"Expedition: {colonists:.0f} colonists, {equipment:.0f} equipment, "
-            f"{stores:.0f} stores\n"
+            f"habitability {world.habitability:.2f}, "
+            f"{format_count(world.land_area_km2)} km2 of land)\n"
+            f"Expedition: {format_count(colonists)} colonists, {equipment:.0f} equipment, "
+            f"{format_count(stores)}t stores\n"
             f"Cost: {manifest}"
         )
 
@@ -426,8 +433,13 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
 
         console.print(
             f"[bold]{colony.name}[/bold] on {world.name} ({world.world_type}) - {mode}\n"
-            f"Population {colony.population:,.1f} - infrastructure "
-            f"{colony.infrastructure:.2f} - habitability {world.habitability:.2f}"
+            f"Population {format_count(colony.population)} of "
+            f"{format_count(capacity(world, colony.infrastructure, habitability))} "
+            f"({colony.population / max(1.0, capacity(world, colony.infrastructure, habitability)):.0%} "
+            f"of capacity)\n"
+            f"Development {colony.development:.0%} - infrastructure "
+            f"{colony.infrastructure:.1f} - standard of living "
+            f"{colony.standard_of_living:.0%} - habitability {world.habitability:.2f}"
             + (
                 f" (effectively {habitability:.2f} with structures)"
                 if habitability > world.habitability
@@ -445,7 +457,7 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
             # Oceans. Life support is a labour cost here and nothing more, which
             # is the difference between a place and a supply liability.
             console.print(
-                f"[green]Life support: {need:.2f}/hour, drawn from this world's "
+                f"[green]Life support: {format_count(need)}t/hour, drawn from this world's "
                 "own water. No supply line required.[/green]"
             )
         else:
@@ -457,7 +469,7 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
             hours = (stock / burn) if burn > 0 else None
             colour = "red" if hours is not None and hours < 48 else "yellow"
             console.print(
-                f"[{colour}]Life support: burning {burn:.2f} water/hour"
+                f"[{colour}]Life support: burning {format_count(burn)}t water/hour"
                 + (f" - about {hours / 24:.1f} days of air left" if hours is not None else "")
                 + "[/]"
             )
@@ -468,19 +480,30 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
             table.add_row(
                 sector,
                 f"{allocation[sector] * 100:.0f}%",
-                f"{colony.population * allocation[sector]:,.1f}",
+                format_count(colony.population * allocation[sector]),
             )
         console.print(table)
 
-        table = Table("building", "state", title=f"Buildings ({len(colony.buildings)}/{world.slots})")
+        used = levels_in_use(colony.buildings)
+        ceiling = max_total_levels(colony.population, world.land_area_km2)
+        bound = binding_limit(colony.population, world.land_area_km2)
+        table = Table(
+            "industry",
+            "level",
+            "state",
+            title=f"Industry ({used}/{ceiling} levels -- limited by {bound})",
+        )
         for building in sorted(colony.buildings, key=lambda b: b.id):
             spec = building_type(building.kind)
             table.add_row(
                 spec.name,
-                "complete" if building.is_complete else f"{building.work_remaining:.1f} work left",
+                str(building.level),
+                "running"
+                if building.is_complete
+                else f"expanding, {format_count(building.work_remaining)} work left",
             )
         if not colony.buildings:
-            table.add_row("[dim]none[/dim]", "")
+            table.add_row("[dim]none[/dim]", "", "")
         console.print(table)
 
         # What the ground under this colony will actually give up. This is the
@@ -513,7 +536,11 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
             )
         console.print(table)
 
-        stock = ", ".join(f"{k} {v:,.1f}" for k, v in sorted(colony.stockpile.items()))
+        stock = ", ".join(
+            f"{MATERIALS[k].name} {format_count(v)}t"
+            for k, v in sorted(colony.stockpile.items())
+            if k in MATERIALS and v >= 1
+        )
         console.print(f"Stockpile: {stock or '[dim]empty[/dim]'}")
 
 
@@ -564,6 +591,50 @@ def refining(
         console.print(
             f"[green]{target.name}:[/green] "
             + ", ".join(f"{RECIPES[k].name} {v:g}" for k, v in sorted(plan.items()))
+        )
+
+
+@app.command()
+def migrate(
+    fleet_id: int = typer.Argument(..., help="Fleet to carry them."),
+    origin: int = typer.Option(..., "--from", help="Colony they leave."),
+    destination: int = typer.Option(..., "--to", help="Colony they settle."),
+    people: float = typer.Option(..., "--people", help="How many to move."),
+) -> None:
+    """Ship a population from one of your colonies to another.
+
+    Natural growth already carries a habitable colony on its own, so this is
+    never required. It is how you decide *where your civilization's weight
+    sits* -- a garden world with room and nobody on it, next to a capital that
+    is full, is a situation only shipping fixes.
+
+    People ride in the same hold as cargo, so a migration run is a supply run
+    you did not make.
+    """
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        source = session.get(Colony, origin)
+        target = session.get(Colony, destination)
+        if source is None or target is None or civ.id not in (source.civ_id, target.civ_id):
+            console.print("[red]Both ends must be your own colonies.[/red]")
+            raise typer.Exit(1)
+        if people > source.population:
+            console.print(
+                f"[red]{source.name} only has {format_count(source.population)} people.[/red]"
+            )
+            raise typer.Exit(1)
+
+        intents.migrate(session, civ, fleet_id, origin, destination, people)
+        headroom = capacity(target.world, target.infrastructure, target.world.habitability)
+        console.print(
+            f"[green]Ordered[/green] {format_count(people)} from {source.name} "
+            f"to {target.name}."
+        )
+        console.print(
+            f"[dim]{target.name} holds {format_count(target.population)} of "
+            f"{format_count(headroom)}.[/dim]"
         )
 
 

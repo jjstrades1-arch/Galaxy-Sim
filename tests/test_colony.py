@@ -1,8 +1,9 @@
 """The colony interior: labor, life support and buildings.
 
 The property most of these defend is that a colony is a *place with
-constraints*, not a number that goes up. Labor is finite, slots are finite, and
-a hostile world takes a real bite out of both.
+constraints*, not a number that goes up. Labor is finite, industry is bounded by
+the people and the ground available to it, and a hostile world takes a real bite
+out of all of them.
 """
 
 from __future__ import annotations
@@ -11,6 +12,12 @@ import pytest
 from sqlalchemy import select
 
 from galaxysim.colony.buildings import building_type
+from galaxysim.colony.industry import (
+    KM2_PER_LEVEL,
+    binding_limit,
+    levels_in_use,
+    max_total_levels,
+)
 from galaxysim.colony.expedition import Loadout, assess
 from galaxysim.colony.labor import (
     EXTRACTION,
@@ -29,6 +36,9 @@ from galaxysim.model.entities import Building, Colony, Event, Fleet, IntentStatu
 from tests.conftest import (
     civ_by_name,
     give_deposits,
+    OUTPOST_POPULATION,
+    feed,
+    make_farmable,
     rich_stockpile,
     home_colony,
     new_universe,
@@ -36,21 +46,36 @@ from tests.conftest import (
 )
 
 
-def _outpost(session, civ, *, habitability: float, stockpile: dict, world_type: str = "barren"):
-    """Plant a colony on a hand-tuned world, bypassing the colonize flow."""
+def _outpost(
+    session,
+    civ,
+    *,
+    habitability: float,
+    stockpile: dict,
+    world_type: str = "barren",
+    farmable: bool = False,
+):
+    """Plant a colony on a hand-tuned world, bypassing the colonize flow.
+
+    ``farmable`` writes a survey that agrees with a high habitability: oceans, an
+    edible ecology, temperate at one gee. Without it the world is a rock that
+    feeds itself out of hydroponics, which is the right default for an outpost
+    and the wrong one for a test about garden worlds.
+    """
     world = session.scalars(
         select(World).where(World.colony == None).order_by(World.id)  # noqa: E711
     ).first()
     assert world is not None
     world.habitability = habitability
     world.world_type = world_type
-    world.slots = 6
     give_deposits(world, iron=0.015)
+    if farmable:
+        make_farmable(world)
     colony = Colony(
         world_id=world.id,
         civ_id=civ.id,
         name="Outpost",
-        population=5.0,
+        population=OUTPOST_POPULATION,
         infrastructure=1.0,
         founded_tick=0,
         stockpile=dict(stockpile),
@@ -61,6 +86,9 @@ def _outpost(session, civ, *, habitability: float, stockpile: dict, world_type: 
     colony.management_mode = "manual"
     session.add(colony)
     session.flush()
+    # Eating is not what these tests are about; keep the larder stocked so a
+    # colony never fails one of them by quietly starving in the background.
+    feed(colony)
     return colony
 
 
@@ -155,7 +183,7 @@ def test_research_needs_materials_not_just_people():
         civ = civ_by_name(session, universe_id, "Terrans")
         assert civ.research_progress > 0.0
         # And it was paid for out of that specific warehouse.
-        assert session.get(Colony, colony_id).stockpile[ELECTRONICS] < 9999.0
+        assert session.get(Colony, colony_id).stockpile[ELECTRONICS] < 1e9
 
 
 # ------------------------------------------------------------ life support
@@ -168,23 +196,23 @@ def test_garden_world_needs_no_life_support():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        colony = _outpost(session, civ, habitability=1.0, stockpile={WATER: 50.0})
+        colony = _outpost(session, civ, habitability=1.0, stockpile={WATER: 6_250})
         colony_id = colony.id
 
     run_ticks(engine, universe_id, 48)
 
     with open_session(engine) as session:
         colony = session.get(Colony, colony_id)
-        assert colony.stockpile[WATER] == pytest.approx(50.0), "nothing should be burned"
+        assert colony.stockpile[WATER] == pytest.approx(6_250), "nothing should be burned"
         assert colony.population > 0
 
 
 def test_hostile_world_burns_supplies_then_starves_then_recovers():
     """The core loop that makes logistics matter.
 
-    A barren world yields metal and energy but no volatiles, so it cannot feed
-    itself at any labor allocation. It lives on its stores, dies when they run
-    out, and comes back when they are restored.
+    A dry world has no water of its own, so it cannot keep anyone alive at any
+    labour allocation. It lives on its stores, dies when they run out, and comes
+    back when they are restored.
     """
     # Hourly ticks: the supply clock runs in days, and at five-minute ticks
     # this test would need thousands of them to reach the interesting part.
@@ -193,17 +221,20 @@ def test_hostile_world_burns_supplies_then_starves_then_recovers():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        colony = _outpost(session, civ, habitability=0.0, stockpile={WATER: 40.0})
+        colony = _outpost(session, civ, habitability=0.0, stockpile={WATER: 5_000})
         colony_id = colony.id
         population_at_founding = colony.population
 
-    # Phase one: alive on stores. 40 volatiles at 0.4/hour is a hundred hours of
-    # air, so a day in it is comfortable.
+    # Phase one: alive on stores. Fifty thousand people drink 50 t of water an
+    # hour, so five thousand tonnes is a hundred hours of air and a day in it is
+    # comfortable.
     run_ticks(engine, universe_id, 24)
     with open_session(engine) as session:
         colony = session.get(Colony, colony_id)
-        assert colony.stockpile[WATER] < 40.0, "hostile worlds consume supplies"
-        assert colony.population == pytest.approx(population_at_founding), "not starving yet"
+        assert colony.stockpile[WATER] < 5_000, "hostile worlds consume supplies"
+        # Growing, not dying: a dead world's habitats have headroom above a
+        # landing party, so the population rises until it hits that ceiling.
+        assert colony.population >= population_at_founding, "not starving yet"
 
     # Phase two: stores exhausted, population falling.
     run_ticks(engine, universe_id, 240)
@@ -222,13 +253,13 @@ def test_hostile_world_burns_supplies_then_starves_then_recovers():
         # map holds objects weakly, so an unreferenced instance can be collected
         # before the change is flushed.
         resupplied = session.get(Colony, colony_id)
-        resupplied.stockpile[WATER] = 500.0
+        resupplied.stockpile[WATER] = 62_500
 
     run_ticks(engine, universe_id, 48)
     with open_session(engine) as session:
         colony = session.get(Colony, colony_id)
         assert colony.population >= starving, "resupply must stop the dying"
-        assert colony.stockpile[WATER] < 500.0
+        assert colony.stockpile[WATER] < 62_500
 
 
 def test_a_dome_makes_a_hostile_world_cheaper_to_hold():
@@ -238,24 +269,24 @@ def test_a_dome_makes_a_hostile_world_cheaper_to_hold():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        bare = _outpost(session, civ, habitability=0.0, stockpile={WATER: 500.0})
+        bare = _outpost(session, civ, habitability=0.0, stockpile={WATER: 62_500})
         bare_id = bare.id
 
     run_ticks(engine, universe_id, 48)
     with open_session(engine) as session:
-        burned_bare = 500.0 - session.get(Colony, bare_id).stockpile[WATER]
+        burned_bare = 62_500 - session.get(Colony, bare_id).stockpile[WATER]
 
     # Same colony, now domed.
     with open_session(engine) as session:
         colony = session.get(Colony, bare_id)
-        colony.stockpile[WATER] = 500.0
+        colony.stockpile[WATER] = 62_500
         session.add(
             Building(colony_id=colony.id, kind="dome", work_remaining=0.0, completed_tick=0)
         )
 
     run_ticks(engine, universe_id, 48)
     with open_session(engine) as session:
-        burned_domed = 500.0 - session.get(Colony, bare_id).stockpile[WATER]
+        burned_domed = 62_500 - session.get(Colony, bare_id).stockpile[WATER]
 
     assert burned_domed < burned_bare
 
@@ -267,16 +298,16 @@ def test_hydroponics_recycles_supplies():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        colony = _outpost(session, civ, habitability=0.0, stockpile={WATER: 500.0})
+        colony = _outpost(session, civ, habitability=0.0, stockpile={WATER: 62_500})
         colony_id = colony.id
 
     run_ticks(engine, universe_id, 48)
     with open_session(engine) as session:
-        burned_plain = 500.0 - session.get(Colony, colony_id).stockpile[WATER]
+        burned_plain = 62_500 - session.get(Colony, colony_id).stockpile[WATER]
 
     with open_session(engine) as session:
         colony = session.get(Colony, colony_id)
-        colony.stockpile[WATER] = 500.0
+        colony.stockpile[WATER] = 62_500
         session.add(
             Building(
                 colony_id=colony.id, kind="hydroponics", work_remaining=0.0, completed_tick=0
@@ -285,7 +316,7 @@ def test_hydroponics_recycles_supplies():
 
     run_ticks(engine, universe_id, 48)
     with open_session(engine) as session:
-        burned_recycled = 500.0 - session.get(Colony, colony_id).stockpile[WATER]
+        burned_recycled = 62_500 - session.get(Colony, colony_id).stockpile[WATER]
 
     assert burned_recycled < burned_plain
 
@@ -360,8 +391,14 @@ def test_buildings_need_industry_labor_to_finish():
         assert lab.completed_tick is not None
 
 
-def test_slots_limit_what_a_world_can_host():
-    """A world's ceiling is part of its identity."""
+def test_industry_is_limited_by_people_and_ground():
+    """A world's ceiling is physical, not a slot count.
+
+    An industry needs staff to run it and land to stand on. A colony that has
+    run out of either cannot develop further until it grows -- which is a
+    statement about the place rather than an arbitrary allowance, and it means a
+    cramped moon and a continent are genuinely different propositions.
+    """
     engine = create_engine_for("sqlite://")
     universe_id = new_universe(engine, seed=815, civs=("Terrans",))
 
@@ -369,7 +406,10 @@ def test_slots_limit_what_a_world_can_host():
         civ = civ_by_name(session, universe_id, "Terrans")
         colony = home_colony(session, civ)
         colony.stockpile = rich_stockpile()
-        colony.world.slots = len(colony.buildings)  # already full
+        # Strip the world down to a body that can site almost nothing, and the
+        # population down to a village that could not staff it anyway.
+        colony.world.land_area_km2 = 1.0
+        colony.population = 100.0
         intents.build_structure(session, civ, colony.id, "laboratory")
 
     run_ticks(engine, universe_id, 2)
@@ -379,28 +419,55 @@ def test_slots_limit_what_a_world_can_host():
             select(intents.Intent).where(intents.Intent.kind == "build_structure")
         )
         assert intent.status == IntentStatus.FAILED.value
-        assert "no free slots" in intent.result
+        assert "staff or site" in intent.result
 
 
-def test_duplicate_structures_are_rejected():
+def test_the_binding_limit_is_whichever_runs_out_first():
+    """A crowded moon and an empty continent fail in opposite directions."""
+    # Plenty of people, almost no ground: the moon case.
+    assert max_total_levels(population=1e10, land_area_km2=90_000.0) == 1
+    assert binding_limit(1e10, 90_000.0) == "ground"
+
+    # Plenty of ground, almost nobody: the frontier case.
+    assert max_total_levels(population=250_000.0, land_area_km2=1e9) == 1
+    assert binding_limit(250_000.0, 1e9) == "people"
+
+    # Both rise as the colony develops, and a landing party can always build
+    # *something* or it could never bootstrap.
+    assert max_total_levels(population=0.0, land_area_km2=0.0) >= 1
+    assert max_total_levels(1e10, 1e9) > max_total_levels(1e8, 1e9)
+
+
+def test_ordering_an_industry_again_deepens_it():
+    """Buildings are industries with levels, not things you have or do not.
+
+    A second mine on a world that already has one is not a second mine -- it is
+    the mining sector getting bigger. Each level costs proportionally more and
+    returns proportionally less, so development has real diminishing returns and
+    a civilization is eventually better off founding a new colony than deepening
+    an old one.
+    """
     engine = create_engine_for("sqlite://")
     universe_id = new_universe(engine, seed=816, civs=("Terrans",))
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         colony = home_colony(session, civ)
-        colony.stockpile = rich_stockpile()
-        colony.world.slots = 12
-        intents.build_structure(session, civ, colony.id, "shipyard")  # already has one
+        take_manual_control(session, civ)
+        intents.set_labor(session, colony, {INDUSTRY: 1.0})
+        colony.stockpile = rich_stockpile(1e12)
+        yard = next(b for b in colony.buildings if b.kind == "shipyard")
+        before, colony_id = yard.level, colony.id
+        intents.build_structure(session, civ, colony.id, "shipyard")
 
-    run_ticks(engine, universe_id, 2)
+    run_ticks(engine, universe_id, 200)
 
     with open_session(engine) as session:
-        intent = session.scalar(
-            select(intents.Intent).where(intents.Intent.kind == "build_structure")
-        )
-        assert intent.status == IntentStatus.FAILED.value
-        assert "already has" in intent.result
+        colony = session.get(Colony, colony_id)
+        yards = [b for b in colony.buildings if b.kind == "shipyard"]
+        assert len(yards) == 1, "an industry deepens rather than duplicating"
+        assert yards[0].level == before + 1
+        assert yards[0].is_complete, "and the level should have finished"
 
 
 def test_unknown_building_kind_fails_with_a_helpful_message():
@@ -460,8 +527,8 @@ def _stub_world(habitability: float, **yields: float) -> _StubWorld:
 
 def test_loadout_cost_scales_with_what_you_send():
     """No flat fee: the price is the manifest."""
-    light = Loadout(colonists=2.0, equipment=2.0, stores=10.0)
-    heavy = Loadout(colonists=6.0, equipment=8.0, stores=200.0)
+    light = Loadout(colonists=20_000.0, equipment=2.0, stores=10_000.0)
+    heavy = Loadout(colonists=60_000.0, equipment=8.0, stores=200_000.0)
 
     light_cost, heavy_cost = light.cost(), heavy.cost()
     assert all(heavy_cost[r] > light_cost[r] for r in light_cost)
@@ -474,8 +541,8 @@ def test_loadout_cost_scales_with_what_you_send():
 
 def test_equipment_buys_a_more_capable_colony():
     """Loadout decides what the colony wakes up with, not just its price."""
-    bare = Loadout(colonists=3.0, equipment=0.0, stores=0.0)
-    outfitted = Loadout(colonists=3.0, equipment=10.0, stores=0.0)
+    bare = Loadout(colonists=50_000.0, equipment=0.0, stores=0.0)
+    outfitted = Loadout(colonists=50_000.0, equipment=10.0, stores=0.0)
 
     assert outfitted.starting_infrastructure() > bare.starting_infrastructure()
     assert bare.starting_infrastructure() > 0, "even a bare landing can do something"
@@ -490,7 +557,7 @@ def test_hostility_is_priced_through_what_survival_requires():
     """
     from galaxysim.engine.rates import DEFAULT_RATES
 
-    loadout = Loadout(colonists=3.0, equipment=4.0, stores=40.0)
+    loadout = Loadout(colonists=50_000.0, equipment=4.0, stores=40_000.0)
     garden = assess(loadout, _stub_world(1.0, water_ice=0.01), DEFAULT_RATES)
     rock = assess(loadout, _stub_world(0.0, iron=0.02), DEFAULT_RATES)
 
@@ -511,12 +578,12 @@ def test_a_world_with_ice_in_the_ground_stands_alone():
     from galaxysim.engine.rates import DEFAULT_RATES
 
     icy = assess(
-        Loadout(colonists=3.0, equipment=6.0, stores=50.0),
+        Loadout(colonists=50_000.0, equipment=6.0, stores=50_000.0),
         _stub_world(0.1, water_ice=0.05),
         DEFAULT_RATES,
     )
     dry = assess(
-        Loadout(colonists=3.0, equipment=6.0, stores=50.0),
+        Loadout(colonists=50_000.0, equipment=6.0, stores=50_000.0),
         _stub_world(0.1, iron=0.05),
         DEFAULT_RATES,
     )
@@ -558,7 +625,7 @@ def test_uninhabitable_worlds_can_be_settled_and_live_on_their_stores():
             civ,
             fleet.id,
             rock_id,
-            loadout=Loadout(colonists=3.0, equipment=4.0, stores=100.0),
+            loadout=Loadout(colonists=50_000.0, equipment=4.0, stores=100_000.0),
             name="Deep Rock",
         )
 
@@ -567,7 +634,9 @@ def test_uninhabitable_worlds_can_be_settled_and_live_on_their_stores():
     with open_session(engine) as session:
         colony = session.scalar(select(Colony).where(Colony.name == "Deep Rock"))
         assert colony is not None, "an uninhabitable world must be settleable"
-        assert colony.population == pytest.approx(3.0), "colonists become population"
+        assert colony.population == pytest.approx(50_000.0, rel=0.1), (
+            "the colonists became the population"
+        )
         assert colony.stockpile[WATER] > 0, "stores land with them"
         assert colony.infrastructure > 0.5, "equipment becomes infrastructure"
         assert session.scalars(
@@ -579,7 +648,7 @@ def test_uninhabitable_worlds_can_be_settled_and_live_on_their_stores():
     with open_session(engine) as session:
         colony = session.scalar(select(Colony).where(Colony.name == "Deep Rock"))
         assert colony.stockpile[IRON] > 0, "a rich world, while it lives"
-        assert colony.stockpile[WATER] < 100.0, "and a clock running down"
+        assert colony.stockpile[WATER] < 70_000.0, "and a clock running down"
 
 
 def test_an_expedition_with_no_stores_dies_on_a_dead_world():
@@ -604,7 +673,7 @@ def test_an_expedition_with_no_stores_dies_on_a_dead_world():
             civ,
             fleet.id,
             rock.id,
-            loadout=Loadout(colonists=2.0, equipment=1.0, stores=0.0),
+            loadout=Loadout(colonists=20_000.0, equipment=1.0, stores=0.0),
             name="Doomed",
         )
 
@@ -662,7 +731,7 @@ def test_a_governor_keeps_a_hostile_colony_breathing():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        colony = _outpost(session, civ, habitability=0.0, stockpile={WATER: 5000.0})
+        colony = _outpost(session, civ, habitability=0.0, stockpile={WATER: 625_000})
         intents.set_management(session, colony, governed=True, policy="research")
         colony_id = colony.id
 
@@ -681,7 +750,7 @@ def test_a_governed_garden_world_spends_nothing_on_life_support():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        colony = _outpost(session, civ, habitability=1.0, stockpile={})
+        colony = _outpost(session, civ, habitability=1.0, stockpile={}, farmable=True)
         intents.set_management(session, colony, governed=True, policy="extraction")
         colony_id = colony.id
 
@@ -744,8 +813,7 @@ def test_a_governor_develops_a_colony_over_time():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        colony = _outpost(session, civ, habitability=0.9, stockpile={})
-        colony.world.slots = 6
+        colony = _outpost(session, civ, habitability=0.9, stockpile={}, farmable=True)
         # A world that can supply its own chains end to end: ore for steel and
         # construction materials, ice for the water its people breathe. Starting
         # from an empty warehouse, everything it builds it has to dig up and
@@ -771,8 +839,10 @@ def test_a_governor_respects_slot_limits():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        colony = _outpost(session, civ, habitability=0.9, stockpile={})
-        colony.world.slots = 2
+        colony = _outpost(session, civ, habitability=0.9, stockpile={}, farmable=True)
+        # A cramped body: enough ground for two levels and no more, however
+        # rich it is and however long the governor is left alone.
+        colony.world.land_area_km2 = 2.0 * KM2_PER_LEVEL
         give_deposits(colony.world, iron=0.03, silicon=0.03, calcium=0.02, carbon=0.01)
         intents.set_management(session, colony, governed=True, policy="extraction")
         colony_id = colony.id
@@ -781,4 +851,6 @@ def test_a_governor_respects_slot_limits():
 
     with open_session(engine) as session:
         colony = session.get(Colony, colony_id)
-        assert len(colony.buildings) <= colony.world.slots
+        assert levels_in_use(colony.buildings) <= max_total_levels(
+            colony.population, colony.world.land_area_km2
+        )

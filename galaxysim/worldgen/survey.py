@@ -91,12 +91,17 @@ class Survey:
         """How many people this world could eventually support.
 
         Real land area times a real density, scaled by how pleasant the world
-        is. An Earth-analogue lands in the billions; a barren moon in the low
-        millions, because a sealed habitat supports far fewer people per square
-        kilometre than open farmland does.
+        is. An Earth-analogue lands in the billions.
+
+        **No floor.** A dead world's natural capacity is genuinely zero, because
+        nobody lives outdoors on Mars. What holds an outpost up there is the
+        habitats somebody built, and that belongs in
+        :func:`galaxysim.colony.population.habitat_capacity` where it is a fact
+        about the colony rather than about the planet. A floor here would quietly
+        hand a barren rock a natural capacity of tens of millions and make
+        terraforming pointless.
         """
-        environmental = max(0.01, self.habitability)
-        return self.land_area_km2 * SUSTAINABLE_DENSITY_PER_KM2 * environmental
+        return self.land_area_km2 * SUSTAINABLE_DENSITY_PER_KM2 * max(0.0, self.habitability)
 
     # --- the conclusion -----------------------------------------------------
 

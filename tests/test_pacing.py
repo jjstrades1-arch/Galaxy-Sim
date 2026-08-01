@@ -14,13 +14,22 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from galaxysim.colony.labor import balanced_allocation
+from galaxysim.colony.population import capacity
 from galaxysim.engine import intents
-from galaxysim.materials import MATERIALS, STEEL
+from galaxysim.materials import IRON, MATERIALS, STEEL
 from galaxysim.engine.rates import CADENCE_FIVE_MINUTE, CADENCE_HOURLY, DEFAULT_RATES, Cadence
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Civ, Colony, Event, Fleet, Universe
-from tests.conftest import civ_by_name, held, home_colony, new_universe
+from galaxysim.model.entities import World
+from tests.conftest import (
+    civ_by_name,
+    give_deposits,
+    held,
+    home_colony,
+    new_universe,
+)
 
 SIMULATED_HOURS = 48
 
@@ -46,6 +55,8 @@ def _run_for_hours(seconds_per_tick: int, hours: int, seed: int = 777) -> dict[s
         assert colony is not None
         return {
             "population": colony.population,
+            "fullness": colony.population
+            / capacity(colony.world, colony.infrastructure, colony.world.habitability),
             "steel": held(session, civ, STEEL),
             "research_invested": civ.research_invested,
             "techs_known": float(civ.techs_known),
@@ -94,18 +105,51 @@ def test_growth_is_slow_enough_to_take_real_time():
     """
     after_one_day = _run_for_hours(CADENCE_FIVE_MINUTE.seconds_per_tick, 24)
 
-    # A single starting colony should still be a single modest colony after a
-    # day, nowhere near its habitability ceiling.
-    assert after_one_day["population"] < 40.0
+    # The capital opens nearly full, so a day should barely move it. Measured
+    # against capacity rather than an absolute headcount -- the number is in the
+    # billions now and depends on which world the seed produced.
+    assert after_one_day["fullness"] < 1.02
     # And research should be a handful of steps in, not dozens.
     assert after_one_day["techs_known"] < 12.0
 
 
-def test_expansion_and_research_costs_are_superlinear():
-    """The two curves that stop a civ from snowballing.
+def test_a_homeworld_is_already_full():
+    """The opening position's whole argument.
 
-    Each is checked for accelerating cost, not just increasing cost -- linear
-    growth in cost would still let a large civ compound indefinitely.
+    A species with lightspeed travel is not a landing party -- its homeworld has
+    billions of people on it and is nearly at what the planet can hold. So it
+    barely grows, and essentially all growth has to come from expanding. If this
+    ever loosens, the capital becomes a thing you develop instead of a thing you
+    launch from, and the game stops being about expansion.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=7788, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = home_colony(session, civ)
+        assert colony.population > 1e8, "a homeworld holds billions, not a landing party"
+        opening = colony.population
+        ceiling = capacity(colony.world, colony.infrastructure, colony.world.habitability)
+        assert opening / ceiling > 0.8, "it should open nearly full"
+        colony_id = colony.id
+
+    # Four weeks. A frontier colony would multiply many thousandfold in this.
+    run_ticks(engine, universe_id, 672)
+
+    with open_session(engine) as session:
+        grown = session.get(Colony, colony_id).population
+        assert grown / opening < 1.2, (
+            f"the capital grew {grown / opening:.2f}x in four weeks; it is supposed to be "
+            "full already, so growth has to come from expanding"
+        )
+
+
+def test_research_cost_is_superlinear():
+    """The curve that stops a civ from snowballing down one lineage.
+
+    Checked for *accelerating* cost, not just increasing cost -- linear growth in
+    cost would still let a large civ compound indefinitely.
     """
     rates = DEFAULT_RATES
 
@@ -113,13 +157,41 @@ def test_expansion_and_research_costs_are_superlinear():
     research_deltas = [b - a for a, b in zip(research_steps, research_steps[1:])]
     assert all(b > a for a, b in zip(research_deltas, research_deltas[1:]))
 
-    overheads = [rates.colony_overhead(n) for n in range(1, 30)]
-    overhead_deltas = [b - a for a, b in zip(overheads, overheads[1:])]
-    assert all(b > a for a, b in zip(overhead_deltas, overhead_deltas[1:]))
 
-    # Per-colony drag must actually rise, or "superlinear total" would just mean
-    # "more colonies".
-    assert rates.colony_overhead(20) / 20 > rates.colony_overhead(2) / 2
+def test_nothing_artificial_slows_a_wide_empire():
+    """The counterpart, and the one that used to fail by design.
+
+    There was a superlinear ``colony_overhead`` drag here that taxed a civ for
+    holding colonies. It is gone: expansion *should* get easier as you grow,
+    because that is the reward for growing. What slows a large empire is real --
+    distance, supply lines, worlds that cost more to hold than they yield.
+
+    Two identical colonies must therefore produce exactly twice what one does.
+    """
+    assert not hasattr(DEFAULT_RATES, "colony_overhead"), (
+        "the artificial anti-expansion brake must stay deleted"
+    )
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=7789, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        home = home_colony(session, civ)
+        home.stockpile = {}
+        twins = [_twin_of(session, civ, home) for _ in range(3)]
+        ids = (home.id, [t.id for t in twins])
+
+    run_ticks(engine, universe_id, 24)
+
+    with open_session(engine) as session:
+        home_id, twin_ids = ids
+        first = session.get(Colony, twin_ids[0]).stockpile.get(IRON, 0.0)
+        assert first > 0
+        for other in twin_ids[1:]:
+            assert session.get(Colony, other).stockpile.get(IRON, 0.0) == pytest.approx(
+                first, rel=1e-6
+            ), "the fourth colony must produce exactly what the second does"
 
 
 def test_fleet_upkeep_is_charged_and_unpaid_fleets_desert():
@@ -175,3 +247,32 @@ def test_universe_cadence_is_per_universe():
         universe = session.get(Universe, universe_id)
         assert universe is not None
         assert Cadence(universe.seconds_per_tick).ticks_per_hour == 1.0
+
+
+def _twin_of(session, civ, home) -> Colony:
+    """Another colony exactly like ``home``'s world, on an unclaimed rock.
+
+    Used to prove that output is linear in colony count: whatever the second one
+    produces, the fourth must produce the same.
+    """
+    world = next(
+        w
+        for w in session.scalars(select(World).order_by(World.id))
+        if w.colony is None
+    )
+    world.habitability = 0.9
+    give_deposits(world, iron=0.02)
+    colony = Colony(
+        world_id=world.id,
+        civ_id=civ.id,
+        name=f"Twin {world.id}",
+        population=1_000_000.0,
+        infrastructure=1.0,
+        founded_tick=0,
+        stockpile={},
+        labor=balanced_allocation(),
+    )
+    colony.management_mode = "manual"
+    session.add(colony)
+    session.flush()
+    return colony

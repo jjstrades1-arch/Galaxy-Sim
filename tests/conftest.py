@@ -73,12 +73,19 @@ def held(session, civ: Civ, resource: str) -> float:
     return queries.total_stockpile(session, civ.id).get(resource, 0.0)
 
 
-def rich_stockpile(amount: float = 9999.0) -> dict[str, float]:
+#: Population of a test outpost: a landed expedition, in real people.
+OUTPOST_POPULATION = 50_000.0
+
+
+def rich_stockpile(amount: float = 1e9) -> dict[str, float]:
     """A stockpile holding plenty of everything.
 
     For tests about some *other* mechanic. With real materials, "can this colony
     pay for it" is a question with twenty-nine parts, and a test about labor
     allocation should not be quietly failing because the world has no bauxite.
+
+    The default is deliberately enormous. Quantities are tonnes now, and a
+    colony of fifty thousand people burns fifty of them an hour just breathing.
     """
     from galaxysim.materials import MATERIALS
 
@@ -107,6 +114,56 @@ def give_deposits(world: World, **yields: float) -> None:
         }
         for element, index in sorted(yields.items())
     }
+
+
+def make_farmable(world: World) -> None:
+    """Give a test world a survey that agrees with a high habitability column.
+
+    Tests used to set ``world.habitability = 1.0`` and be done. That worked while
+    habitability was the only thing anything read. It is not any more:
+    :mod:`galaxysim.colony.agriculture` reads the *survey* -- is there liquid
+    water, is the native biochemistry edible, what is the gravity -- so a world
+    can be nominally habitable and still be a hydroponics-only rock, and a test
+    fixture that sets one without the other is quietly describing an impossible
+    place.
+
+    This writes the other half: oceans, an established compatible ecology, and a
+    temperate climate at one gee.
+    """
+    survey = dict(world.survey or {})
+    survey["hydrosphere"] = dict(
+        survey.get("hydrosphere", {}),
+        liquid_water=True,
+        ocean_fraction=0.6,
+        ice_fraction=0.05,
+        mean_ocean_depth_km=3.0,
+    )
+    survey["biosphere"] = dict(
+        survey.get("biosphere", {}),
+        stage="complex",
+        biochemistry="carbon-water",
+        biomass_tonnes=2.0e12,
+        pathogen_hazard=0.1,
+        oxygenating=True,
+    )
+    survey["climate"] = dict(survey.get("climate", {}), surface_temp_k=288.0)
+    survey["body"] = dict(survey.get("body", {}), gravity_g=1.0)
+    world.survey = survey
+
+
+def feed(colony, hours: float = 10_000.0) -> None:
+    """Stock a colony with enough food to take eating off the table.
+
+    For tests about water, labor or construction. Population needs food now, and
+    a colony quietly starving in the background would fail those tests for a
+    reason that has nothing to do with what they are checking.
+    """
+    from galaxysim.engine.rates import DEFAULT_RATES
+    from galaxysim.materials import FOOD
+
+    colony.stockpile[FOOD] = (
+        colony.population * DEFAULT_RATES.food_per_person_per_hour * hours
+    )
 
 
 def take_manual_control(session, civ: Civ) -> None:

@@ -16,13 +16,14 @@ really produce, never by writing a habitability number over an unsuitable rock.
 
 from __future__ import annotations
 
-import math
-
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from galaxysim.colony.labor import balanced_allocation
-from galaxysim.materials import STARTING_STOCKPILE
+from galaxysim.colony.industry import infrastructure_of, max_total_levels
+from galaxysim.colony.labor import SECTORS, balanced_allocation
+from galaxysim.engine.rates import DEFAULT_RATES
+from galaxysim.materials import extraction_rates
+from galaxysim.materials.catalogue import starting_stockpile
 from galaxysim.core.seeds import derive_seed, rng_for
 from galaxysim.core.space import Vec3
 from galaxysim.flavor.names import system_name, world_name
@@ -37,7 +38,7 @@ from galaxysim.model.entities import (
     UniverseMode,
     World,
 )
-from galaxysim.worldgen.serialize import survey_to_json
+from galaxysim.worldgen.serialize import deposits_from_json, survey_to_json
 from galaxysim.worldgen.star import Star, roll_star
 from galaxysim.worldgen.survey import plausible_mass, plausible_orbits, survey_world
 
@@ -49,10 +50,55 @@ STARTING_REGION_RADIUS_LY = 40.0
 STARTING_COLONY_PODS = 1
 STARTING_FLEET_STRENGTH = 3.0
 
-#: Structures the capital opens with, already finished. A homeworld is a place
+#: Industries the capital opens with, already finished. A homeworld is a place
 #: with history, not a fresh landing -- and the shipyard in particular is
 #: load-bearing, since without one a civ could never build its first ship.
-STARTING_BUILDINGS: tuple[str, ...] = ("shipyard", "spaceport", "mine")
+STARTING_BUILDINGS: tuple[str, ...] = (
+    "shipyard",
+    "spaceport",
+    "mine",
+    "factory",
+    "laboratory",
+    "refinery",
+    "granary",
+)
+
+#: How much of what the homeworld could support is already built. A
+#: civilization of billions has been industrialising for a long time; opening it
+#: with seven level-one buildings would describe a mining camp, not a capital.
+#: Short of full on purpose, so there is still somewhere to put a surplus.
+STARTING_DEVELOPMENT = 0.55
+
+#: How full a homeworld starts, as a fraction of what the planet can hold.
+#:
+#: Very high on purpose. Logistic growth from 70% still adds four billion people
+#: over a month, which is a larger contribution than several colonies and
+#: undercuts the whole reason to expand. Starting nearly full means the capital
+#: gains a few percent and then stops, so growth has to come from somewhere else
+#: from the first hour -- which is the decision the opening position exists to
+#: force.
+HOMEWORLD_CAPACITY_FLOOR = 0.88
+HOMEWORLD_CAPACITY_CEILING = 0.96
+
+
+def _hourly_output(population: float, world: World, infrastructure: float) -> float:
+    """Tonnes of ore this colony pulls in an hour at a balanced allocation.
+
+    Used only to size the opening stockpile against the world it sits on. Reads
+    the same deposits and the same rate production does, so the two cannot drift
+    apart.
+    """
+    yields = extraction_rates(deposits_from_json(world.survey or {}))
+    if not yields:
+        return 0.0
+    share = 1.0 / len(SECTORS)
+    return (
+        sum(yields.values())
+        * population
+        * share
+        * DEFAULT_RATES.extraction_per_worker_per_hour
+        * infrastructure
+    )
 
 
 def create_universe(
@@ -146,7 +192,6 @@ def _world_from_survey(survey, system: StarSystem, rng, orbit_index: int) -> Wor
             ),
             4,
         ),
-        slots=max(2, min(12, int(2 + math.log10(max(survey.land_area_km2, 1.0))))),
         survey=survey_to_json(survey),
         land_area_km2=round(survey.land_area_km2, 2),
         carrying_capacity=round(survey.carrying_capacity, 2),
@@ -185,16 +230,27 @@ def add_civ(
     rng = rng_for(civ.seed, "homeworld")
     homeworld = _prepare_homeworld(session, system, rng)
 
+    # A species with lightspeed travel is not a landing party. Its homeworld is
+    # already full -- seventy to ninety percent of what the planet can hold --
+    # so it barely grows, and essentially all growth has to come from expanding.
+    # That is the decision the opening position exists to force.
+    infrastructure = 2.0
+    population = homeworld.carrying_capacity * rng.uniform(
+        HOMEWORLD_CAPACITY_FLOOR, HOMEWORLD_CAPACITY_CEILING
+    )
+
     capital = Colony(
         world_id=homeworld.id,
         civ_id=civ.id,
         name=f"{homeworld.name} Prime",
-        population=5.0,
-        infrastructure=2.0,
+        population=population,
+        infrastructure=infrastructure,
         founded_tick=universe.tick_number,
         # The starting stockpile sits on the homeworld rather than in a
-        # civ-wide treasury: everything a civ owns is somewhere.
-        stockpile=dict(STARTING_STOCKPILE),
+        # civ-wide treasury: everything a civ owns is somewhere. Sized from what
+        # this particular world produces, so a big homeworld opens rich and a
+        # cramped one does not.
+        stockpile=starting_stockpile(_hourly_output(population, homeworld, infrastructure)),
         labor=balanced_allocation(),
     )
     session.add(capital)
@@ -204,16 +260,26 @@ def add_civ(
     # build. The shipyard matters most: without one a colony cannot build ships
     # at all, so a civ with no starting yard could never build its first fleet
     # and would have no way out of the opening position.
+    # Industries, at a level the population can actually staff. Splitting the
+    # world's whole capacity evenly across them is crude but honest: what it
+    # gets right is the *scale*, which is what makes a capital feel like a
+    # capital rather than an outpost with a better address.
+    ceiling = max_total_levels(population, homeworld.land_area_km2)
+    level = max(1, int(ceiling * STARTING_DEVELOPMENT / len(STARTING_BUILDINGS)))
     for kind in STARTING_BUILDINGS:
         session.add(
             Building(
                 colony_id=capital.id,
                 kind=kind,
+                level=level,
                 work_remaining=0.0,
                 started_tick=universe.tick_number,
                 completed_tick=universe.tick_number,
             )
         )
+    session.flush()
+    capital.infrastructure += infrastructure_of(capital.buildings)
+    capital.development = min(1.0, len(STARTING_BUILDINGS) * level / max(1, ceiling))
     session.add(
         Fleet(
             universe_id=universe.id,
@@ -351,7 +417,6 @@ def _apply_survey(world: World, generated: World) -> None:
     world.world_type = generated.world_type
     world.habitability = generated.habitability
     world.hazard = generated.hazard
-    world.slots = generated.slots
     world.survey = generated.survey
     world.land_area_km2 = generated.land_area_km2
     world.carrying_capacity = generated.carrying_capacity

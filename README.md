@@ -134,6 +134,58 @@ common goods only, never strategic ones, so a metal-poor start researches
 optional **accelerants**: they speed research when supplied and cost nothing but
 the material when they are not.
 
+## Societies at real scale
+
+Population is people — real ones, in the billions — and materials are tonnes.
+Rates are anchored to reality where reality offers an anchor: humanity moves
+~100 Gt of ore a year across 8 billion people, so extraction is set from
+1.4×10⁻³ t per person per hour, and a person eats 2 kg of food a day. Everything
+else is derived from those and says so in `engine/rates.py`.
+
+**A homeworld opens nearly full.** A species with lightspeed travel is not a
+landing party: its capital holds several billion people at 88–96% of what the
+planet can hold, so it grows a few percent and then stops. Essentially all
+growth has to come from expanding, which is the decision the opening position
+exists to force. The capital is a reservoir and an industrial heart, not a thing
+you develop.
+
+**Capacity is physical, and there are two regimes.** A living world is limited
+by its land: `land_area × 53 people/km² × habitability`, which puts an
+Earth-analogue near 13 billion. A dead world's natural capacity is genuinely
+zero — nobody lives outdoors on Mars — so its ceiling is whatever the habitats
+hold, a few million at most. **Terraforming is the only thing that closes that
+gap**, and closing it is a thousandfold transformation. That is what the whole
+terraforming tree exists to buy.
+
+**Agriculture is the fifth labour sector**, and the world decides what it costs.
+Open farmland on a compatible biosphere feeds a colony with ~3% of its people; a
+sealed world needs more; a bare rock manufactures every calorie in hydroponics
+with ~35% of its population and imports fertiliser besides. A world can be
+perfectly breathable and still a terrible farm, which gives edible biospheres a
+payoff habitability alone never captured. **Standard of living** — how much of
+what people needed was actually met — scales growth, and reverses it below
+subsistence.
+
+**Industry is bounded by people and ground, not slots.** `World.slots` is gone.
+Buildings are industries with levels: cost rises with the square of the level
+while effect rises with its square root, so the tenth level costs a hundred
+times the first and is worth three times as much. Total levels are capped by
+`population / 250k` and `land_area / 90k km²`, whichever binds first — a crowded
+moon and an empty continent fail in opposite directions, and both limits rise as
+the colony grows. The consequence is the one the design wanted: past a point,
+the next tonne of steel is better spent founding a colony than deepening one.
+
+**Migration is a convoy.** People ride in the same hold as ore, at half a tonne
+each, so a migration run is a supply run you did not make. Nobody is forced to
+run them — natural growth carries a habitable colony to maturity in three to
+four weeks — but a garden world with room and nobody on it, next to a capital
+that is full, is a situation only shipping fixes.
+
+**Nothing artificial slows a wide empire.** `Rates.colony_overhead` is deleted.
+Twelve colonies produce what twelve colonies produce. What slows a large empire
+is real: distance, supply lines that have to be defended, worlds that cost more
+to hold than they yield.
+
 ## The colony
 
 A colony is a place you run, not a number that goes up.
@@ -145,10 +197,12 @@ upkeep by the nearest colony to the fleet — so projecting force far from home
 means feeding it out there. Research is the one exception: a discovery is known
 everywhere the moment it is made.
 
-**Population is assigned to work**, across extraction, industry, research and
-life support. The fourth is the interesting one. Life-support load scales with
-`1 - habitability`, so a hostile world takes a bite out of the workforce before
-anyone mines anything. Habitability is not a growth cap, it is a tax on labor.
+**Population is assigned to work**, across extraction, industry, research, life
+support and agriculture. The last two are the interesting ones, because they are
+*bills* rather than investments. Life-support load scales with
+`1 - habitability` and agriculture with how bad a farm the world is, so a hostile
+world takes two bites out of the workforce before anyone mines anything.
+Habitability is not a growth cap, it is a tax on labour.
 
 **Life support consumes water as well as people.** Sealed habitats need
 consumable input; workers cannot make air out of nothing. A world with oceans
@@ -160,10 +214,10 @@ than merely expensive, and geology plays against it on purpose:
 > The best mining worlds are dry by definition. They are among the richest
 > worlds in the game and they cannot keep anyone alive without a supply line.
 
-**Buildings occupy limited per-world slots** and are paid for in industry-work,
-so a colony with nobody in industry finishes nothing. Shipyards gate fleet
-construction; spaceports gate cargo throughput; domes cut what life support is
-*needed*; hydroponics cuts what meeting it *costs*.
+**Industries are levelled** and paid for in industry-work, so a colony with
+nobody in industry finishes nothing. Shipyards gate fleet construction;
+spaceports gate cargo and passenger throughput; domes cut what life support is
+*needed*; hydroponics cuts what meeting it *costs* and helps the harvest.
 
 **Founding is an expedition, not a fee.** You compose colonists, equipment and
 stores; what you send is both the price and what the colony wakes up with.
@@ -264,7 +318,7 @@ galaxysim/
   materials/   catalogue, refining chains, extraction, prices
   model/       SQLAlchemy entities (SQLite for solo, Postgres for shared)
   worldgen/    stars, planetary physics, geology, biospheres, surveys
-  colony/      labor sectors, building catalogue, expedition loadouts
+  colony/      labour sectors, industries, population, agriculture, expeditions
   engine/      rates, intent queue, tick pipeline, resolvers
   ai/          AI civs, driving the same intent API a player uses
   flavor/      name generation
@@ -300,14 +354,26 @@ Named explicitly so nobody mistakes scaffolding for design:
 - **Supply routes over-deliver.** A standing route ships its full manifest every
   trip whether or not the destination needs it, so a well-supplied outpost banks
   months of surplus. A route that tops up to a target level would be better.
-- **Ships take about twice as long to build.** Refining now takes half the
-  industry pool, so construction runs at half the rate it did. That is the
-  intended shape — ore has to become steel before it can become a hull — but the
-  split is a first-pass number that wants a play session, not a spreadsheet.
+- **Ships take about twice as long to build.** Refining takes half the industry
+  pool, so construction runs at half the rate it did. That is the intended
+  shape — ore has to become steel before it can become a hull — but the split is
+  a first-pass number that wants a play session, not a spreadsheet.
 - **Raw materials still outrun their sinks.** Research consuming refined goods
-  is a real sink and the draw limit stops one chain cornering the input, but a
-  developed colony still accumulates ore faster than it processes it.
-  Terraforming and infrastructure upgrades are the next sinks.
+  is a real sink and levelled industries are a much larger one, but a developed
+  colony still accumulates ore faster than it processes it. Terraforming is the
+  next sink.
+- **The AI does not run migration convoys.** It expands, builds freighters and
+  keeps standing routes to the dead worlds it settles — in a 28-day soak each AI
+  reaches ~5 colonies of 210k people apiece, all supplied, none starving — but
+  it never ships population, so it grows more slowly than the rules allow.
+- **Fleet upkeep is noisy on the frontier.** Upkeep bills the colony nearest the
+  fleet, and a fresh outpost has no fuel, so ships parked at one generate a
+  constant trickle of shortfall events. The mechanic is right — projecting force
+  far from home means feeding it out there — but it wants a grace period or a
+  fallback to the next colony in range.
+- **The suite takes ~3m45s.** Real-scale colonies need longer runs to reach the
+  interesting part. Running the slow tests at hourly cadence would cut it
+  sharply and is safe — pace-invariance is proven — and remains undone.
 - **Tick cost is ~88 ms with 6 AI civs.** Caching derived colony state per tick
   brought this down from ~105 ms, but the colony layer made a tick meaningfully
   more expensive than the ~60 ms it was before. Wants profiling before the

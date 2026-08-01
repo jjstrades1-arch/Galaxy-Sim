@@ -25,12 +25,25 @@ applies on the tick it is made rather than the next one.
 from __future__ import annotations
 
 from galaxysim.colony.buildings import BUILDING_TYPES_BY_KIND
-from galaxysim.colony.labor import EXTRACTION, INDUSTRY, LIFE_SUPPORT, RESEARCH, normalize
+from galaxysim.colony.industry import cost_of_level, levels_in_use, max_total_levels
+from galaxysim.colony.labor import (
+    AGRICULTURE,
+    EXTRACTION,
+    INDUSTRY,
+    LIFE_SUPPORT,
+    RESEARCH,
+    normalize,
+)
 from galaxysim.materials import can_afford
 from galaxysim.engine import intents
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
-from galaxysim.engine.resolvers.production import effective_habitability, effects_for
+from galaxysim.engine.resolvers.production import (
+    agricultural_quality,
+    effective_habitability,
+    effects_for,
+    productivity_of,
+)
 from galaxysim.model.entities import Colony, IntentKind
 
 BALANCED = "balanced"
@@ -60,11 +73,16 @@ _POLICY_WEIGHTS: dict[str, dict[str, float]] = {
     SURVIVAL: {EXTRACTION: 0.3, INDUSTRY: 0.65, RESEARCH: 0.05},
 }
 
+#: Safety factor on the farmers a governor keeps. Wider than the life-support
+#: margin because a harvest shortfall is slower to notice and slower to fix: by
+#: the time a colony is visibly hungry it has already stopped growing.
+FOOD_MARGIN = 1.5
+
 #: What each policy tries to build, in order of preference. Domes and
 #: hydroponics come first everywhere they are needed -- a colony that cannot
 #: breathe has no use for a laboratory.
 _BUILD_ORDER: dict[str, tuple[str, ...]] = {
-    BALANCED: ("mine", "factory", "laboratory", "spaceport", "collector", "refinery"),
+    BALANCED: ("mine", "factory", "laboratory", "spaceport", "collector", "refinery", "granary"),
     EXTRACTION_POLICY: ("mine", "refinery", "collector", "factory", "spaceport", "granary"),
     INDUSTRY_POLICY: ("factory", "mine", "shipyard", "spaceport", "collector"),
     RESEARCH_POLICY: ("laboratory", "factory", "mine", "spaceport", "collector"),
@@ -108,10 +126,17 @@ def resolve(ctx: TickContext) -> None:
 def _labor_for(ctx: TickContext, colony: Colony) -> dict[str, float]:
     """Decide this colony's labor split.
 
-    Life support comes off the top, sized to what the world actually demands,
-    and the policy divides whatever is left. That ordering is the whole idea: a
-    governor on a hostile world is not choosing to under-produce, it is paying a
-    bill first.
+    **The two bills come off the top**, sized to what the world actually
+    demands, and the policy divides whatever is left. That ordering is the whole
+    idea: a governor on a hostile world is not choosing to under-produce, it is
+    paying its bills first.
+
+    Which bills those are depends entirely on the world. A garden world with an
+    edible biosphere hands nearly its whole population back; a bare rock spends
+    a fifth of its people breathing and most of the rest growing food under
+    glass, and has almost nobody left to mine with. Two worlds with identical
+    ore can therefore be completely different propositions -- which is the point
+    of having both sectors rather than one abstract "overhead".
     """
     effects = effects_for(ctx, colony)
     habitability = effective_habitability(colony, effects)
@@ -126,6 +151,20 @@ def _labor_for(ctx: TickContext, colony: Colony) -> dict[str, float]:
         need_per_person = ctx.rates.life_support_per_pop_per_hour * (1.0 - habitability)
         life_support_share = min(0.9, (need_per_person / per_worker) * LIFE_SUPPORT_MARGIN)
 
+    # And the farmers, from the same constants the harvest uses.
+    per_farmer = (
+        ctx.rates.food_per_farmer_per_hour
+        * agricultural_quality(ctx, colony)
+        * productivity_of(ctx, colony)
+        * effects.sector(AGRICULTURE)
+    )
+    if per_farmer <= 0:
+        agriculture_share = 0.9
+    else:
+        agriculture_share = min(
+            0.9, (ctx.rates.food_per_person_per_hour / per_farmer) * FOOD_MARGIN
+        )
+
     if habitability < HOSTILE_THRESHOLD and policy != SURVIVAL:
         # A hostile world overrides the assignment it was given. A governor told
         # to prioritise research on a rock that cannot breathe should keep the
@@ -133,25 +172,37 @@ def _labor_for(ctx: TickContext, colony: Colony) -> dict[str, float]:
         policy = SURVIVAL
 
     weights = _POLICY_WEIGHTS[policy]
-    productive = max(0.0, 1.0 - life_support_share)
+    bills = min(0.95, life_support_share + agriculture_share)
+    productive = max(0.0, 1.0 - bills)
 
     allocation = {sector: share * productive for sector, share in weights.items()}
     allocation[LIFE_SUPPORT] = life_support_share
+    allocation[AGRICULTURE] = agriculture_share
     return normalize(allocation)
 
 
 def _maybe_build(ctx: TickContext, civ, colony: Colony) -> None:
-    """Queue the next structure this colony's policy wants, if it can pay.
+    """Queue the next thing this colony's policy wants, if it can pay.
 
-    One at a time: industry capacity is split across active projects, so
-    queueing everything at once would leave a colony with five half-built
-    structures and no finished ones.
+    Industries are deepened as readily as they are started: a governor walks its
+    build order and takes the first entry it can afford the *next level* of. On a
+    young colony that means founding new industries; on a developed one it means
+    growing the ones that matter to its policy, which is the same decision a
+    player makes and the same one the economy prices.
+
+    One at a time: industry capacity is split across active projects, so queueing
+    everything at once would leave a colony with five half-built things and no
+    finished ones.
     """
-    if len(colony.buildings) >= colony.world.slots:
+    if levels_in_use(colony.buildings) >= max_total_levels(
+        colony.population, colony.world.land_area_km2
+    ):
+        # Out of people or out of ground. Either way the colony has to grow
+        # before it can develop further, and there is nothing to queue.
         return
 
     policy = colony.governor_policy if colony.governor_policy in POLICIES else BALANCED
-    existing = {building.kind for building in colony.buildings}
+    existing = {building.kind: building.level for building in colony.buildings}
 
     # A hostile world builds its way out first, whatever policy it was given.
     order = _BUILD_ORDER[policy]
@@ -159,10 +210,9 @@ def _maybe_build(ctx: TickContext, civ, colony: Colony) -> None:
         order = _BUILD_ORDER[SURVIVAL] + order
 
     for kind in order:
-        if kind in existing:
-            continue
         spec = BUILDING_TYPES_BY_KIND[kind]
-        if not can_afford(colony.stockpile, spec.cost):
+        level = existing.get(kind, 0) + 1
+        if not can_afford(colony.stockpile, cost_of_level(spec.cost, level)):
             # Cannot pay for this one yet. Stop rather than skipping ahead --
             # saving up for the thing the policy wants most beats always
             # building the cheapest thing available.
@@ -170,8 +220,9 @@ def _maybe_build(ctx: TickContext, civ, colony: Colony) -> None:
         intents.build_structure(ctx.session, civ, colony.id, kind)
         ctx.log(
             "governor_building",
-            f"Governor at {colony.name} began a {spec.name}",
+            f"Governor at {colony.name} began "
+            + (f"a {spec.name}" if level == 1 else f"{spec.name} level {level}"),
             civ_id=civ.id,
-            payload={"colony_id": colony.id, "kind": kind},
+            payload={"colony_id": colony.id, "kind": kind, "level": level},
         )
         return

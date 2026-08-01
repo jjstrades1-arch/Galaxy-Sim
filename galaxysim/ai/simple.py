@@ -22,13 +22,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from galaxysim.colony.expedition import Loadout
-from galaxysim.materials import FLEET_COST_PER_STRENGTH, can_afford
+from galaxysim.materials import (
+    FERTILISER,
+    FLEET_COST_PER_STRENGTH,
+    FOOD,
+    FREIGHTER_COST_PER_CAPACITY,
+    WATER,
+    can_afford,
+)
 from galaxysim.core.seeds import rng_for
 from galaxysim.core.space import distance
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION
 from galaxysim.engine import intents
 from galaxysim.engine.resolvers import governor, queries
 from galaxysim.engine.resolvers.production import colony_effects
+from galaxysim.worldgen.serialize import has_surface_water
 from galaxysim.model.entities import (
     Civ,
     Colony,
@@ -43,14 +51,33 @@ from galaxysim.model.entities import (
 
 #: Strength the AI builds in one go, with a colony pod attached so the new fleet
 #: can expand rather than only fight.
+#: Colonists a landing carries, and the stores that keep them alive while a
+#: supply line is arranged. Real people and real tonnes: fifty thousand settlers
+#: drink fifty tonnes of water an hour on a world that supplies none, so a month
+#: of independence is tens of thousands of tonnes.
+SETTLERS = 50_000.0
+STORES_FOR_A_MONTH = 40_000.0
+
+#: What a standing route carries to a colony that cannot supply itself. Sized
+#: against what the settlers actually consume rather than what the freighter
+#: could hold, so the route tops the outpost up rather than burying it.
+ROUTE_MANIFEST = {WATER: 12_000.0, FOOD: 1_500.0, FERTILISER: 500.0}
+
 BUILD_STRENGTH = 2.0
 BUILD_RESERVE = 2.0  # only build if it can afford this many such fleets
 
-#: Fleet strength the AI is willing to support per colony. Fleets cost upkeep
-#: every hour, so an unbounded navy bankrupts its own economy and then deserts.
-#: The first pacing run had the AI sitting on 39 fleets it had no use for; this
-#: keeps its military tied to the economy actually paying for it.
-MAX_STRENGTH_PER_COLONY = 4.0
+#: A freighter is a hull built with almost no weapons and a great deal of hold.
+FREIGHTER_STRENGTH = 0.5
+#: Manifests of slack in the hold, so one ship can run a route without the
+#: destination drinking the delivery faster than the round trip.
+FREIGHTER_TRIPS_OF_SLACK = 2.0
+
+#: Fleet strength the AI supports per *billion* people it governs. Fleets cost
+#: upkeep every hour, so an unbounded navy bankrupts its own economy and then
+#: deserts -- and a fixed cap per colony stopped meaning anything once a colony
+#: held billions rather than a handful. Tying it to population keeps the AI's
+#: military proportional to the economy paying for it at any scale.
+MAX_STRENGTH_PER_BILLION_POP = 4.0
 
 
 def take_all_turns(session: Session, universe: Universe) -> int:
@@ -81,6 +108,7 @@ def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
 
     _set_policies(session, civ)
     _maybe_expand(session, universe, civ, pending)
+    _maybe_supply(session, universe, civ, pending)
     _maybe_build(session, civ, pending, rng)
 
 
@@ -98,7 +126,7 @@ def _set_policies(session: Session, civ: Civ) -> None:
     for index, colony in enumerate(colonies):
         if not colony.is_governed:
             continue
-        if colony.world.habitability < 0.5:
+        if colony.world.habitability < 0.4:
             policy = governor.SURVIVAL
         elif index == 0:
             # The capital carries the war effort and the shipyard.
@@ -152,16 +180,127 @@ def _loadout_for(world) -> Loadout:
     """Size an expedition to the world it is going to.
 
     The AI reads hostility the way the pricing model intends: it does not pay a
-    surcharge for a hard world, it packs more stores. A garden world gets a
-    light landing; a bare rock gets enough air to last while a supply line is
+    surcharge for a hard world, it packs more stores. A garden world gets a light
+    landing; a bare rock gets a month of independence while a supply line is
     arranged.
     """
     hostility = 1.0 - world.habitability
     if hostility <= 0.2:
-        return Loadout(colonists=3.0, equipment=4.0, stores=20.0)
+        return Loadout(colonists=SETTLERS, equipment=4.0, stores=STORES_FOR_A_MONTH * 0.25)
     if hostility <= 0.6:
-        return Loadout(colonists=3.0, equipment=4.0, stores=60.0)
-    return Loadout(colonists=2.0, equipment=3.0, stores=150.0)
+        return Loadout(colonists=SETTLERS, equipment=4.0, stores=STORES_FOR_A_MONTH * 0.75)
+    return Loadout(colonists=SETTLERS, equipment=5.0, stores=STORES_FOR_A_MONTH * 2.0)
+
+
+def _maybe_supply(
+    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
+) -> None:
+    """Keep a standing route running to every colony that cannot feed itself.
+
+    This is the piece that makes AI expansion mean anything. Almost every world
+    worth settling is a dead one, and a dead one lives or dies by its supply
+    line -- so an AI that founds colonies without routing to them is not
+    expanding, it is running a slow way to kill fifty thousand colonists at a
+    time, which is exactly what it used to do.
+
+    Ordinary orders through the ordinary API: same route intent a player issues,
+    same throughput limits, no privileged access.
+    """
+    colonies = queries.colonies_of(session, civ.id)
+    if len(colonies) < 2:
+        return
+
+    # The capital -- biggest population -- is the only place with the surplus to
+    # supply anybody.
+    source = max(colonies, key=lambda c: c.population)
+    routed = {
+        intent.payload.get("dest_colony_id")
+        for intent in _all_routes(session, universe, civ)
+    }
+
+    for colony in colonies:
+        if colony.id == source.id or colony.id in routed:
+            continue
+        if has_surface_water(colony.world.survey or {}):
+            continue  # it draws its own water; it can wait
+        fleet = _idle_freighter(session, civ)
+        if fleet is None:
+            _order_freighter(session, civ, source, pending)
+            return
+        intents.supply_route(session, civ, fleet.id, source.id, colony.id, dict(ROUTE_MANIFEST))
+        return
+
+
+def _order_freighter(
+    session: Session, civ: Civ, yard: Colony, pending: dict[str, list[Intent]]
+) -> None:
+    """Build a hull that is mostly hold.
+
+    A warship's incidental hold is forty tonnes; an outpost drinks that in an
+    hour. Supplying anything at real scale needs a ship built for it, and hold
+    is priced per tonne, so this is a real purchase rather than a free one.
+    """
+    if any(
+        intent.payload.get("cargo_capacity") for intent in pending.get(IntentKind.BUILD_FLEET.value, [])
+    ):
+        return
+    if FLEET_CONSTRUCTION not in colony_effects(yard).grants:
+        return
+
+    hold = sum(ROUTE_MANIFEST.values()) * FREIGHTER_TRIPS_OF_SLACK
+    cost = {r: a * FREIGHTER_STRENGTH for r, a in FLEET_COST_PER_STRENGTH.items()}
+    for resource, per_tonne in FREIGHTER_COST_PER_CAPACITY.items():
+        cost[resource] = cost.get(resource, 0.0) + per_tonne * hold
+    if not can_afford(yard.stockpile, cost):
+        return
+
+    intents.build_fleet(
+        session,
+        civ,
+        yard.id,
+        FREIGHTER_STRENGTH,
+        cargo_capacity=hold,
+        name=f"{civ.name} Freighter",
+    )
+
+
+def _all_routes(session: Session, universe: Universe, civ: Civ) -> list[Intent]:
+    return [
+        intent
+        for intent in queries.active_intents(
+            session, universe.id, IntentKind.SUPPLY_ROUTE.value
+        )
+        if intent.civ_id == civ.id
+    ]
+
+
+def _idle_freighter(session: Session, civ: Civ) -> Fleet | None:
+    """A ship with a *useful* hold and nothing better to do.
+
+    "Has any hold at all" is not the test: every warship carries forty tonnes
+    incidentally, which an outpost drinks in an hour. Accepting one of those as
+    a freighter is how the AI ended up running supply routes that delivered less
+    than the destination consumed in transit -- routes that looked busy in the
+    log and starved the colony anyway.
+    """
+    busy = {intent.payload.get("fleet_id") for intent in intents.pending(session, civ)}
+    busy |= {
+        intent.payload.get("fleet_id")
+        for intent in session.scalars(
+            select(Intent).where(
+                Intent.civ_id == civ.id,
+                Intent.kind == IntentKind.SUPPLY_ROUTE.value,
+                Intent.status == IntentStatus.IN_PROGRESS.value,
+            )
+        )
+    }
+    wanted = sum(ROUTE_MANIFEST.values())
+    for fleet in session.scalars(
+        select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
+    ):
+        if fleet.cargo_capacity >= wanted and not fleet.in_transit and fleet.id not in busy:
+            return fleet
+    return None
 
 
 def _idle_colony_fleet(session: Session, civ: Civ) -> Fleet | None:
@@ -191,12 +330,15 @@ def _nearest_settleable_world(
         if best is not None and span >= best[0]:
             continue
         for world in sorted(system.worlds, key=lambda w: w.id):
-            # Habitable worlds only. Uninhabitable ones are settleable now, but
-            # they survive on a supply route, and this AI does not yet run any --
-            # it would simply be founding colonies to watch them suffocate.
-            if world.habitability > 0 and world.colony is None:
-                best = (span, world, system)
-                break
+            if world.colony is not None:
+                continue
+            # Any unclaimed world, including dead ones. That is not recklessness:
+            # genuinely habitable worlds are about one in six thousand and every
+            # civ's homeworld is one of them, so in any ordinary neighbourhood
+            # *every* remaining world is a rock. Expanding at all means settling
+            # rocks and keeping them supplied -- see :func:`_maybe_supply`.
+            best = (span, world, system)
+            break
 
     return (best[1], best[2]) if best else None
 
@@ -236,7 +378,8 @@ def _maybe_build(session: Session, civ: Civ, pending: dict[str, list[Intent]], r
         f.strength
         for f in session.scalars(select(Fleet).where(Fleet.civ_id == civ.id))
     )
-    if strength + BUILD_STRENGTH > len(colonies) * MAX_STRENGTH_PER_COLONY:
+    people = sum(c.population for c in colonies)
+    if strength + BUILD_STRENGTH > (people / 1e9) * MAX_STRENGTH_PER_BILLION_POP:
         return
 
     intents.build_fleet(

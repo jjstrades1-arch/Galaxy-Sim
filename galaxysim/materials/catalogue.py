@@ -141,22 +141,41 @@ CONSUMABLES: tuple[str, ...] = tuple(
     k for k, m in MATERIALS.items() if m.material_class is CONSUMABLE
 )
 
-#: What a civilization's homeworld opens with. A developed world of billions has
-#: real industrial stock -- enough to mount several expeditions and build a fleet
-#: without waiting on production.
-STARTING_STOCKPILE: dict[str, float] = {
-    STEEL: 4000.0,
-    ALLOYS: 1500.0,
-    ELECTRONICS: 800.0,
-    POLYMERS: 900.0,
-    CONSTRUCTION: 3000.0,
-    FUEL: 2000.0,
-    FOOD: 5000.0,
-    WATER: 5000.0,
-    IRON: 2000.0,
-    SILICON: 1500.0,
-    WATER_ICE: 1200.0,
+#: The shape of a developed civilization's warehouses, as a share of what it
+#: produces in an hour. Not absolute tonnages: a homeworld of nine billion and
+#: one of one billion should both open with *the same amount of history behind
+#: them*, and pinning that to production means the opening survives the next
+#: time the rates move.
+STARTING_STOCKPILE_HOURS: dict[str, float] = {
+    STEEL: 40.0,
+    ALLOYS: 15.0,
+    ELECTRONICS: 8.0,
+    POLYMERS: 9.0,
+    CERAMICS: 9.0,
+    CONSTRUCTION: 30.0,
+    FUEL: 20.0,
+    FOOD: 50.0,
+    WATER: 50.0,
+    IRON: 20.0,
+    SILICON: 15.0,
+    WATER_ICE: 12.0,
 }
+
+
+def starting_stockpile(hourly_output: float) -> dict[str, float]:
+    """Opening warehouses for a civ producing ``hourly_output`` tonnes an hour.
+
+    A species with lightspeed travel is not a landing party -- it has been
+    industrial for a long time and has the stock to mount several expeditions
+    and build a fleet without waiting on production. What it does *not* have is
+    a reserve unrelated to its own size.
+    """
+    return {key: hours * hourly_output for key, hours in STARTING_STOCKPILE_HOURS.items()}
+
+
+#: Convenience for tests and tooling that want a plausible bag without computing
+#: a civ's output first. One tonne an hour is a village; scale it as needed.
+STARTING_STOCKPILE: dict[str, float] = starting_stockpile(1.0)
 
 
 def material(key: str) -> Material:

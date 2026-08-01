@@ -211,6 +211,45 @@ def supply_route(
     )
 
 
+def migrate(
+    session: Session,
+    civ: Civ,
+    fleet_id: int,
+    origin_colony_id: int,
+    dest_colony_id: int,
+    people: float,
+) -> Intent:
+    """Move a population from one of your colonies to another.
+
+    The strategic act the design is built around. Natural growth already carries
+    a habitable colony to maturity on its own, so nobody is *forced* to run
+    convoys -- but a garden world with room and no people, and a capital with
+    people and no room, is a situation only shipping fixes. Doing it is a real
+    advantage, which is the point.
+
+    One trip, not a standing route: moving people is a decision about where a
+    civilization's weight should sit, and that is not a thing you set up once and
+    forget. It also keeps the freighter honest -- people occupy the same hold as
+    ore, so a migration run is a cargo run you did not make.
+    """
+    if origin_colony_id == dest_colony_id:
+        raise ValueError("migration needs two different colonies")
+    if people <= 0:
+        raise ValueError("migration needs people")
+    return _queue(
+        session,
+        civ,
+        IntentKind.MIGRATE,
+        {
+            "fleet_id": fleet_id,
+            "origin_colony_id": origin_colony_id,
+            "dest_colony_id": dest_colony_id,
+            "people": float(people),
+            "leg": "boarding",
+        },
+    )
+
+
 def attack(session: Session, civ: Civ, target_civ_id: int) -> Intent:
     """Declare standing hostility toward another civilization.
 
