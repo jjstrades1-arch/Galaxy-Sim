@@ -82,7 +82,12 @@ def test_cargo_moves_from_one_colony_to_another():
         civ = civ_by_name(session, universe_id, "Terrans")
         home = home_colony(session, civ)
         home.stockpile = {VOLATILES: 300.0}
+        # Silence production at both ends so this measures the transfer itself.
+        # With geology-derived yields a rich world can out-produce the cargo
+        # being moved, which would drown the thing under test.
+        home.world.resource_yield = {}
         outpost = _sibling_outpost(session, civ, home)
+        outpost.world.resource_yield = {}
         fleet = _freighter(session, civ, home)
         intents.transfer_cargo(session, civ, fleet.id, home.id, {VOLATILES: 100.0}, loading=True)
         fleet_id, outpost_id, home_id = fleet.id, outpost.id, home.id
@@ -93,10 +98,13 @@ def test_cargo_moves_from_one_colony_to_another():
     with open_session(engine) as session:
         fleet = session.get(Fleet, fleet_id)
         assert fleet.cargo.get(VOLATILES, 0.0) == pytest.approx(100.0)
-        # Not an exact 200: the capital keeps producing while the hold fills.
-        # What matters is that the goods left the ground rather than being
-        # duplicated into the hold.
-        assert session.get(Colony, home_id).stockpile[VOLATILES] < 300.0
+        # No duplication: the hundred aboard came off the ground. Not exactly
+        # 200 left, because the colony also breathes some of its own volatiles
+        # while the hold fills -- so the invariant is that at least the cargo
+        # left, never that nothing else moved.
+        remaining = session.get(Colony, home_id).stockpile[VOLATILES]
+        assert remaining <= 200.0
+        assert remaining > 150.0, "only life support should have taken the rest"
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")

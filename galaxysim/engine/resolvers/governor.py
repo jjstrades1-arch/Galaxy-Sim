@@ -73,7 +73,12 @@ _BUILD_ORDER: dict[str, tuple[str, ...]] = {
 
 #: Below this effective habitability a governor prioritises staying alive
 #: regardless of the policy it was given.
-HOSTILE_THRESHOLD = 0.5
+#:
+#: Calibrated against *derived* habitability, which runs lower and means more
+#: than the rolled number it replaced: a breathable, watered, shielded world
+#: scores around 0.6, and a genuinely marginal one well under 0.3. Leaving this
+#: at 0.5 put ordinary homeworlds permanently into survival mode.
+HOSTILE_THRESHOLD = 0.3
 
 #: Safety factor on the life-support labor a governor reserves. Above 1.0 so a
 #: governed colony keeps a margin rather than running exactly at the line, where

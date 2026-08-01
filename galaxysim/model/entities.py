@@ -215,8 +215,22 @@ class World(Base):
     world_type: Mapped[str] = mapped_column(String(40))
     orbit_index: Mapped[int] = mapped_column(Integer, default=0)
 
-    #: 0.0-1.0. Zero means uninhabitable; colonization of such a world fails.
+    #: 0.0-1.0, and **derived** rather than rolled: a conclusion drawn from
+    #: atmosphere, temperature, gravity, radiation shielding, water and
+    #: biosphere. See :func:`galaxysim.worldgen.survey.derive_habitability`.
     habitability: Mapped[float] = mapped_column(Float, default=0.0)
+    #: The world's full physical description -- star, orbit, body, atmosphere,
+    #: climate, hydrosphere, biosphere, geology, moons. Stored as one document
+    #: because almost all of it is read-only after generation and displayed
+    #: rather than queried. Terraforming writes back through it.
+    #: See :mod:`galaxysim.worldgen.serialize`.
+    survey: Mapped[dict] = mapped_column(JSONDict, default=dict)
+    #: Usable surface in square kilometres, from radius and land fraction.
+    #: Real area, so a superearth genuinely holds more than a moon.
+    land_area_km2: Mapped[float] = mapped_column(Float, default=0.0)
+    #: How many people this world could ultimately support, from real land area
+    #: at a real population density scaled by how pleasant it is.
+    carrying_capacity: Mapped[float] = mapped_column(Float, default=0.0)
     #: Resource type -> per-hour yield multiplier at this world.
     resource_yield: Mapped[dict] = mapped_column(JSONDict, default=dict)
     #: 0.0-1.0 environmental danger, applied against colony growth.

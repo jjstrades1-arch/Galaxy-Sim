@@ -45,6 +45,9 @@ from galaxysim.engine.rates import DEFAULT_RATES, Cadence
 from galaxysim.engine.resolvers import queries
 from galaxysim.engine.resolvers.governor import POLICIES
 from galaxysim.engine.resolvers.production import colony_effects, effective_habitability
+from galaxysim.cli.survey_view import format_count
+from galaxysim.cli.survey_view import render as render_survey
+from galaxysim.worldgen.serialize import survey_from_json
 from galaxysim.engine.tick import resolve_tick
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import (
@@ -360,6 +363,36 @@ def colonize(
             "[green]Ordered.[/green] The expedition is charged to your nearest "
             "colony when it lands, and waits until the fleet arrives."
         )
+
+
+@app.command()
+def planet(world_id: int = typer.Argument(..., help="World to survey.")) -> None:
+    """Full planetary survey: star, orbit, atmosphere, climate, geology, life.
+
+    Most of what this prints does not drive a mechanic. It is there because a
+    world should be worth reading.
+    """
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        world = session.get(World, world_id)
+        if world is None or world.system.universe_id != universe.id:
+            console.print("[red]No such world.[/red]")
+            raise typer.Exit(1)
+        if not world.survey:
+            console.print("[red]That world has no survey data.[/red]")
+            raise typer.Exit(1)
+
+        render_survey(
+            console,
+            survey_from_json(world.survey),
+            world.name,
+            world.system.discovered_tick,
+        )
+        if world.colony is not None:
+            console.print(
+                f"[dim]Settled: {world.colony.name}, "
+                f"population {format_count(world.colony.population)}[/dim]"
+            )
 
 
 @app.command()

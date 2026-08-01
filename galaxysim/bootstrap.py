@@ -7,11 +7,16 @@ a row when someone actually reaches it and the galaxy stops having a size at
 all. The homeworld path stays, because a civ's starting system is by definition
 visited.
 
-Fair starts are enforced structurally, not by rerolling: a homeworld is always
-rolled from :data:`HABITABLE_TYPES`, and every civ is seated on its own system.
+Fair starts are enforced structurally: every civ is seated on its own system,
+and its homeworld is searched for in the star's habitable zone until the physics
+produces somewhere liveable. Genuinely habitable worlds are rare in this galaxy,
+so a starting world is guaranteed -- but by generating one the model would
+really produce, never by writing a habitability number over an unsuitable rock.
 """
 
 from __future__ import annotations
+
+import math
 
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
@@ -32,7 +37,13 @@ from galaxysim.model.entities import (
     UniverseMode,
     World,
 )
-from galaxysim.worldgen.types import HABITABLE_TYPES, roll_world, weighted_world_type
+from galaxysim.worldgen.serialize import (
+    legacy_resource_yield,
+    survey_from_json,
+    survey_to_json,
+)
+from galaxysim.worldgen.star import Star, roll_star
+from galaxysim.worldgen.survey import plausible_mass, plausible_orbits, survey_world
 
 #: Radius of the eagerly generated starting region, in light-years.
 STARTING_REGION_RADIUS_LY = 40.0
@@ -87,6 +98,7 @@ def seed_starting_region(session: Session, universe: Universe, system_count: int
         radius = STARTING_REGION_RADIUS_LY * (rng.random() ** (1 / 3))
         position = _point_on_sphere(rng, radius)
 
+        star = roll_star(rng)
         system = StarSystem(
             universe_id=universe.id,
             sector_i=int(position.x // 10),
@@ -97,27 +109,53 @@ def seed_starting_region(session: Session, universe: Universe, system_count: int
             x=round(position.x, 6),
             y=round(position.y, 6),
             z=round(position.z, 6),
-            star_class=rng.choice(("O", "B", "A", "F", "G", "K", "M", "M", "M")),
+            star_class=star.designation,
             discovered_tick=0,
         )
         session.add(system)
         session.flush()
 
-        for orbit in range(rng.randint(1, 5)):
-            world_rng = rng_for(universe.seed, "world", index, orbit)
-            rolled = weighted_world_type(world_rng).roll(world_rng)
-            session.add(
-                World(
-                    system_id=system.id,
-                    name=world_name(world_rng, system.name, orbit),
-                    world_type=rolled.world_type,
-                    orbit_index=orbit,
-                    habitability=rolled.habitability,
-                    resource_yield=rolled.resource_yield,
-                    hazard=rolled.hazard,
-                    slots=rolled.slots,
-                )
+        # Orbits are laid out for the system as a whole, not per world, because
+        # planets in a real system are spaced against each other.
+        distances = plausible_orbits(rng, star, rng.randint(2, 7))
+        for orbit_index, distance_au in enumerate(distances):
+            world_rng = rng_for(universe.seed, "world", index, orbit_index)
+            survey = survey_world(
+                world_rng, star, distance_au, plausible_mass(world_rng, distance_au, star)
             )
+            session.add(_world_from_survey(survey, system, world_rng, orbit_index))
+
+
+def _world_from_survey(survey, system: StarSystem, rng, orbit_index: int) -> World:
+    """Persist a generated world.
+
+    The full physical description goes into the ``survey`` document; the few
+    numbers the engine queries or mutates are promoted to columns beside it.
+    """
+    return World(
+        system_id=system.id,
+        name=world_name(rng, system.name, orbit_index),
+        world_type=survey.world_class,
+        orbit_index=orbit_index,
+        habitability=survey.habitability,
+        resource_yield=legacy_resource_yield(survey),
+        # Hazard is now a consequence of the world rather than its own roll:
+        # volcanism, radiation where there is no magnetic field, and whatever
+        # the local biology does to an unadapted coloniser.
+        hazard=round(
+            min(
+                0.95,
+                0.5 * survey.body.tectonic_activity
+                + (0.0 if survey.body.is_shielded else 0.3)
+                + 0.3 * survey.biosphere.pathogen_hazard,
+            ),
+            4,
+        ),
+        slots=max(2, min(12, int(2 + math.log10(max(survey.land_area_km2, 1.0))))),
+        survey=survey_to_json(survey),
+        land_area_km2=round(survey.land_area_km2, 2),
+        carrying_capacity=round(survey.carrying_capacity, 2),
+    )
 
 
 def add_civ(
@@ -220,25 +258,109 @@ def _claim_unoccupied_system(session: Session, universe: Universe) -> StarSystem
     )
 
 
-def _prepare_homeworld(session: Session, system: StarSystem, rng) -> World:
-    """Return a habitable world in ``system``, upgrading one if none qualifies.
+#: Habitability a starting world must reach. Genuinely habitable worlds are
+#: rare in this galaxy by design, so a civ's own homeworld is guaranteed rather
+#: than left to chance -- nobody should open the game unable to grow.
+HOMEWORLD_MIN_HABITABILITY = 0.55
 
-    Nobody should open the game unable to grow, and rerolling the whole system
-    would be a lot of churn to fix one stat -- so if the system has nothing
-    habitable, the best candidate is re-rolled as a habitable type.
+
+def _life_bearing_star(rng) -> "Star":
+    """A star of the kind civilizations actually arise around.
+
+    Not a cheat so much as the anthropic principle applied directly: a species
+    exists to play this game because its homeworld had breathable air, which
+    required photosynthetic life, which required billions of stable years. That
+    rules out most of the galaxy's stars -- the three-quarters that are M dwarfs
+    tidally lock their habitable zones, and young stars have not had time.
+
+    So a starting system gets a mature F, G or K star. Every *other* system in
+    the galaxy still rolls on the real distribution.
     """
-    habitable = [w for w in sorted(system.worlds, key=lambda w: w.id) if w.habitability > 0]
-    if habitable:
-        return max(habitable, key=lambda w: (w.habitability, -w.id))
+    while True:
+        star = roll_star(rng)
+        if star.spectral_class not in ("F", "G", "K") or star.age_gyr < 3.5:
+            continue
+        # Bright enough that its habitable zone is far enough out to escape
+        # tidal locking. A dim K8 dwarf passes the class test and still puts its
+        # habitable zone at a quarter of an AU, where worlds lock into a
+        # permanent day face and a frozen night face -- which is exactly the
+        # objection astronomers raise to late-K and M dwarf habitability.
+        if star.luminosity_solar >= 0.2:
+            return star
 
-    candidate = sorted(system.worlds, key=lambda w: w.id)[0]
-    rolled = roll_world(rng, rng.choice(HABITABLE_TYPES))
-    candidate.world_type = rolled.world_type
-    candidate.habitability = rolled.habitability
-    candidate.hazard = rolled.hazard
-    candidate.resource_yield = rolled.resource_yield
+
+def _prepare_homeworld(session: Session, system: StarSystem, rng) -> World:
+    """Give ``system`` a life-bearing star and find a world to start on.
+
+    The guarantee is implemented by *searching for a world the generator would
+    genuinely produce*, never by writing a habitability number over an
+    unsuitable rock. A homeworld's survey therefore reads like any other
+    world's, and everything on it is true.
+
+    A breathable atmosphere is the hard requirement, because habitability is
+    capped low without one -- and a breathable atmosphere means an oxygenating
+    biosphere, which means the world has native life. That is the right story
+    for a species' place of origin.
+    """
+    # Derive the search seed from the caller's RNG, which descends from the
+    # universe seed. Keying on system.id alone would give every universe the
+    # same homeworld for the same row id.
+    base = rng.getrandbits(48)
+
+    star = _life_bearing_star(rng)
+    system.star_class = star.designation
+    inner, outer = star.habitable_zone
+
+    ordered = sorted(system.worlds, key=lambda w: w.id)
+    home_index = ordered[0].orbit_index if ordered else 0
+
+    # Regenerate the whole system around its new star, so the other worlds stay
+    # consistent with the sun they orbit.
+    distances = plausible_orbits(rng, star, max(len(ordered), 3))
+    for world, distance in zip(ordered, distances):
+        world_rng = rng_for(base, "reseed", world.orbit_index)
+        survey = survey_world(
+            world_rng, star, distance, plausible_mass(world_rng, distance, star)
+        )
+        _apply_survey(world, _world_from_survey(survey, system, world_rng, world.orbit_index))
+
+    # Now search the habitable zone for somewhere worth being born.
+    # Ranked on breathability first, then habitability. Ranking on habitability
+    # alone loses a breathable world to a marginally prettier unbreathable one,
+    # and breathable air is the thing that actually makes it a homeworld.
+    chosen = None
+    chosen_rank = (-1, -1.0)
+    for attempt in range(3000):
+        attempt_rng = rng_for(base, "homeworld", attempt)
+        distance = attempt_rng.uniform(inner, outer)
+        mass = attempt_rng.uniform(0.75, 1.5)
+        survey = survey_world(attempt_rng, star, distance, mass)
+
+        rank = (1 if survey.atmosphere.is_breathable else 0, survey.habitability)
+        if rank > chosen_rank:
+            chosen, chosen_rank = survey, rank
+        if rank[0] and survey.habitability >= HOMEWORLD_MIN_HABITABILITY:
+            break
+
+    assert chosen is not None
+    homeworld = ordered[0] if ordered else None
+    assert homeworld is not None, "a system must have worlds before it can be settled"
+    _apply_survey(homeworld, _world_from_survey(chosen, system, rng, home_index))
     session.flush()
-    return candidate
+    return homeworld
+
+
+def _apply_survey(world: World, generated: World) -> None:
+    """Copy a freshly generated world's fields onto an existing row."""
+    world.name = generated.name
+    world.world_type = generated.world_type
+    world.habitability = generated.habitability
+    world.resource_yield = generated.resource_yield
+    world.hazard = generated.hazard
+    world.slots = generated.slots
+    world.survey = generated.survey
+    world.land_area_km2 = generated.land_area_km2
+    world.carrying_capacity = generated.carrying_capacity
 
 
 def _point_on_sphere(rng, radius: float) -> Vec3:

@@ -19,6 +19,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/galaxysim new Frontier --ai 3        # solo game, 3 AI opponents
 .venv/bin/galaxysim status                     # your civ
 .venv/bin/galaxysim systems                    # what's nearby
+.venv/bin/galaxysim planet 12                  # full planetary survey
 .venv/bin/galaxysim colony 1                   # one colony in detail
 .venv/bin/galaxysim labor 1 --extraction 3 --industry 2 --life-support 1
 .venv/bin/galaxysim structure                  # list buildings
@@ -37,6 +38,63 @@ charts how fast they grow. It is the pacing check — if a civ reads as "big"
 inside a few simulated days, the cost curves need steepening.
 
 Saves default to `./galaxysim.db`; set `GALAXYSIM_DB` to move it.
+
+## Planets are derived, not rolled
+
+A world is not a row of independently rolled stats. It is generated in causal
+order, and every consequence follows from the physics:
+
+```
+orbit → body → outgassing → [temperature ⇄ atmosphere] → hydrosphere
+      → biosphere → free oxygen → final temperature → habitability
+```
+
+Only a few things are actually rolled — where a planet orbits, its mass, its
+rotation and tilt, how much gas it outgassed. Everything else is computed. So
+you will never see an airless world with oceans, liquid water at 200 K, or a
+small hot rock holding hydrogen. Not because a rule forbids it, but because the
+physics never produces it. `tests/test_planets.py` generates twelve thousand
+worlds and checks exactly that.
+
+The model is validated against the only three planets anyone has measured:
+
+| | model | reality |
+|---|---|---|
+| Earth surface temperature | 287 K | 288 K |
+| Mars surface temperature | 215 K | 210–218 K |
+| Venus surface temperature | 727 K | 737 K |
+| Sun-analogue habitable zone | 0.95–1.37 AU | 0.95–1.37 AU |
+| Sun-analogue frost line | 4.84 AU | ~4.85 AU |
+| Earth CO₂ after weathering | 0.04% | 0.04% |
+
+Some of the mechanisms worth knowing about, because they produce most of the
+interesting behaviour:
+
+- **Atmospheric retention is a physics check**, not a roll. A world keeps a gas
+  if its escape velocity comfortably beats that gas's thermal velocity at that
+  temperature — which is why Earth keeps nitrogen and loses hydrogen, and why
+  tiny frigid Titan keeps a thick atmosphere.
+- **The carbonate–silicate cycle is why Earth isn't Venus.** Rain weathers CO₂
+  into carbonate rock, faster when hotter — a negative feedback that regulates
+  temperature. Lose your oceans and you lose the thermostat, and the CO₂ runs
+  away.
+- **Free oxygen is a biosignature.** It is too reactive to persist without life
+  replenishing it, so in this model photosynthesis *causes* the oxygen rather
+  than the oxygen being rolled and life inferred.
+- **Tectonics concentrates ore.** Bulk abundance is not mineable ore —
+  hydrothermal circulation is what gathers a diffuse element into a seam. A dead
+  world may hold as much copper as Earth with none of it usable.
+- **Three quarters of stars are red dwarfs**, on the real distribution, and
+  their habitable zones sit close enough in to tidally lock — the actual
+  objection to red-dwarf habitability, falling out of the arithmetic.
+
+Habitability is the *last* thing computed and never an input to anything above
+it. `galaxysim planet <id>` prints the full survey and shows the score as a
+conclusion with its reasoning attached.
+
+Breathable worlds are about 1 in 6,000. Finding one is an event; a civ's own
+homeworld is guaranteed by searching a life-bearing star's habitable zone for a
+world the generator would genuinely produce — never by overwriting a number.
 
 ## The colony
 
