@@ -232,6 +232,26 @@ class World(Base):
     #: rather than queried. Terraforming writes back through it.
     #: See :mod:`galaxysim.worldgen.serialize`.
     survey: Mapped[dict] = mapped_column(JSONDict, default=dict)
+    # --- promoted out of the survey -------------------------------------
+    #
+    # These are pure functions of ``survey`` and change only when terraforming
+    # runs. They live as columns because the tick loop reads them for every
+    # colony every tick, and the survey is a large document: decoding it a
+    # hundred times a tick to ask three small questions was the single biggest
+    # cost in the engine once the query storm was dealt with.
+    #
+    # Written by :func:`galaxysim.worldgen.serialize.promoted_fields` at
+    # generation and again whenever a terraforming project changes the world.
+
+    #: Material -> tonnes per worker-hour. What this crust actually gives up.
+    extraction: Mapped[dict] = mapped_column(JSONDict, default=dict)
+    #: Whether the world supplies its colonists' water, from the phase diagram.
+    surface_water: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: How productive a farmer is here, relative to Earth's best.
+    farm_quality: Mapped[float] = mapped_column(Float, default=0.0)
+    #: True where no native ecology does the soil chemistry for free.
+    needs_fertiliser: Mapped[bool] = mapped_column(Boolean, default=True)
+
     #: Usable surface in square kilometres, from radius and land fraction.
     #: Real area, so a superearth genuinely holds more than a moon.
     land_area_km2: Mapped[float] = mapped_column(Float, default=0.0)

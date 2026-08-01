@@ -67,6 +67,25 @@ def survey_from_json(data: dict) -> Survey:
     )
 
 
+def promoted_fields(survey: Survey) -> dict:
+    """The handful of derived facts the tick loop reads for every colony.
+
+    Computed once here and stored as columns on :class:`World`, because the
+    alternative is decoding the whole survey document per colony per tick to ask
+    three small questions. Recomputed whenever terraforming changes the world,
+    which is the only thing that can change the answers.
+    """
+    from galaxysim.colony.agriculture import quality, regime
+    from galaxysim.materials.extraction import extraction_rates
+
+    return {
+        "extraction": extraction_rates(survey.deposits),
+        "surface_water": bool(survey.hydrosphere.liquid_water),
+        "farm_quality": quality(survey),
+        "needs_fertiliser": regime(survey) != "open farmland",
+    }
+
+
 def has_surface_water(data: dict) -> bool:
     """Whether a world's own hydrosphere can supply a colony with water.
 

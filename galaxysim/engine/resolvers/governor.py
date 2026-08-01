@@ -106,16 +106,20 @@ LIFE_SUPPORT_MARGIN = 1.4
 
 def resolve(ctx: TickContext) -> None:
     """Let every governed colony manage itself for this tick."""
-    for civ in queries.civs(ctx.session, ctx.universe.id):
-        pending_structures = {
-            intent.payload.get("colony_id")
-            for intent in queries.active_intents(
-                ctx.session, ctx.universe.id, IntentKind.BUILD_STRUCTURE.value
-            )
-            if intent.civ_id == civ.id
-        }
+    # Both reads are universe-wide and happen once. Asking per civilization
+    # meant re-reading the whole intent table and the whole colony table once
+    # per civ, which is the same mistake production was making and costs the
+    # same thing: a tick that gets slower as the game gets bigger.
+    pending_structures = {
+        intent.payload.get("colony_id")
+        for intent in queries.active_intents(
+            ctx.session, ctx.universe.id, IntentKind.BUILD_STRUCTURE.value
+        )
+    }
+    colonies_by_civ = queries.colonies_by_civ(ctx.session, ctx.universe.id)
 
-        for colony in queries.colonies_of(ctx.session, civ.id):
+    for civ in queries.civs(ctx.session, ctx.universe.id):
+        for colony in colonies_by_civ.get(civ.id, []):
             if not colony.is_governed or colony.population <= 0:
                 continue
             colony.labor = _labor_for(ctx, colony)

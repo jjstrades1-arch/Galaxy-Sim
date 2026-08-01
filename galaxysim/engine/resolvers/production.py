@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import math
 
-from galaxysim.colony.agriculture import HYDROPONICS, quality, regime
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION, building_type
 from galaxysim.colony.industry import (
     cost_of_level,
@@ -83,11 +82,6 @@ from galaxysim.materials import (
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
 from galaxysim.model.entities import Building, Civ, Colony, Fleet, IntentKind, IntentStatus
-from galaxysim.worldgen.serialize import (
-    deposits_from_json,
-    has_surface_water,
-    survey_from_json,
-)
 
 
 #: How far a colony's warehouses can sustain a fleet, in light-years. Inside
@@ -98,18 +92,26 @@ SUPPLY_RANGE_LY = 25.0
 
 
 def resolve(ctx: TickContext) -> None:
+    # Read the world once. Every resolver below walks the same colonies and the
+    # same fleets, and asking per civilization meant re-reading and re-filtering
+    # the whole table once per civ -- which is how a tick's cost came to scale
+    # with the size of the game rather than with what happened in it.
+    colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id)
+    fleets = queries.fleets_by_civ(ctx.session, ctx.universe.id)
+
     for civ in queries.civs(ctx.session, ctx.universe.id):
-        _produce(ctx, civ)
+        _produce(ctx, civ, colonies.get(civ.id, []), fleets.get(civ.id, []))
     _start_structures(ctx)
     _start_fleets(ctx)
-    _advance_construction(ctx)
+    _advance_construction(ctx, colonies)
 
 
 # ---------------------------------------------------------------- production
 
 
-def _produce(ctx: TickContext, civ: Civ) -> None:
-    colonies = queries.colonies_of(ctx.session, civ.id)
+def _produce(
+    ctx: TickContext, civ: Civ, colonies: list[Colony], fleets: list[Fleet]
+) -> None:
     if not colonies:
         return
 
@@ -119,26 +121,38 @@ def _produce(ctx: TickContext, civ: Civ) -> None:
         effects = effects_for(ctx, colony)
         allocation = normalize(colony.labor)
 
-        _run_life_support(ctx, colony, allocation, effects)
+        # Work against a plain dict and write it back once.
+        #
+        # ``Colony.stockpile`` is a MutableDict, so *every* key assignment fires
+        # SQLAlchemy's change tracking -- weakref bookkeeping, parent lookups,
+        # the lot. A tick's refining alone touches a few dozen keys per colony,
+        # and at a hundred colonies that was seven thousand change events a tick
+        # and the single largest cost in the engine. The ORM only needs to be
+        # told once that the bag changed.
+        stock = dict(colony.stockpile)
+
+        _run_life_support(ctx, colony, stock, allocation, effects)
         if colony.population <= 0:
+            colony.stockpile = stock
             continue
 
         # Farm, then eat. A colony's standard of living is how much of what its
         # people need it actually met this hour, and that is what decides
         # whether the population grows, stalls or falls.
-        _farm(ctx, colony, allocation, effects)
-        colony.standard_of_living = _feed(ctx, colony)
+        _farm(ctx, colony, stock, allocation, effects)
+        colony.standard_of_living = _feed(ctx, colony, stock)
         _grow_population(ctx, colony, effects)
-        _extract(ctx, colony, allocation, effects)
-        _refine(ctx, colony)
-        research_gain += _research_output(ctx, colony, allocation, effects)
+        _extract(ctx, colony, stock, allocation, effects)
+        _refine(ctx, colony, stock)
+        research_gain += _research_output(ctx, colony, stock, allocation, effects)
+        colony.stockpile = stock
 
     # Knowledge is the one thing that is civ-wide: a discovery is known
     # everywhere the moment it is made. Note what is *not* civ-wide: the
     # materials that bought it, which came out of specific warehouses on
     # specific worlds.
     civ.research_progress += research_gain
-    _charge_fleet_upkeep(ctx, civ)
+    _charge_fleet_upkeep(ctx, civ, colonies, fleets)
 
 
 def effects_for(ctx: TickContext, colony: Colony) -> "ColonyEffects":
@@ -244,7 +258,11 @@ def effective_habitability(colony: Colony, effects: ColonyEffects) -> float:
 
 
 def _run_life_support(
-    ctx: TickContext, colony: Colony, allocation: dict[str, float], effects: ColonyEffects
+    ctx: TickContext,
+    colony: Colony,
+    stock: dict[str, float],
+    allocation: dict[str, float],
+    effects: ColonyEffects,
 ) -> None:
     """Keep the colony breathing, or start killing it.
 
@@ -288,15 +306,15 @@ def _run_life_support(
     # far better place to be than a rich dry one.
     per_unit = (
         0.0
-        if has_surface_water(colony.world.survey or {})
+        if colony.world.surface_water
         else ctx.rates.water_per_life_support * (1.0 - effects.life_support_recycling)
     )
-    available = colony.stockpile.get(WATER, 0.0)
+    available = stock.get(WATER, 0.0)
     supply_capacity = (available / per_unit) if per_unit > 0 else need
 
     delivered = min(need, labor_capacity, supply_capacity)
     if delivered > 0 and per_unit > 0:
-        colony.stockpile[WATER] = max(0.0, available - delivered * per_unit)
+        stock[WATER] = max(0.0, available - delivered * per_unit)
 
     deficit = need - delivered
     if deficit <= 1e-12:
@@ -324,7 +342,11 @@ def _run_life_support(
 
 
 def _farm(
-    ctx: TickContext, colony: Colony, allocation: dict[str, float], effects: ColonyEffects
+    ctx: TickContext,
+    colony: Colony,
+    stock: dict[str, float],
+    allocation: dict[str, float],
+    effects: ColonyEffects,
 ) -> None:
     """Grow this tick's food, at whatever rate the world allows.
 
@@ -354,34 +376,35 @@ def _farm(
     # colony cut off from fertiliser gets hungrier rather than instantly starving.
     if _needs_fertiliser(ctx, colony):
         wanted = grown * ctx.rates.fertiliser_per_food
-        available = colony.stockpile.get(FERTILISER, 0.0)
+        available = stock.get(FERTILISER, 0.0)
         if wanted > 0:
             supplied = min(wanted, available)
-            draw(colony.stockpile, {FERTILISER: supplied})
+            draw(stock, {FERTILISER: supplied})
             grown *= max(0.2, supplied / wanted)
 
-    deposit(colony.stockpile, {FOOD: grown})
+    deposit(stock, {FOOD: grown})
+
+
+def _farm_profile(ctx: TickContext, colony: Colony) -> tuple[float, bool]:
+    """This world's farm quality and whether it needs fertiliser shipped in.
+
+    Columns, not a survey parse. See :func:`mining_rates`.
+    """
+
+    return colony.world.farm_quality, colony.world.needs_fertiliser
 
 
 def _needs_fertiliser(ctx: TickContext, colony: Colony) -> bool:
     """True where nothing native is doing the soil chemistry for free."""
-    return ctx.cached_effects(
-        ("farm-inputs", colony.world_id),
-        lambda: regime(survey_from_json(colony.world.survey)) != "open farmland"
-        if colony.world.survey
-        else True,
-    )
+    return _farm_profile(ctx, colony)[1]
 
 
 def agricultural_quality(ctx: TickContext, colony: Colony) -> float:
     """How productive a farmer is on this world. Memoized for the tick."""
-    return ctx.cached_effects(
-        ("farm", colony.world_id),
-        lambda: quality(survey_from_json(colony.world.survey)) if colony.world.survey else HYDROPONICS,
-    )
+    return _farm_profile(ctx, colony)[0]
 
 
-def _feed(ctx: TickContext, colony: Colony) -> float:
+def _feed(ctx: TickContext, colony: Colony, stock: dict[str, float]) -> float:
     """Eat, and return how well fed the colony ended up: 0 to 1.
 
     Standard of living is the single number that carries "is this place working
@@ -394,9 +417,9 @@ def _feed(ctx: TickContext, colony: Colony) -> float:
     if need <= 0:
         return 1.0
 
-    available = colony.stockpile.get(FOOD, 0.0)
+    available = stock.get(FOOD, 0.0)
     eaten = min(need, available)
-    draw(colony.stockpile, {FOOD: eaten})
+    draw(stock, {FOOD: eaten})
     return min(1.0, eaten / need)
 
 
@@ -443,6 +466,7 @@ def _grow_population(ctx: TickContext, colony: Colony, effects: ColonyEffects) -
 def _extract(
     ctx: TickContext,
     colony: Colony,
+    stock: dict[str, float],
     allocation: dict[str, float],
     effects: ColonyEffects,
 ) -> None:
@@ -474,7 +498,7 @@ def _extract(
     )
 
     deposit(
-        colony.stockpile,
+        stock,
         {
             material: rate * worker_hours * effects.resource(material)
             for material, rate in rates.items()
@@ -485,17 +509,15 @@ def _extract(
 def mining_rates(ctx: TickContext, colony: Colony) -> dict[str, float]:
     """Tonnes per worker-hour this colony can pull, by material.
 
-    Memoized for the tick: the deposits live inside the world's survey document
-    and rebuilding them per colony per tick is the one hot read in the whole
-    generation layer.
+    Read off the world rather than derived from its survey. The deposits live
+    inside a large JSON document and this is asked for every colony on every
+    tick; :func:`galaxysim.worldgen.serialize.promoted_fields` computes it once
+    at generation and terraforming refreshes it.
     """
-    return ctx.cached_effects(
-        ("mining", colony.world_id),
-        lambda: extraction_rates(deposits_from_json(colony.world.survey or {})),
-    )
+    return colony.world.extraction or {}
 
 
-def _refine(ctx: TickContext, colony: Colony) -> None:
+def _refine(ctx: TickContext, colony: Colony, stock: dict[str, float]) -> None:
     """Run this colony's processing chains on part of its industry output.
 
     Ore is nearly useless: buildings are priced in steel and construction
@@ -517,7 +539,7 @@ def _refine(ctx: TickContext, colony: Colony) -> None:
     # colony's factory bonus, and applying it twice would let one building
     # compound against itself.
     refine(
-        colony.stockpile,
+        stock,
         budget,
         ctx.cadence.hours_per_tick,
         priorities=colony.refining or None,
@@ -525,7 +547,11 @@ def _refine(ctx: TickContext, colony: Colony) -> None:
 
 
 def _research_output(
-    ctx: TickContext, colony: Colony, allocation: dict[str, float], effects: ColonyEffects
+    ctx: TickContext,
+    colony: Colony,
+    stock: dict[str, float],
+    allocation: dict[str, float],
+    effects: ColonyEffects,
 ) -> float:
     """Research this colony contributes this tick, and what it cost to get it.
 
@@ -572,7 +598,7 @@ def _research_output(
         if per_progress <= 0:
             continue
         want = capacity * per_progress
-        covered += min(1.0, colony.stockpile.get(material, 0.0) / want) if want > 0 else 1.0
+        covered += min(1.0, stock.get(material, 0.0) / want) if want > 0 else 1.0
     coverage = covered / len(RESEARCH_COST_PER_PROGRESS)
 
     progress = max(0.0, capacity * coverage)
@@ -582,14 +608,14 @@ def _research_output(
     # Spend what is actually there, up to the share this much progress wanted.
     for material, per_progress in sorted(RESEARCH_COST_PER_PROGRESS.items()):
         wanted = capacity * per_progress * coverage
-        draw(colony.stockpile, {material: min(wanted, colony.stockpile.get(material, 0.0))})
+        draw(stock, {material: min(wanted, stock.get(material, 0.0))})
 
     # Rare materials never gate research -- they only speed it up, out of
     # whatever this colony happens to be sitting on. A civ that draws a
     # metal-poor start researches slower, never not at all.
-    multiplier, consumed = accelerant_multiplier(colony.stockpile, progress)
+    multiplier, consumed = accelerant_multiplier(stock, progress)
     if consumed:
-        draw(colony.stockpile, consumed)
+        draw(stock, consumed)
 
     return progress * multiplier
 
@@ -646,7 +672,9 @@ def industry_output(ctx: TickContext, colony: Colony) -> float:
 # ------------------------------------------------------------------- upkeep
 
 
-def _charge_fleet_upkeep(ctx: TickContext, civ: Civ) -> None:
+def _charge_fleet_upkeep(
+    ctx: TickContext, civ: Civ, colonies: list[Colony], fleets: list[Fleet]
+) -> None:
     """Bill each fleet to the colonies near enough to supply it.
 
     A fleet you cannot pay for does not simply persist for free: unpaid ships
@@ -666,7 +694,6 @@ def _charge_fleet_upkeep(ctx: TickContext, civ: Civ) -> None:
     *that* is what makes projecting force far from home expensive -- distance,
     rather than an accident of which rock the fleet happens to be sitting over.
     """
-    fleets = [f for f in queries.fleets(ctx.session, ctx.universe.id) if f.civ_id == civ.id]
     if not fleets:
         return
 
@@ -674,8 +701,8 @@ def _charge_fleet_upkeep(ctx: TickContext, civ: Civ) -> None:
         if fleet.strength <= 0:
             continue
 
-        suppliers = queries.colonies_by_distance(
-            ctx.session, civ.id, fleet.position, within_ly=SUPPLY_RANGE_LY
+        suppliers = queries.sorted_by_distance(
+            colonies, fleet.position, within_ly=SUPPLY_RANGE_LY
         )
         shortfall = 0.0
         for resource, per_strength in sorted(FLEET_UPKEEP_PER_STRENGTH.items()):
@@ -845,7 +872,7 @@ def _start_fleets(ctx: TickContext) -> None:
         )
 
 
-def _advance_construction(ctx: TickContext) -> None:
+def _advance_construction(ctx: TickContext, colonies_by_civ: dict) -> None:
     """Spend each colony's industry output on whatever it is building.
 
     Capacity is split evenly across that colony's active projects. Even rather
@@ -853,18 +880,21 @@ def _advance_construction(ctx: TickContext) -> None:
     should be making, and there is no interface for it yet -- an even split at
     least never starves one project indefinitely.
     """
+    # Grouped once, outside the loop. This query used to run per colony, so a
+    # civilization with a hundred colonies read the whole intent table a hundred
+    # times to find the handful of orders that belonged to it.
+    orders_by_colony: dict[int, list] = {}
+    for intent in queries.active_intents(
+        ctx.session, ctx.universe.id, IntentKind.BUILD_FLEET.value
+    ):
+        if intent.status == IntentStatus.IN_PROGRESS.value:
+            orders_by_colony.setdefault(intent.payload.get("colony_id"), []).append(intent)
+
     for civ in queries.civs(ctx.session, ctx.universe.id):
-        for colony in queries.colonies_of(ctx.session, civ.id):
+        for colony in colonies_by_civ.get(civ.id, []):
             structures = [b for b in sorted(colony.buildings, key=lambda b: b.id or 0)
                           if not b.is_complete]
-            fleet_orders = [
-                intent
-                for intent in queries.active_intents(
-                    ctx.session, ctx.universe.id, IntentKind.BUILD_FLEET.value
-                )
-                if intent.status == IntentStatus.IN_PROGRESS.value
-                and intent.payload.get("colony_id") == colony.id
-            ]
+            fleet_orders = orders_by_colony.get(colony.id, [])
 
             projects = len(structures) + len(fleet_orders)
             if projects == 0:

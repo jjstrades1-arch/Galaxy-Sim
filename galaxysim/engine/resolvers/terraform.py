@@ -35,7 +35,7 @@ from galaxysim.terraform.projects import (
     Project,
 )
 from galaxysim.worldgen.planet import WATER_FREEZE_K
-from galaxysim.worldgen.serialize import survey_from_json, survey_to_json
+from galaxysim.worldgen.serialize import promoted_fields, survey_from_json, survey_to_json
 
 #: Temperature band in which seeded life and falling comets both survive.
 LIFE_TEMPERATURE_RANGE = (WATER_FREEZE_K - 20.0, WATER_FREEZE_K + 60.0)
@@ -157,6 +157,10 @@ def _complete(ctx: TickContext, intent, colony: Colony, project: Project) -> Non
     world.land_area_km2 = round(survey.land_area_km2, 2)
     world.carrying_capacity = round(survey.carrying_capacity, 2)
     world.world_type = survey.world_class
+    # The promoted columns are derived from the survey, so changing the survey
+    # means recomputing them. This is the only place in the game that has to.
+    for field, value in promoted_fields(survey).items():
+        setattr(world, field, value)
 
     intent.status = IntentStatus.COMPLETED.value
     intent.resolved_tick = ctx.tick

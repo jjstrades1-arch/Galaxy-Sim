@@ -342,6 +342,30 @@ multiplayer one, and what lets a hundred AI civs stand in for a hundred players.
 Orders resolve together on the tick, so being awake when you submit confers no
 advantage. Production, research and defense all run for offline civs.
 
+## What a tick may cost
+
+Performance is a design property, not an optimisation detail. A shared universe
+ticks on a wall clock for everybody at once, so a tick that takes a second at
+three hundred colonies puts a ceiling on how big the game can be.
+
+The rule: **the number of database round trips a tick makes must not grow with
+the size of the universe.** The failure mode is always the same — a resolver
+asks a question inside a loop over colonies or civilizations. It reads
+correctly, passes every other test, and quietly turns the cost from
+"proportional to what happened" into "proportional to how much exists". It has
+happened twice, and `tests/test_tick_cost.py` now fails on either shape of it.
+
+Two things follow from that rule and are worth knowing before adding a resolver:
+
+- **Load relationships up front.** `queries.py` eager-loads a colony's world,
+  that world's system, and its buildings, because anything walking colonies will
+  touch all three.
+- **A world's `survey` is never read during a tick.** It is a large JSON
+  document and the session is per tick, so every load decodes it again. The
+  handful of facts the loop needs — extraction rates, surface water, farm
+  quality — are promoted to columns beside it and refreshed by terraforming,
+  which is the only thing that can change them.
+
 ## Pipeline
 
 Resolution order is fixed and meaningful (`galaxysim/engine/tick.py`):

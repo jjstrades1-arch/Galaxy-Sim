@@ -38,7 +38,7 @@ from galaxysim.model.entities import (
     UniverseMode,
     World,
 )
-from galaxysim.worldgen.serialize import deposits_from_json, survey_to_json
+from galaxysim.worldgen.serialize import deposits_from_json, promoted_fields, survey_to_json
 from galaxysim.worldgen.star import Star, roll_star
 from galaxysim.worldgen.survey import plausible_mass, plausible_orbits, survey_world
 
@@ -88,7 +88,7 @@ def _hourly_output(population: float, world: World, infrastructure: float) -> fl
     the same deposits and the same rate production does, so the two cannot drift
     apart.
     """
-    yields = extraction_rates(deposits_from_json(world.survey or {}))
+    yields = world.extraction or {}
     if not yields:
         return 0.0
     share = 1.0 / len(SECTORS)
@@ -195,6 +195,7 @@ def _world_from_survey(survey, system: StarSystem, rng, orbit_index: int) -> Wor
         survey=survey_to_json(survey),
         land_area_km2=round(survey.land_area_km2, 2),
         carrying_capacity=round(survey.carrying_capacity, 2),
+        **promoted_fields(survey),
     )
 
 
@@ -420,6 +421,10 @@ def _apply_survey(world: World, generated: World) -> None:
     world.survey = generated.survey
     world.land_area_km2 = generated.land_area_km2
     world.carrying_capacity = generated.carrying_capacity
+    world.extraction = generated.extraction
+    world.surface_water = generated.surface_water
+    world.farm_quality = generated.farm_quality
+    world.needs_fertiliser = generated.needs_fertiliser
 
 
 def _point_on_sphere(rng, radius: float) -> Vec3:

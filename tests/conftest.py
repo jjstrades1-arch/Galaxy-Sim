@@ -114,6 +114,37 @@ def give_deposits(world: World, **yields: float) -> None:
         }
         for element, index in sorted(yields.items())
     }
+    refresh_promoted(world)
+
+
+def refresh_promoted(world) -> None:
+    """Recompute the columns derived from a world's survey.
+
+    The engine reads extraction rates, surface water and farm quality off
+    columns rather than re-parsing the survey document every tick. They are
+    derived, so anything that rewrites a survey has to refresh them -- which in
+    the game means terraforming, and in tests means these helpers.
+
+    Tolerant of the partial surveys some tests build: what can be computed is.
+    """
+    from galaxysim.materials.extraction import extraction_rates
+    from galaxysim.worldgen.geology import Deposit
+    from galaxysim.worldgen.serialize import promoted_fields, survey_from_json
+
+    survey = dict(getattr(world, "survey", None) or {})
+    try:
+        for field, value in promoted_fields(survey_from_json(survey)).items():
+            setattr(world, field, value)
+        return
+    except (KeyError, TypeError):
+        pass
+
+    # Partial survey: at least keep the geology honest.
+    deposits = {
+        name: Deposit(**d) for name, d in sorted(survey.get("deposits", {}).items())
+    }
+    if hasattr(world, "extraction"):
+        world.extraction = extraction_rates(deposits)
 
 
 def make_farmable(world: World) -> None:
@@ -149,6 +180,7 @@ def make_farmable(world: World) -> None:
     survey["climate"] = dict(survey.get("climate", {}), surface_temp_k=288.0)
     survey["body"] = dict(survey.get("body", {}), gravity_g=1.0)
     world.survey = survey
+    refresh_promoted(world)
 
 
 def feed(colony, hours: float = 10_000.0) -> None:
