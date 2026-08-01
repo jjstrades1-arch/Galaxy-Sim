@@ -17,12 +17,14 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from galaxysim.colony.labor import INDUSTRY, balanced_allocation
 from galaxysim.colony.population import capacity
 from galaxysim.engine import intents
+from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY
 from galaxysim.engine.resolvers.terraform import unmet_requirements
 from galaxysim.engine.tick import run_ticks
-from galaxysim.model.base import open_session
-from galaxysim.model.entities import Colony, Event, IntentStatus, World
+from galaxysim.model.base import create_engine_for, open_session
+from galaxysim.model.entities import Colony, Event, Intent, IntentStatus, World
 from galaxysim.terraform.apply import apply_project
 from galaxysim.terraform.projects import (
     NEEDS_ATMOSPHERE,
@@ -32,7 +34,22 @@ from galaxysim.terraform.projects import (
     project,
 )
 from galaxysim.worldgen.serialize import survey_from_json, survey_to_json
-from tests.conftest import civ_by_name, home_colony, new_universe, rich_stockpile
+from tests.conftest import (
+    civ_by_name,
+    give_deposits,
+    home_colony,
+    new_universe,
+    rich_stockpile,
+    take_manual_control,
+)
+
+
+def _fresh(seed: int):
+    """A universe of its own, for tests that compare two whole runs."""
+    engine = create_engine_for("sqlite://")
+    return engine, new_universe(
+        engine, seed=seed, civs=("Terrans",), seconds_per_tick=3600
+    )
 
 
 def _cold_rock(session) -> World:
@@ -287,6 +304,91 @@ def test_a_project_runs_through_the_tick_loop_and_changes_the_stored_world(engin
         assert session.scalars(
             select(Event).where(Event.kind == "terraform_completed")
         ).all()
+
+
+def _outpost_beside(session, civ, home, offset_ly: float):
+    """Settle a dead world and park it ``offset_ly`` from the capital.
+
+    Positions are moved rather than searched for, because what is under test is
+    the distance rule and picking real systems at two chosen ranges out of a
+    generated galaxy is a test about the galaxy.
+    """
+    # Somewhere other than the capital's own system, or moving the star moves
+    # the capital with it and the distance under test is always zero.
+    world = session.scalars(
+        select(World)
+        .where(World.colony == None, World.system_id != home.world.system_id)  # noqa: E711
+        .order_by(World.id)
+    ).first()
+    world.habitability = 0.0
+    give_deposits(world, iron=0.02, silicon=0.02)
+    system = world.system
+    system.x = home.world.system.x + offset_ly
+    system.y, system.z = home.world.system.y, home.world.system.z
+
+    colony = Colony(
+        world_id=world.id,
+        civ_id=civ.id,
+        name="Anvil",
+        population=6.0e4,
+        founded_tick=0,
+        stockpile=rich_stockpile(1e12),
+        labor=balanced_allocation(),
+        management_mode="manual",
+    )
+    session.add(colony)
+    session.flush()
+    return colony
+
+
+def _work_left(session) -> float:
+    intent = session.scalar(
+        select(Intent).where(Intent.kind == "terraform").order_by(Intent.id)
+    )
+    return float(intent.payload.get("work_remaining", 0.0))
+
+
+def test_a_neighbourhood_terraforms_faster_than_a_lone_outpost(engine):
+    """Why an empire reshapes planets and a single colony cannot.
+
+    The worlds worth terraforming are dead ones, a dead world caps at outpost
+    scale, and an outpost produces a rounding error of industry -- so for as
+    long as a project drew only on the colony standing on it, the entity doing
+    the work was the one least able to do it, and the only way to get better at
+    the job was to finish it. Nothing could ever start.
+
+    Drawing on every colony within supply range breaks that, and the shape of
+    what replaces it is the point: a project goes faster because there is a
+    developed world *near it*. Distance is what decides, not the size of the
+    empire on paper.
+    """
+
+    def progress(offset_ly: float) -> float:
+        engine_, universe_id = _fresh(seed=6120)
+        with open_session(engine_) as session:
+            civ = civ_by_name(session, universe_id, "Terrans")
+            take_manual_control(session, civ)
+            home = home_colony(session, civ)
+            home.stockpile = rich_stockpile(1e12)
+            intents.set_labor(session, home, {INDUSTRY: 1.0})
+
+            outpost = _outpost_beside(session, civ, home, offset_ly)
+            intents.terraform(session, civ, outpost.id, "magnetic_shield")
+
+        run_ticks(engine_, universe_id, 3)
+        with open_session(engine_) as session:
+            spec = project("magnetic_shield")
+            return spec.work - _work_left(session)
+
+    near = progress(SUPPLY_RANGE_LY * 0.5)
+    far = progress(SUPPLY_RANGE_LY * 4.0)
+
+    assert near > far * 10, (
+        f"a project {SUPPLY_RANGE_LY * 0.5:.0f} ly from the capital advanced "
+        f"{near:,.0f} against {far:,.0f} at four times the range; the capital's "
+        "industry should reach one and not the other"
+    )
+    assert far > 0, "the outpost still does its own share, however small"
 
 
 def test_a_project_that_cannot_start_says_which_physical_fact_is_missing(engine):

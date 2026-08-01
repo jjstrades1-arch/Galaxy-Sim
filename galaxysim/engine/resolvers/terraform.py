@@ -15,6 +15,10 @@ Two rules keep it honest:
   A colony terraforming its world is not building ships or deepening its mines
   while it does so, which is what makes committing to one a real decision rather
   than something you set going in the background and forget.
+
+And one rule about who does the work, which is what makes the whole tree
+reachable: **a project draws on every colony within supply range**, not just the
+one on the planet. See :func:`_advance` for why that is not a convenience.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from __future__ import annotations
 from galaxysim.materials import can_afford, spend
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
-from galaxysim.engine.resolvers.production import construction_output
+from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY, construction_output
 from galaxysim.model.entities import Colony, IntentKind, IntentStatus
 from galaxysim.terraform.apply import apply_project
 from galaxysim.terraform.projects import (
@@ -113,29 +117,67 @@ def _start(ctx: TickContext) -> None:
 
 
 def _advance(ctx: TickContext) -> None:
-    """Feed each running project the industry its colony can spare.
+    """Feed each running project the industry a whole neighbourhood can spare.
 
-    Terraforming draws on construction capacity, so a colony reshaping its world
-    is not simultaneously building a fleet. That competition is the cost.
+    **A project draws on every colony of the same civ within
+    :data:`SUPPLY_RANGE_LY`**, not only the one standing on the world.
+
+    That is the difference between terraforming being possible and being a joke.
+    The worlds worth terraforming are dead ones, a dead world caps at outpost
+    scale, and an outpost of fifty thousand people produces about a quarter of a
+    unit of construction an hour -- so the entity doing the work was always the
+    one least able to do it, and the only way for it to get better at the job
+    was to finish the job. Nothing could ever start.
+
+    Pooling breaks that circle and does something better besides: an empire
+    reshapes a planet faster because it has more *developed* worlds near the
+    target, and since a world that has been terraformed then holds billions, it
+    becomes the engine that terraforms its own neighbours. The reward for having
+    expanded is compounding and nobody had to write it down. It also makes
+    *where* you terraform a real decision -- a project alone in the dark stays
+    slow no matter how large the empire behind it.
+
+    Terraforming draws on construction capacity, so a colony feeding a project
+    is not simultaneously building ships. That competition is the cost, and it
+    is now paid by everyone in range rather than by one outpost.
     """
-    for intent in queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.TERRAFORM.value
-    ):
-        if intent.status != IntentStatus.IN_PROGRESS.value:
-            continue
+    running = [
+        intent
+        for intent in queries.active_intents(
+            ctx.session, ctx.universe.id, IntentKind.TERRAFORM.value
+        )
+        if intent.status == IntentStatus.IN_PROGRESS.value
+    ]
+    if not running:
+        return
 
+    # One query for the whole universe's colonies, grouped by owner, however
+    # many projects are running. A per-project query here would make a tick's
+    # cost scale with how much terraforming is going on, which is exactly the
+    # shape ``tests/test_tick_cost.py`` exists to forbid.
+    colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id)
+
+    for intent in running:
         colony = ctx.session.get(Colony, intent.payload.get("colony_id", -1))
         project = PROJECTS.get(str(intent.payload.get("project", "")))
         if colony is None or project is None:
             _fail(ctx, intent, "the project has no colony behind it any more")
             continue
 
-        remaining = float(intent.payload.get("work_remaining", 0.0)) - construction_output(
-            ctx, colony
+        contributors = queries.sorted_by_distance(
+            colonies.get(colony.civ_id, []),
+            colony.world.system.position,
+            within_ly=SUPPLY_RANGE_LY,
         )
+        effort = sum(construction_output(ctx, helper) for helper in contributors)
+
+        remaining = float(intent.payload.get("work_remaining", 0.0)) - effort
         if remaining > 0:
             intent.payload["work_remaining"] = remaining
-            intent.result = f"{remaining:,.0f} work remaining"
+            intent.result = (
+                f"{remaining:,.0f} work remaining"
+                f" ({len(contributors)} colonies contributing)"
+            )
             continue
 
         _complete(ctx, intent, colony, project)
