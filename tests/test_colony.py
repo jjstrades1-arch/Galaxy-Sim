@@ -35,6 +35,7 @@ from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Building, Colony, Event, Fleet, IntentStatus, World
 from tests.conftest import (
     civ_by_name,
+    clone_world,
     give_deposits,
     OUTPOST_POPULATION,
     feed,
@@ -791,8 +792,9 @@ def test_a_governor_gets_no_hidden_bonus():
 
         twin = _outpost(session, civ, habitability=0.8, stockpile={})
         twin.name = "Twin"
-        twin.world.survey = dict(governed.world.survey)
-        twin.world.habitability = governed.world.habitability
+        # The same planet, not merely a similar one -- otherwise this measures
+        # two worlds' geology rather than two ways of running a colony.
+        clone_world(governed.world, twin.world)
         twin.population = governed.population
         twin.infrastructure = governed.infrastructure
         intents.set_labor(session, twin, chosen)

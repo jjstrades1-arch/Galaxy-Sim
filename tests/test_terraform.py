@@ -21,7 +21,7 @@ from galaxysim.colony.population import capacity
 from galaxysim.engine import intents
 from galaxysim.engine.resolvers.terraform import unmet_requirements
 from galaxysim.engine.tick import run_ticks
-from galaxysim.model.base import create_engine_for, open_session
+from galaxysim.model.base import open_session
 from galaxysim.model.entities import Colony, Event, IntentStatus, World
 from galaxysim.terraform.apply import apply_project
 from galaxysim.terraform.projects import (
@@ -50,6 +50,72 @@ def _cold_rock(session) -> World:
             best = (world, survey.climate.surface_temp_k)
     assert best is not None, "the test universe has no cold rock in it"
     return best[0]
+
+
+#: The surface temperature a terraformer is actually aiming at -- warm enough to
+#: grow food in, cool enough to stand in.
+GROWING_BAND_K = (283.0, 303.0)
+
+#: Enough air to breathe and to hold heat, below which nothing else is worth
+#: doing. Roughly Earth's, which is the only figure anyone has ever tested.
+WORKING_PRESSURE_BAR = 0.7
+
+
+def _next_project(survey) -> str | None:
+    """The project this world needs next, chosen from what it currently is.
+
+    Terraforming has to be driven by feedback rather than a recipe, because the
+    projects interact. Greenhouse forcing scales with pressure, so thickening
+    the air warms the world *as well as* pressurising it; scrubbing sulphur back
+    out thins the air again and may put pressure below working. A fixed sequence
+    that is right for one planet cooks the next one.
+
+    So this reads the survey and picks, the way a player looking at the readout
+    would -- and the loops that use it are therefore a statement about the
+    physics converging, not about a list of eleven project names being correct.
+    """
+    air, climate, water, life = (
+        survey.atmosphere,
+        survey.climate,
+        survey.hydrosphere,
+        survey.biosphere,
+    )
+    if not survey.body.is_shielded:
+        return "magnetic_shield"  # nothing you release stays without one
+    if air.pressure_bar < WORKING_PRESSURE_BAR:
+        return "atmosphere_processor"
+    if climate.surface_temp_k < GROWING_BAND_K[0]:
+        return "greenhouse_seeding"
+    if climate.surface_temp_k > GROWING_BAND_K[1]:
+        return "orbital_shade"  # overshot; reflect some of it back
+    if not water.liquid_water:
+        return "cometary_redirection"
+    if life.stage in ("sterile", "prebiotic", "microbial"):
+        return "ecosystem_seeding"
+    if air.toxins():
+        return "atmospheric_scrubbing"  # thick and poisonous is worse than thin
+    if not air.is_breathable:
+        return "oxygenation"
+    return None
+
+
+def _terraform(survey, limit: int = 40):
+    """Run projects against a world until it is finished or stops converging."""
+    for _ in range(limit):
+        key = _next_project(survey)
+        if key is None:
+            return survey
+        spec = project(key)
+        assert not unmet_requirements(survey, spec), (
+            f"{spec.name} was chosen for a world that cannot take it: "
+            f"{unmet_requirements(survey, spec)}"
+        )
+        survey = apply_project(survey, spec)
+    raise AssertionError(
+        f"terraforming did not converge in {limit} projects; the world sits at "
+        f"{survey.climate.surface_temp_k:.0f} K, {survey.atmosphere.pressure_bar:.2f} bar, "
+        f"habitability {survey.habitability}"
+    )
 
 
 # --- the catalogue -----------------------------------------------------------
@@ -148,23 +214,7 @@ def test_terraforming_turns_an_outpost_into_a_world(engine):
         before_habitability = survey.habitability
         before_capacity = survey.carrying_capacity
 
-        for key in (
-            "magnetic_shield",
-            "atmosphere_processor",
-            "atmosphere_processor",
-            "atmosphere_processor",
-            "greenhouse_seeding",
-            "greenhouse_seeding",
-            "greenhouse_seeding",
-            "cometary_redirection",
-            "ecosystem_seeding",
-            "oxygenation",
-            "oxygenation",
-        ):
-            spec = project(key)
-            if unmet_requirements(survey, spec):
-                continue
-            survey = apply_project(survey, spec)
+        survey = _terraform(survey)
 
     assert before_habitability < 0.05, "it started dead"
     assert survey.habitability > 0.5, "and finished liveable"
@@ -194,22 +244,7 @@ def test_the_ceiling_switches_regime_rather_than_merely_rising(engine):
         outpost_ceiling = capacity(world, infrastructure=30.0)
         assert outpost_ceiling < 1e7
 
-        for key in (
-            "magnetic_shield",
-            "atmosphere_processor",
-            "atmosphere_processor",
-            "atmosphere_processor",
-            "greenhouse_seeding",
-            "greenhouse_seeding",
-            "greenhouse_seeding",
-            "cometary_redirection",
-            "ecosystem_seeding",
-            "oxygenation",
-            "oxygenation",
-        ):
-            spec = project(key)
-            if not unmet_requirements(survey, spec):
-                survey = apply_project(survey, spec)
+        survey = _terraform(survey)
 
         world.habitability = survey.habitability
         world.carrying_capacity = survey.carrying_capacity

@@ -90,6 +90,11 @@ class Universe(Base):
     #: :mod:`galaxysim.engine.rates`.
     seconds_per_tick: Mapped[int] = mapped_column(Integer, default=300)
     mode: Mapped[str] = mapped_column(String(20), default=UniverseMode.SOLO.value)
+    #: Where in the galaxy this universe's settlement frontier sits: ``core``,
+    #: ``arm`` or ``rim``. Decides stellar density, metallicity and therefore how
+    #: crowded and how rich everybody's neighbourhood is.
+    #: See :mod:`galaxysim.worldgen.galaxy`.
+    region: Mapped[str] = mapped_column(String(20), default="arm")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     civs: Mapped[list["Civ"]] = relationship(

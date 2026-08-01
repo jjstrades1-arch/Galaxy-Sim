@@ -62,6 +62,8 @@ from galaxysim.engine.resolvers.governor import POLICIES
 from galaxysim.engine.resolvers.production import colony_effects, effective_habitability
 from galaxysim.cli.survey_view import format_count
 from galaxysim.cli.survey_view import render as render_survey
+from galaxysim.worldgen.galaxy import ARM, REGIONS, metallicity_at, systems_near
+from galaxysim.worldgen.materialize import existing_system
 from galaxysim.worldgen.serialize import has_surface_water, survey_from_json
 from galaxysim.engine.tick import resolve_tick
 from galaxysim.model.base import create_engine_for, open_session
@@ -124,12 +126,23 @@ def new(
     minutes_per_tick: int = typer.Option(
         60, "--minutes-per-tick", help="Tick resolution. Does not change how fast anyone grows."
     ),
-    systems: int = typer.Option(24, "--systems", help="Size of the starting region."),
+    region: str = typer.Option(
+        ARM.key,
+        "--region",
+        help="Where in the galaxy everyone starts: core, arm or rim. "
+        "Core is crowded and metal-rich; rim is empty and poor.",
+    ),
     species: str = typer.Option(
         "", "--species", help="Describe your species. Shapes generation in a later build step."
     ),
 ) -> None:
     """Create a new solo universe."""
+    if region not in REGIONS:
+        console.print(
+            f"[red]Unknown region {region!r}.[/red] Choose one of: "
+            + ", ".join(sorted(REGIONS))
+        )
+        raise typer.Exit(1)
     path = _db_url()
     if path.startswith("sqlite:///") and Path(path[10:]).exists():
         console.print(
@@ -139,16 +152,13 @@ def new(
         raise typer.Exit(1)
 
     engine = _engine()
-    # Each civ needs its own starting system, so the region must comfortably
-    # outnumber the players in it.
-    required = (ai + 1) * 2
     universe_id = create_universe(
         engine,
         name,
         seed=seed,
         seconds_per_tick=minutes_per_tick * 60,
         mode=UniverseMode.SOLO,
-        system_count=max(systems, required),
+        region=region,
     )
 
     with open_session(engine) as session:
@@ -157,7 +167,9 @@ def new(
         for index in range(ai):
             add_civ(session, universe, f"AI-{index + 1}", is_ai=True)
 
+    spec = REGIONS[region]
     console.print(f"[green]Created[/green] [bold]{name}[/bold] with {ai} AI opponents.")
+    console.print(f"Seated in [bold]{spec.name}[/bold] — {spec.description}")
     console.print(
         f"Ticking every {minutes_per_tick} minutes of simulated time. "
         "Run [bold]galaxysim status[/bold] to look around, "
@@ -273,6 +285,70 @@ def systems(
             )
         console.print(table)
         console.print("[dim]* uninhabitable; yellow already settled[/dim]")
+
+
+@app.command()
+def chart(
+    radius: float = typer.Option(40.0, "--radius", help="Light-years to sweep."),
+    limit: int = typer.Option(25, "--limit", help="How many to list."),
+) -> None:
+    """Every star within reach, charted or not.
+
+    ``systems`` lists what your civilization has *been* to. This lists what is
+    out there -- which is a different thing, because the galaxy is a function
+    rather than a map and a star nobody has visited still exists.
+
+    You get the star and where it is, because that is what a telescope gives
+    you at forty light-years. You do not get its worlds: those appear when
+    somebody arrives, and until then nobody knows whether that K dwarf has an
+    ocean around it or six sterile rocks.
+    """
+    from galaxysim.core.seeds import rng_for
+    from galaxysim.flavor.names import system_name
+    from galaxysim.worldgen.star import roll_star
+
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        home = session.scalar(select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id))
+        if home is None:
+            console.print("[red]You have no colonies to chart from.[/red]")
+            raise typer.Exit(1)
+        origin = home.world.system.position
+
+        stubs = systems_near(universe.seed, origin, radius, limit=limit)
+        table = Table(
+            "ly away",
+            "system",
+            "class",
+            "status",
+            title=f"Stars within {radius:.0f} ly of {home.world.system.name}",
+        )
+        charted = 0
+        for stub in stubs:
+            row = existing_system(session, universe, stub)
+            # The same seed and the same call order as materialization, so the
+            # star you see through a telescope is the star you find on arrival.
+            rng = rng_for(universe.seed, "system", *stub.key)
+            star = roll_star(rng)
+            name = row.name if row is not None else system_name(rng)
+            if row is not None:
+                charted += 1
+                status = f"[yellow]charted #{row.id}[/yellow]"
+            else:
+                status = "[dim]uncharted[/dim]"
+            table.add_row(
+                f"{distance(origin, stub.position):.1f}",
+                name,
+                star.designation,
+                status,
+            )
+        console.print(table)
+        console.print(
+            f"[dim]{charted} of {len(stubs)} visited. Metallicity here "
+            f"[Fe/H] {metallicity_at(origin):+.2f}. Send a fleet to survey the rest.[/dim]"
+        )
 
 
 @app.command()
@@ -788,7 +864,7 @@ def structure(
     colony_id: int = typer.Argument(..., help="Colony to build at."),
     kind: str = typer.Argument("", help="Building kind; omit to list what is available."),
 ) -> None:
-    """Build a structure. Slots are limited by the world."""
+    """Build or deepen an industry. Levels are limited by people and ground."""
     if not kind:
         table = Table("kind", "name", "cost", "work", "what it does", title="Buildings")
         for spec in BUILDING_TYPES:
@@ -977,6 +1053,7 @@ def soak(
     days: int = typer.Option(28, "--days", help="Days of simulated time to run."),
     minutes_per_tick: int = typer.Option(60, "--minutes-per-tick", help="Tick resolution."),
     seed: int = typer.Option(1, "--seed", help="Universe seed."),
+    region: str = typer.Option(ARM.key, "--region", help="core, arm or rim."),
 ) -> None:
     """Run a throwaway universe of AI civs and chart how fast they grow.
 
@@ -997,7 +1074,7 @@ def soak(
         seed=seed,
         seconds_per_tick=minutes_per_tick * 60,
         mode=UniverseMode.SOLO,
-        system_count=max(40, ai * 6),
+        region=region if region in REGIONS else ARM.key,
     )
     with open_session(engine) as session:
         universe = session.get(Universe, universe_id)

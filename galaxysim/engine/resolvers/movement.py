@@ -13,6 +13,7 @@ from __future__ import annotations
 from galaxysim.core.space import Vec3, travel_time_hours
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
+from galaxysim.worldgen.materialize import materialize_at
 from galaxysim.model.entities import Fleet, IntentKind, IntentStatus
 
 
@@ -83,7 +84,16 @@ def _advance_in_transit(ctx: TickContext) -> None:
 
 
 def _arrive(ctx: TickContext, fleet: Fleet, destination: Vec3) -> None:
-    """Place a fleet at its destination and clear its transit state."""
+    """Place a fleet at its destination and clear its transit state.
+
+    **Arrival is what makes a system real.** Until somebody gets there a system
+    is a pure function of the universe seed and a position -- computable by
+    anyone, stored by nobody. Reaching it is the moment it acquires state that
+    generation cannot derive, so that is the moment it becomes a row.
+
+    A course can also end in empty space, which is legal and common: the galaxy
+    is mostly nothing.
+    """
     already_there = (fleet.x, fleet.y, fleet.z) == destination.as_tuple()
 
     fleet.x, fleet.y, fleet.z = destination.as_tuple()
@@ -91,6 +101,16 @@ def _arrive(ctx: TickContext, fleet: Fleet, destination: Vec3) -> None:
     fleet.dest_x = fleet.dest_y = fleet.dest_z = None
     fleet.departed_tick = None
     fleet.arrival_tick = None
+
+    system = materialize_at(ctx.session, ctx.universe, destination)
+    if system is not None and system.discovered_tick == ctx.tick:
+        ctx.log(
+            "system_discovered",
+            f"{fleet.name} is the first to reach {system.name} "
+            f"({system.star_class}); {len(system.worlds)} worlds surveyed",
+            civ_id=fleet.civ_id,
+            payload={"system_id": system.id, "fleet_id": fleet.id},
+        )
 
     if not already_there:
         ctx.log(

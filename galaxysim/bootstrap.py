@@ -1,17 +1,22 @@
 """Creating a universe and seating civilizations in it.
 
-The starting region is generated eagerly here. That is a placeholder: build-order
-step 4 replaces ``seed_starting_region`` with the lazy
-``system_at(universe_seed, sector)`` function, at which point a system only gets
-a row when someone actually reaches it and the galaxy stops having a size at
-all. The homeworld path stays, because a civ's starting system is by definition
-visited.
+**Nothing is generated eagerly any more.** The galaxy is a pure function of the
+universe seed and a position (:mod:`galaxysim.worldgen.galaxy`), so there is no
+map to build and no world cap to pick -- a system becomes a row the first time
+somebody reaches it and costs nothing until then.
 
-Fair starts are enforced structurally: every civ is seated on its own system,
-and its homeworld is searched for in the star's habitable zone until the physics
-produces somewhere liveable. Genuinely habitable worlds are rare in this galaxy,
-so a starting world is guaranteed -- but by generating one the model would
-really produce, never by writing a habitability number over an unsuitable rock.
+What this module does instead is decide *where the players are*, which is the
+only thing that makes any of it competitive. Civs are seated inside a
+**settlement frontier**: one small region, sized once from the time-to-first-
+contact target and never grown, so that spacing tightens as the game fills and
+pressure rises on its own. Everything else about scarcity follows from that plus
+real stellar density -- there is no scarcity mechanic anywhere in the codebase.
+
+Fair starts are enforced structurally: every civ is seated at its own position
+and its homeworld is searched for in a life-bearing star's habitable zone until
+the physics produces somewhere liveable. Genuinely habitable worlds are rare, so
+a starting world is guaranteed -- but by generating one the model would really
+produce, never by writing a habitability number over an unsuitable rock.
 """
 
 from __future__ import annotations
@@ -22,11 +27,9 @@ from sqlalchemy.orm import Session
 from galaxysim.colony.industry import infrastructure_of, max_total_levels
 from galaxysim.colony.labor import SECTORS, balanced_allocation
 from galaxysim.engine.rates import DEFAULT_RATES
-from galaxysim.materials import extraction_rates
 from galaxysim.materials.catalogue import starting_stockpile
 from galaxysim.core.seeds import derive_seed, rng_for
 from galaxysim.core.space import Vec3
-from galaxysim.flavor.names import system_name, world_name
 from galaxysim.model.base import init_db, open_session
 from galaxysim.model.entities import (
     Building,
@@ -38,12 +41,16 @@ from galaxysim.model.entities import (
     UniverseMode,
     World,
 )
-from galaxysim.worldgen.serialize import deposits_from_json, promoted_fields, survey_to_json
+from galaxysim.worldgen.galaxy import ARM, REGIONS, seed_position
+from galaxysim.worldgen.materialize import materialize_around, world_from_survey
 from galaxysim.worldgen.star import Star, roll_star
 from galaxysim.worldgen.survey import plausible_mass, plausible_orbits, survey_world
 
-#: Radius of the eagerly generated starting region, in light-years.
-STARTING_REGION_RADIUS_LY = 40.0
+#: How much of its own neighbourhood a civilization starts knowing, and how far
+#: out that reaches. A species with lightspeed travel has charts; it does not
+#: discover the star next door. Beyond this, systems materialize on arrival.
+STARTING_CHARTED_SYSTEMS = 24
+STARTING_CHART_RADIUS_LY = 60.0
 
 #: Colony pods on a civ's first fleet -- enough to plant a second colony without
 #: waiting on production, so the first session has something to do.
@@ -108,9 +115,13 @@ def create_universe(
     seed: int | None = None,
     seconds_per_tick: int = 300,
     mode: UniverseMode = UniverseMode.SOLO,
-    system_count: int = 12,
+    region: str = "arm",
 ) -> int:
-    """Create a universe with a starting region, returning its id."""
+    """Create an empty universe, returning its id.
+
+    Empty is the right word: no systems are generated. The galaxy is a function,
+    and rows appear when civilizations are seated and when fleets arrive.
+    """
     init_db(engine)
 
     with open_session(engine) as session:
@@ -119,84 +130,23 @@ def create_universe(
             seed=seed if seed is not None else derive_seed("universe", name),
             seconds_per_tick=seconds_per_tick,
             mode=mode.value,
+            region=region if region in REGIONS else ARM.key,
             tick_number=0,
         )
         session.add(universe)
         session.flush()
-
-        seed_starting_region(session, universe, system_count)
-        session.flush()
         return universe.id
 
 
-def seed_starting_region(session: Session, universe: Universe, system_count: int) -> None:
-    """Generate the opening cluster of systems.
-
-    Placeholder for lazy generation (step 4). Positions and contents are derived
-    from the universe seed, so the same seed always yields the same region.
-    """
-    for index in range(system_count):
-        rng = rng_for(universe.seed, "system", index)
-        radius = STARTING_REGION_RADIUS_LY * (rng.random() ** (1 / 3))
-        position = _point_on_sphere(rng, radius)
-
-        star = roll_star(rng)
-        system = StarSystem(
-            universe_id=universe.id,
-            sector_i=int(position.x // 10),
-            sector_j=int(position.y // 10),
-            sector_k=int(position.z // 10),
-            index_in_sector=index,
-            name=system_name(rng),
-            x=round(position.x, 6),
-            y=round(position.y, 6),
-            z=round(position.z, 6),
-            star_class=star.designation,
-            discovered_tick=0,
+def _seat_positions(session: Session, universe: Universe) -> list[Vec3]:
+    """Where this universe's civilizations already sit."""
+    return [
+        Vec3(system.x, system.y, system.z)
+        for system in session.scalars(
+            select(StarSystem).where(StarSystem.universe_id == universe.id).order_by(StarSystem.id)
         )
-        session.add(system)
-        session.flush()
-
-        # Orbits are laid out for the system as a whole, not per world, because
-        # planets in a real system are spaced against each other.
-        distances = plausible_orbits(rng, star, rng.randint(2, 7))
-        for orbit_index, distance_au in enumerate(distances):
-            world_rng = rng_for(universe.seed, "world", index, orbit_index)
-            survey = survey_world(
-                world_rng, star, distance_au, plausible_mass(world_rng, distance_au, star)
-            )
-            session.add(_world_from_survey(survey, system, world_rng, orbit_index))
-
-
-def _world_from_survey(survey, system: StarSystem, rng, orbit_index: int) -> World:
-    """Persist a generated world.
-
-    The full physical description goes into the ``survey`` document; the few
-    numbers the engine queries or mutates are promoted to columns beside it.
-    """
-    return World(
-        system_id=system.id,
-        name=world_name(rng, system.name, orbit_index),
-        world_type=survey.world_class,
-        orbit_index=orbit_index,
-        habitability=survey.habitability,
-        # Hazard is now a consequence of the world rather than its own roll:
-        # volcanism, radiation where there is no magnetic field, and whatever
-        # the local biology does to an unadapted coloniser.
-        hazard=round(
-            min(
-                0.95,
-                0.5 * survey.body.tectonic_activity
-                + (0.0 if survey.body.is_shielded else 0.3)
-                + 0.3 * survey.biosphere.pathogen_hazard,
-            ),
-            4,
-        ),
-        survey=survey_to_json(survey),
-        land_area_km2=round(survey.land_area_km2, 2),
-        carrying_capacity=round(survey.carrying_capacity, 2),
-        **promoted_fields(survey),
-    )
+        if any(world.colony is not None for world in system.worlds)
+    ]
 
 
 def add_civ(
@@ -227,9 +177,23 @@ def add_civ(
     session.add(civ)
     session.flush()
 
-    system = _claim_unoccupied_system(session, universe)
+    # Seat the civ inside the settlement frontier, as far from everybody
+    # already there as the region allows, and bring its neighbourhood into
+    # being. Everything past that stays a pure function until somebody flies to
+    # it.
+    region = REGIONS.get(universe.region, ARM)
+    seat = seed_position(universe.seed, region, _seat_positions(session, universe))
+    charted = materialize_around(
+        session, universe, seat, STARTING_CHART_RADIUS_LY, STARTING_CHARTED_SYSTEMS
+    )
+    if not charted:
+        raise RuntimeError(
+            f"no systems within {STARTING_CHART_RADIUS_LY:.0f} ly of the seat drawn for "
+            f"{name}; the frontier is in an unusually empty stretch of the galaxy"
+        )
+
     rng = rng_for(civ.seed, "homeworld")
-    homeworld = _prepare_homeworld(session, system, rng)
+    homeworld = _prepare_homeworld(session, charted[0], rng)
 
     # A species with lightspeed travel is not a landing party. Its homeworld is
     # already full -- seventy to ninety percent of what the planet can hold --
@@ -293,31 +257,13 @@ def add_civ(
             speed_ly_per_hour=1.0,
             cargo_capacity=STARTING_FLEET_STRENGTH * 20.0,
             cargo={},
-            x=system.x,
-            y=system.y,
-            z=system.z,
+            x=homeworld.system.x,
+            y=homeworld.system.y,
+            z=homeworld.system.z,
         )
     )
     session.flush()
     return civ
-
-
-def _claim_unoccupied_system(session: Session, universe: Universe) -> StarSystem:
-    """Lowest-id system that has no colony in it."""
-    systems = session.scalars(
-        select(StarSystem)
-        .where(StarSystem.universe_id == universe.id)
-        .order_by(StarSystem.id)
-    ).all()
-
-    for system in systems:
-        if not any(world.colony is not None for world in system.worlds):
-            return system
-
-    raise RuntimeError(
-        "no unoccupied system available for a new civilization; "
-        "generate a larger starting region"
-    )
 
 
 #: Habitability a starting world must reach. Genuinely habitable worlds are
@@ -384,7 +330,7 @@ def _prepare_homeworld(session: Session, system: StarSystem, rng) -> World:
         survey = survey_world(
             world_rng, star, distance, plausible_mass(world_rng, distance, star)
         )
-        _apply_survey(world, _world_from_survey(survey, system, world_rng, world.orbit_index))
+        _apply_survey(world, world_from_survey(survey, system, world_rng, world.orbit_index))
 
     # Now search the habitable zone for somewhere worth being born.
     # Ranked on breathability first, then habitability. Ranking on habitability
@@ -407,7 +353,7 @@ def _prepare_homeworld(session: Session, system: StarSystem, rng) -> World:
     assert chosen is not None
     homeworld = ordered[0] if ordered else None
     assert homeworld is not None, "a system must have worlds before it can be settled"
-    _apply_survey(homeworld, _world_from_survey(chosen, system, rng, home_index))
+    _apply_survey(homeworld, world_from_survey(chosen, system, rng, home_index))
     session.flush()
     return homeworld
 
@@ -425,15 +371,3 @@ def _apply_survey(world: World, generated: World) -> None:
     world.surface_water = generated.surface_water
     world.farm_quality = generated.farm_quality
     world.needs_fertiliser = generated.needs_fertiliser
-
-
-def _point_on_sphere(rng, radius: float) -> Vec3:
-    """A point at ``radius`` in a uniformly random direction."""
-    # Sampling z uniformly and the angle uniformly gives an even spread over the
-    # sphere; rolling two angles uniformly would cluster points at the poles.
-    z = rng.uniform(-1.0, 1.0)
-    theta = rng.uniform(0.0, 6.283185307179586)
-    planar = (1.0 - z * z) ** 0.5
-    from math import cos, sin
-
-    return Vec3(radius * planar * cos(theta), radius * planar * sin(theta), radius * z)

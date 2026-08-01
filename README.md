@@ -4,12 +4,13 @@ An async, persistent, text-based civilization simulation. Players colonize
 procedurally generated worlds across a shared galaxy, research an open-ended
 tech space, and build up civilizations over weeks of real time.
 
-The core loop works end to end, and the **colony layer is deep**: colonies hold
-their own stockpiles, assign their population to work, build structures in
-limited slots, and keep themselves alive on hostile worlds. Procedural tech
-generation, lazy world generation and the species pipeline are next.
-[`docs/DESIGN.md`](docs/DESIGN.md) is the architecture reference; the notes
-below say what is deliberately placeholder.
+The core loop works end to end and the world underneath it is real: planets
+generated from physics, an economy made of actual elements, populations counted
+in billions, terraforming that rewrites a planet's numbers, and a hundred
+thousand light-years of spiral galaxy that costs nothing until somebody flies
+into it. Procedural tech generation, conflict resolution and the species
+pipeline are next. [`docs/DESIGN.md`](docs/DESIGN.md) is the architecture
+reference; the notes below say what is deliberately placeholder.
 
 ## Try it
 
@@ -17,8 +18,10 @@ below say what is deliberately placeholder.
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 .venv/bin/galaxysim new Frontier --ai 3        # solo game, 3 AI opponents
+.venv/bin/galaxysim new Deep --region core     # ...or start somewhere harder
 .venv/bin/galaxysim status                     # your civ
-.venv/bin/galaxysim systems                    # what's nearby
+.venv/bin/galaxysim systems                    # what you have charted
+.venv/bin/galaxysim chart --radius 60          # ...and what is out there
 .venv/bin/galaxysim planet 12                  # full planetary survey
 .venv/bin/galaxysim colony 1                   # one colony in detail
 .venv/bin/galaxysim labor 1 --extraction 3 --industry 2 --life-support 1
@@ -231,6 +234,58 @@ single route, needing copper, rare earths and silicon together. A single-colony
 civ six weeks in has billions of tonnes of ceramics and zero electronics. That
 is the materials economy doing what it was built to do.
 
+## The galaxy is a function, not a map
+
+There is no world count and no bound. Space is a pure function of
+`(universe_seed, sector, index)`: ask what is in a cubic parsec and the answer
+is computed, identically, forever. A system becomes a *row* the moment somebody
+arrives and not before — because that is the moment it acquires state generation
+cannot derive: who owns it, what has been mined out, who has a colony there.
+Two players reaching it from opposite directions a month apart find the same
+star and the same ore.
+
+The disc is the real one, near enough to check. Stellar density is a bulge plus
+an exponential disc plus four log-spiral arms as density *ridges* rather than
+walls, and the one anchor is measured rather than chosen: near the Sun's radius
+it puts stars 5–8 light-years apart, which is what they are. Metallicity runs
+down the same gradient real galaxies have, −0.06 dex per kiloparsec. Nothing has
+an edge; density falls off and keeps falling.
+
+**Scarcity comes from where the players are, not from shrinking the map.**
+Nobody fights when there is land for everyone, and a hundred billion stars is
+land for everyone. So every civilization is seated inside one small **settlement
+frontier**, sized once from a target of first contact in one to two weeks and
+never grown:
+
+| Players | Median neighbour gap | First contact |
+|---|---|---|
+| 25 | ~90 ly | weeks |
+| 100 | ~50 ly | 1–2 weeks |
+| 300 | ~30 ly | days |
+
+Pressure rises with population on its own. Nothing enforces it — it is what is
+left when a fixed volume takes more people. And the rest of the galaxy is the
+escape valve for anyone willing to travel a very long way for elbow room.
+
+Inside that frontier there are about a thousand systems per player and almost
+nothing among them worth having on its own terms: under 1% of worlds are
+liveable at all and breathable ones number in the low tens against a hundred
+civs. What makes a world valuable is what is in it and where it sits.
+
+**Where you start is a decision.** Density and metallicity run the same
+direction, so you cannot have distant neighbours *and* good ore:
+
+| | Neighbours | Metallicity |
+|---|---|---|
+| **Core** | 1–2 ly away, on top of you from the first week | [Fe/H] +0.34 |
+| **Arm** | a handful of ly, company soon enough | [Fe/H] ≈ 0 |
+| **Rim** | 10+ ly, long journeys, nobody finds you | [Fe/H] −0.40 |
+
+Those figures are printed by `galaxysim chart`, which lists every star within
+reach whether or not anyone has been there. You get the star and where it is,
+because that is what a telescope gives you at forty light-years. You do not get
+its worlds.
+
 ## The colony
 
 A colony is a place you run, not a number that goes up.
@@ -307,14 +362,15 @@ Several brakes keep growth compounding-resistant:
 | Brake | Where | What it stops |
 |---|---|---|
 | Research cost by depth (superlinear) | `Rates.research_cost` | A lineage running away |
-| Colony overhead by count (superlinear) | `Rates.colony_overhead` | Sprawl paying for itself |
-| Fleet upkeep | `FLEET_UPKEEP_PER_STRENGTH` | Hoarding a free navy |
-| Life-support upkeep | `Rates.life_support_*` | Holding hostile worlds cheaply |
+| Fleet upkeep, billed where the fleet is | `FLEET_UPKEEP_PER_STRENGTH` | Hoarding a free navy |
+| Life-support and food bills | `Rates.life_support_*`, agriculture | Holding hostile worlds cheaply |
 | Local stockpiles | `Colony.stockpile` | Funding expansion from one pooled purse |
+| Industry levels capped by people and land | `colony/industry.py` | Deepening one world forever |
 
-The colony-count *price* multiplier that used to sit here is gone. Local
-stockpiles and life-support upkeep brake expansion harder than a price curve
-did, and stacking both would have been double-charging.
+Every brake in that table is a real cost of something. The two that were not —
+a colony-count price multiplier and `Rates.colony_overhead` — are both deleted.
+Expansion *should* get easier as you grow; that is the reward for growing, and
+what makes it hard is distance, supply and defence.
 
 ### 2. Every tick is replayable
 
@@ -386,7 +442,7 @@ galaxysim/
   core/        seeds, RNG derivation, continuous-space coordinates
   materials/   catalogue, refining chains, extraction, prices
   model/       SQLAlchemy entities (SQLite for solo, Postgres for shared)
-  worldgen/    stars, planetary physics, geology, biospheres, surveys
+  worldgen/    the galaxy function, stars, planetary physics, geology, life
   colony/      labour sectors, industries, population, agriculture, expeditions
   terraform/   project catalogue, and applying one back into a planet
   engine/      rates, intent queue, tick pipeline, resolvers
@@ -403,10 +459,9 @@ Named explicitly so nobody mistakes scaffolding for design:
   lineage of step 7 — genomes, a bounded effect grammar, and a frontier of
   candidate techs derived from what a civ already knows. The economics of
   paying for the next step will not change when it lands; only what you receive.
-- **The starting region is generated eagerly.** `bootstrap.seed_starting_region`
-  is replaced in step 4 by `system_at(universe_seed, sector)`, a pure function
-  that makes space infinite and materializes a system only when someone reaches
-  it.
+- **Conflict has no resolution.** Combat destroys fleets and nothing else, so
+  colonies cannot change hands and there is no way to win anything. Blockade and
+  capture are the next phase.
 - **Species descriptions are stored but unused.** The extraction pipeline is
   step 6.
 - **Names are syllable soup.** Step 7 gives each civ phoneme banks derived from
@@ -414,13 +469,19 @@ Named explicitly so nobody mistakes scaffolding for design:
 
 ## Known tuning gaps
 
-- **Expansion may now be too slow.** The colony layer swung the pacing hard: an
-  AI civ that used to hold ~8 colonies after 28 simulated days now holds ~2, and
-  reaches ~3 techs instead of ~5. That direction is intended — expedition
-  loadouts cost real resources, they come from one colony's stockpile rather
-  than a pooled purse, and governors spend the same stockpile on buildings — but
-  the magnitude wants a play session to judge. Deliberately not tuned blind;
-  this is the "is it fun" checkpoint the build order calls for.
+- **Expansion plateaus, and it should compound.** A 28-day soak with 8 AI civs
+  reaches 6 colonies by *day 2* and then sits at exactly 6 for the remaining 26
+  days, with population flat at 11.37 B and four techs. Six colonies was meant
+  to be a floor. The opening sprint is the starting pods being spent; what is
+  missing is the second wave, and the suspect is the AI rather than the rules —
+  it settles what it was charted, and then never charts anything else. Nothing
+  artificial is holding it back, which is what makes this a behaviour gap rather
+  than a tuning one.
+- **A tick costs ~390 ms with 8 civs and 48 colonies.** The query *count* is
+  flat in universe size and tested to stay that way, so this is per-row cost
+  rather than the quadratic shape that was fixed last phase — but it is four
+  times what the same shape cost before real-scale colonies, and a shared
+  universe on a five-minute cadence resolves 288 ticks a day.
 - **Supply routes over-deliver.** A standing route ships its full manifest every
   trip whether or not the destination needs it, so a well-supplied outpost banks
   months of surplus. A route that tops up to a target level would be better.
@@ -429,26 +490,17 @@ Named explicitly so nobody mistakes scaffolding for design:
   shape — ore has to become steel before it can become a hull — but the split is
   a first-pass number that wants a play session, not a spreadsheet.
 - **Raw materials still outrun their sinks.** Research consuming refined goods
-  is a real sink and levelled industries are a much larger one, but a developed
-  colony still accumulates ore faster than it processes it. Terraforming is the
-  next sink.
-- **The AI does not run migration convoys.** It expands, builds freighters and
-  keeps standing routes to the dead worlds it settles — in a 28-day soak each AI
-  reaches ~5 colonies of 210k people apiece, all supplied, none starving — but
-  it never ships population, so it grows more slowly than the rules allow.
-- **Fleet upkeep is noisy on the frontier.** Upkeep bills the colony nearest the
-  fleet, and a fresh outpost has no fuel, so ships parked at one generate a
-  constant trickle of shortfall events. The mechanic is right — projecting force
-  far from home means feeding it out there — but it wants a grace period or a
-  fallback to the next colony in range.
-- **The suite takes ~3m45s.** Real-scale colonies need longer runs to reach the
-  interesting part. Running the slow tests at hourly cadence would cut it
-  sharply and is safe — pace-invariance is proven — and remains undone.
-- **Tick cost is ~88 ms with 6 AI civs.** Caching derived colony state per tick
-  brought this down from ~105 ms, but the colony layer made a tick meaningfully
-  more expensive than the ~60 ms it was before. Wants profiling before the
-  shared universe is real — the likely wins are batching the per-colony queries
-  and not re-reading intents inside the construction loop.
+  is a real sink, levelled industries are a larger one and terraforming is the
+  largest, but a developed colony still accumulates ore faster than it processes
+  it. Energy-as-a-flow — generation mixes burning deuterium, helium-3 and
+  fissiles, all of which are mined today and consumed by nothing — is the
+  outstanding one.
+- **The AI does not terraform.** It expands, supplies and migrates, but the
+  biggest thing a mature civilization can do with its surplus is not in its
+  repertoire, so an AI empire plateaus where a player's would not.
+- **Nobody has played a core start for long.** Neighbours 1.4 ly apart is a very
+  different game from neighbours 10 ly apart, and the difference is currently a
+  claim backed by density arithmetic rather than a session.
 
 ## Tests
 

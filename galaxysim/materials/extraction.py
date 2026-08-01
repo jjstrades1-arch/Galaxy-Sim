@@ -56,6 +56,28 @@ EXTRACTION_COMPRESSION = 0.4
 #: at four grams an hour.
 VIABLE_YIELD_INDEX = 2.0e-5
 
+#: Materials worked by a different method, and therefore worth extracting at
+#: concentrations that would never justify a mine.
+#:
+#: Helium-3 is the case this exists for. It is implanted by the stellar wind and
+#: sits in the top few metres of regolith at around twenty parts per *billion* --
+#: the real figure, and four orders of magnitude below what any ore seam needs
+#: to be worth digging. But it is not dug: it is strip-mined and baked, megatonnes
+#: of dust for kilograms of gas, which is a thing worth doing when the product is
+#: fusion fuel.
+#:
+#: Without this it was catalogued, named a strategic material, offered as the
+#: best research accelerant in the game, and obtainable nowhere -- a dead
+#: mechanic that a scarcity sweep over a hundred thousand systems found by
+#: reporting "absent" where it should have said "rare".
+SPECIAL_VIABILITY: dict[str, float] = {
+    "helium3": 1.0e-9,
+}
+
+
+def viability_floor(material: str) -> float:
+    return SPECIAL_VIABILITY.get(material, VIABLE_YIELD_INDEX)
+
 
 def extractable(deposits: dict[str, Deposit]) -> dict[str, Deposit]:
     """The deposits worth mining, keyed by material.
@@ -69,14 +91,28 @@ def extractable(deposits: dict[str, Deposit]) -> dict[str, Deposit]:
         for key, deposit in sorted(deposits.items())
         if key in MATERIALS
         and MATERIALS[key].is_raw
-        and deposit.yield_index >= VIABLE_YIELD_INDEX
+        and deposit.yield_index >= viability_floor(key)
     }
+
+
+#: Materials whose extraction is a bulk process rather than a mine, scaled so
+#: that a real trace abundance still yields a usable trickle. Helium-3 at twenty
+#: parts per billion is worth having precisely because you process a mountain of
+#: regolith for it.
+BULK_PROCESS_SCALE: dict[str, float] = {
+    "helium3": 40.0,
+}
 
 
 def extraction_rates(deposits: dict[str, Deposit]) -> dict[str, float]:
     """Tonnes per worker-hour for each material this world can produce."""
     return {
-        key: round(deposit.yield_index**EXTRACTION_COMPRESSION * EXTRACTION_SCALE, 6)
+        key: round(
+            deposit.yield_index**EXTRACTION_COMPRESSION
+            * EXTRACTION_SCALE
+            * BULK_PROCESS_SCALE.get(key, 1.0),
+            6,
+        )
         for key, deposit in extractable(deposits).items()
     }
 

@@ -37,16 +37,22 @@ def new_universe(
     seed: int = 12345,
     seconds_per_tick: int = 300,
     civs: tuple[str, ...] = ("Terrans", "Vex"),
-    system_count: int = 12,
+    system_count: int | None = None,
+    region: str = "arm",
 ) -> int:
-    """Create a universe with ``civs`` seated in it, returning its id."""
+    """Create a universe with ``civs`` seated in it, returning its id.
+
+    ``system_count`` is accepted and ignored. Nothing is generated eagerly any
+    more -- each civ charts its own neighbourhood when it is seated, and
+    everything beyond that materializes when a fleet arrives.
+    """
     universe_id = create_universe(
         engine,
         "Test Universe",
         seed=seed,
         seconds_per_tick=seconds_per_tick,
         mode=UniverseMode.SOLO,
-        system_count=system_count,
+        region=region,
     )
     with open_session(engine) as session:
         universe = session.get(Universe, universe_id)
@@ -145,6 +151,29 @@ def refresh_promoted(world) -> None:
     }
     if hasattr(world, "extraction"):
         world.extraction = extraction_rates(deposits)
+
+
+def clone_world(source: World, target: World) -> None:
+    """Make ``target`` the same place as ``source``, physically.
+
+    A test that compares two colonies has to put them on the same world, and
+    "the same world" is more than the survey document: land area, carrying
+    capacity, habitability and every promoted column derived from the survey
+    all feed production. Copying the survey alone leaves the target mining at
+    its own rates and farming at its own quality, which turns a controlled
+    comparison into a comparison of two planets.
+
+    In a generated galaxy the two free worlds a test happens to pick are never
+    alike -- one may have nine times the land of the other -- so this is what
+    makes "identical colonies" true rather than approximately true.
+    """
+    target.survey = dict(source.survey or {})
+    target.world_type = source.world_type
+    target.habitability = source.habitability
+    target.hazard = source.hazard
+    target.land_area_km2 = source.land_area_km2
+    target.carrying_capacity = source.carrying_capacity
+    refresh_promoted(target)
 
 
 def make_farmable(world: World) -> None:

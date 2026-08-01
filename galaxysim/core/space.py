@@ -8,8 +8,8 @@ points, and what it costs is a function of the distance, not of how many systems
 lie between them.
 
 The integer sector lattice laid over that space exists only for generation: it
-gives :func:`galaxysim.worldgen.system_at` a discrete key to hash. It is not a
-tile the player moves across.
+gives :func:`galaxysim.worldgen.galaxy.systems_in_sector` a discrete key to
+hash. It is not a tile the player moves across.
 """
 
 from __future__ import annotations

@@ -120,15 +120,26 @@ function of distance, not of system hops).
 **Generation is a pure function**, not stored data:
 
 ```
-system_at(universe_seed, sector_coords) -> SystemDescriptor
+systems_in_sector(universe_seed, sector) -> [SystemStub]
+systems_near(universe_seed, position, radius, limit) -> [SystemStub]
 ```
 
-A deterministic hash of `(universe_seed, coords)` seeds the RNG for that
+A deterministic hash of `(universe_seed, sector, index)` seeds the RNG for that
 sector's stars, worlds, types, and stats. Unvisited space costs nothing to store
 and every client agrees on it. A row is **persisted only on first visit or
 start**, at which point it gains mutable state (ownership, depletion, colonies).
 Scanning at range yields a lower-fidelity descriptor derived from the same seed —
-consistent with what you find on arrival.
+`galaxysim chart` gives you the star and its position, which is what a telescope
+gives you, and the worlds appear on arrival.
+
+How many stars a sector holds is drawn from a Poisson distribution against the
+local stellar density, which is a bulge plus an exponential disc plus four
+log-spiral arms — so the galaxy has structure without anything storing it.
+`systems_near` short-circuits on a sector's floor distance, which is what keeps
+"the nearest twenty stars" cheap in the core where there are thirteen thousand
+inside thirty light-years.
+
+**Built**, `worldgen/galaxy.py` and `worldgen/materialize.py`.
 
 ---
 
@@ -199,7 +210,7 @@ Typer + Rich CLI · pytest.
 galaxysim/
   core/        seeds, RNG derivation, coordinates, distance
   model/       SQLAlchemy models + migrations
-  worldgen/    system_at(), world types + stat ranges
+  worldgen/    the galaxy function, stars, planets, geology, biospheres
   tech/        genome, effect grammar, frontier generation, budgets
   species/     LLM profile extraction, schema validation, fallback
   flavor/      phoneme banks, templates, description generation
@@ -222,7 +233,7 @@ Reordered from spec §6 because solo mode moves the playable milestone earlier.
 3. **Deep systems** — economy, colonization, combat, with placeholder content.
    Playable solo vs. dumb AI. *This is the "is it fun" checkpoint — stop and
    evaluate here before layering generation on top.*
-4. **Lazy worldgen** — `system_at()`, world types, persist-on-visit.
+4. **Lazy worldgen** — the galaxy function, world types, persist-on-visit.
 5. **Tech generation** — genome, effect grammar, frontier, depth budgets,
    stacking curve. Lightspeed root.
 6. **Species pipeline** — LLM extraction, schema validation, affinity biasing.
@@ -240,8 +251,8 @@ Reordered from spec §6 because solo mode moves the playable milestone earlier.
   - **Balance invariant**: simulate 200 civs to depth 100 with random research
     paths; assert total power spread stays inside tolerance vs. research spent.
     This is the test that proves infinite tech didn't break fairness.
-  - **Worldgen purity**: `system_at()` returns identical output across processes;
-    scan-at-range agrees with on-arrival.
+  - **Worldgen purity**: the galaxy function returns identical output across
+    processes; scan-at-range agrees with on-arrival.
   - **Pace invariance**: the same scenario run at 5-minute and at hourly cadence
     over the same simulated wall-clock duration produces equivalent civilization
     size. Proves tick rate is granularity, not speed.
