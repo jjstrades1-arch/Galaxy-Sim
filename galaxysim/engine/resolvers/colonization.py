@@ -11,8 +11,9 @@ timed the same way construction is.
 
 from __future__ import annotations
 
+from galaxysim.colony.expedition import Loadout, assess
 from galaxysim.colony.labor import balanced_allocation
-from galaxysim.core.resources import COLONY_COST, can_afford, spend
+from galaxysim.core.resources import can_afford, spend
 from galaxysim.core.space import distance
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
@@ -39,9 +40,10 @@ def resolve(ctx: TickContext) -> None:
             _fail(ctx, intent, f"{world.name} is already settled")
             continue
 
-        if world.habitability <= 0:
-            _fail(ctx, intent, f"{world.name} cannot support a colony")
-            continue
+        # Note what is *not* checked here: habitability. A world with none can
+        # be settled, on wholly artificial life support, and lives or dies by
+        # its supply line. Since barren worlds and gas giants carry the richest
+        # yields in the table, that is where the interesting decisions are.
 
         fleet = ctx.session.get(Fleet, intent.payload.get("fleet_id", -1))
         if fleet is None or fleet.civ_id != civ.id:
@@ -58,56 +60,67 @@ def resolve(ctx: TickContext) -> None:
             intent.result = "awaiting fleet arrival"
             continue
 
+        loadout = Loadout.from_payload(intent.payload)
+
         if intent.status == IntentStatus.QUEUED.value:
-            # An expedition is outfitted somewhere specific. Phase 3 replaces
-            # this flat price with a loadout the player composes; for now the
-            # change is only about *where* the bill lands.
+            # An expedition is outfitted somewhere specific, and what it carries
+            # is what it costs. There is no flat fee and no hostility surcharge:
+            # a hard world is expensive because surviving it takes more cargo.
             outfitter = queries.nearest_colony(ctx.session, civ.id, fleet.position)
             if outfitter is None:
                 _fail(ctx, intent, "no colony available to outfit the expedition")
                 continue
 
-            if not can_afford(outfitter.stockpile, COLONY_COST):
-                intent.result = f"insufficient resources at {outfitter.name}"
+            cost = loadout.cost()
+            if not can_afford(outfitter.stockpile, cost):
+                intent.result = f"insufficient resources at {outfitter.name} to outfit"
                 continue
 
-            spend(outfitter.stockpile, COLONY_COST)
+            spend(outfitter.stockpile, cost)
             intent.status = IntentStatus.IN_PROGRESS.value
             intent.result = ""
             intent.payload["completes_tick"] = ctx.tick + ctx.cadence.ticks_for_hours(
                 ctx.rates.colonization_hours
             )
+
+            assessment = assess(loadout, world, ctx.rates)
             ctx.log(
                 "colonization_started",
-                f"Landing parties began settling {world.name}",
+                f"Landing parties began settling {world.name}. {assessment.summary()}",
                 civ_id=civ.id,
-                payload={"world_id": world.id},
+                payload={
+                    "world_id": world.id,
+                    "survival_hours": assessment.survival_hours,
+                    "self_sufficient": assessment.self_sufficient,
+                },
             )
             continue
 
         if ctx.tick >= int(intent.payload.get("completes_tick", ctx.tick)):
             fleet.colony_pods -= 1
+            # The expedition becomes the colony: colonists are its population,
+            # equipment its infrastructure, stores its opening stockpile.
             colony = Colony(
                 world_id=world.id,
                 civ_id=civ.id,
                 name=str(intent.payload.get("name") or world.name),
-                population=1.0,
-                infrastructure=1.0,
+                population=loadout.colonists,
+                infrastructure=loadout.starting_infrastructure(),
                 founded_tick=ctx.tick,
-                # A new colony starts empty. Whatever it needs before its own
-                # extraction comes online has to be shipped in -- which is the
-                # point of founding by loadout in phase 3.
-                stockpile={},
+                stockpile=loadout.starting_stockpile(),
                 labor=balanced_allocation(),
             )
             ctx.session.add(colony)
             intent.status = IntentStatus.COMPLETED.value
             intent.resolved_tick = ctx.tick
+
+            assessment = assess(loadout, world, ctx.rates)
             ctx.log(
                 "colony_founded",
-                f"Founded {colony.name} on {world.name} ({world.world_type})",
+                f"Founded {colony.name} on {world.name} ({world.world_type}) "
+                f"with {loadout.colonists:.0f} colonists. {assessment.summary()}",
                 civ_id=civ.id,
-                payload={"world_id": world.id},
+                payload={"world_id": world.id, "colony_id": colony.id},
             )
 
 

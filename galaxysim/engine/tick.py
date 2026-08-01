@@ -3,11 +3,13 @@
 Resolution order is fixed and meaningful:
 
 1. **Movement** -- fleets arrive before anything can act on where they are.
-2. **Combat** -- a fleet that arrived this tick is immediately at risk, and one
+2. **Logistics** -- a freighter that landed this tick unloads now, so supplies
+   reach a starving colony before life support is computed against them.
+3. **Combat** -- a fleet that arrived this tick is immediately at risk, and one
    that left is out of reach.
-3. **Production** -- survivors produce; casualties do not.
-4. **Research** -- spends what production just banked.
-5. **Colonization** -- last, so a world contested this tick is resolved before
+4. **Production** -- survivors produce; casualties do not.
+5. **Research** -- spends what production just banked.
+6. **Colonization** -- last, so a world contested this tick is resolved before
    anyone settles it.
 
 Everything random descends from ``tick_seed(universe_seed, tick_number)``, and
@@ -29,13 +31,21 @@ from sqlalchemy.orm import Session
 
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.rates import DEFAULT_RATES, Cadence, Rates
-from galaxysim.engine.resolvers import colonization, combat, movement, production, research
+from galaxysim.engine.resolvers import (
+    colonization,
+    combat,
+    logistics,
+    movement,
+    production,
+    research,
+)
 from galaxysim.model.base import open_session
 from galaxysim.model.entities import Universe
 
 #: Run in this order. Changing it changes the game.
 PIPELINE = (
     ("movement", movement.resolve),
+    ("logistics", logistics.resolve),
     ("combat", combat.resolve),
     ("production", production.resolve),
     ("research", research.resolve),

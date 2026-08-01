@@ -191,6 +191,8 @@ def add_civ(
             # Every civ starts holding Lightspeed Travel -- there is no pre-FTL
             # game, so this is the floor rather than something to research up to.
             speed_ly_per_hour=1.0,
+            cargo_capacity=STARTING_FLEET_STRENGTH * 20.0,
+            cargo={},
             x=system.x,
             y=system.y,
             z=system.z,

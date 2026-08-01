@@ -14,6 +14,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from galaxysim.colony.expedition import Loadout
 from galaxysim.colony.labor import normalize
 from galaxysim.model.entities import Civ, Colony, Intent, IntentKind, IntentStatus, Universe
 
@@ -56,14 +57,25 @@ def move_fleet_to_system(session: Session, civ: Civ, fleet_id: int, system) -> I
 
 
 def colonize(
-    session: Session, civ: Civ, fleet_id: int, world_id: int, *, name: str | None = None
+    session: Session,
+    civ: Civ,
+    fleet_id: int,
+    world_id: int,
+    *,
+    loadout: Loadout | None = None,
+    name: str | None = None,
 ) -> Intent:
     """Settle a world using a colony pod from ``fleet_id``.
+
+    The ``loadout`` is what the expedition carries, and it decides both the
+    price and what the colony wakes up with. It is charged to the colony nearest
+    the fleet when settling begins, not when the order is queued.
 
     Safe to queue alongside the move order that gets the fleet there: the order
     waits for arrival rather than failing.
     """
     payload: dict = {"fleet_id": fleet_id, "world_id": world_id}
+    payload.update((loadout or Loadout()).as_payload())
     if name:
         payload["name"] = name
     return _queue(session, civ, IntentKind.COLONIZE, payload)
@@ -76,14 +88,25 @@ def build_fleet(
     strength: float,
     *,
     colony_pods: int = 0,
+    cargo_capacity: float | None = None,
     name: str | None = None,
 ) -> Intent:
-    """Build a fleet at a colony. Resources are charged when work begins."""
+    """Build a fleet at a colony.
+
+    Requires a shipyard there. Resources are charged when work begins, and the
+    rest is paid in industry-work, so the colony's industry sector decides how
+    fast it finishes.
+
+    Pass ``cargo_capacity`` to build a freighter -- a lot of hold for little
+    strength -- rather than the default warship ratio.
+    """
     payload: dict = {
         "colony_id": colony_id,
         "strength": float(strength),
         "colony_pods": int(colony_pods),
     }
+    if cargo_capacity is not None:
+        payload["cargo_capacity"] = float(cargo_capacity)
     if name:
         payload["name"] = name
     return _queue(session, civ, IntentKind.BUILD_FLEET, payload)
@@ -111,6 +134,64 @@ def set_labor(session: Session, colony: Colony, allocation: dict[str, float]) ->
     read as relative weights.
     """
     colony.labor = normalize(allocation)
+
+
+def transfer_cargo(
+    session: Session,
+    civ: Civ,
+    fleet_id: int,
+    colony_id: int,
+    manifest: dict[str, float],
+    *,
+    loading: bool = True,
+) -> Intent:
+    """Load from or unload to a colony, once.
+
+    Safe to queue before the fleet arrives -- like colonization, it waits.
+    Transfers are rate-limited by the colony's cargo throughput, so a large
+    manifest takes several ticks and stays in progress until it is done.
+    """
+    return _queue(
+        session,
+        civ,
+        IntentKind.TRANSFER_CARGO,
+        {
+            "fleet_id": fleet_id,
+            "colony_id": colony_id,
+            "manifest": {str(k): float(v) for k, v in manifest.items()},
+            "loading": bool(loading),
+        },
+    )
+
+
+def supply_route(
+    session: Session,
+    civ: Civ,
+    fleet_id: int,
+    origin_colony_id: int,
+    dest_colony_id: int,
+    manifest: dict[str, float],
+) -> Intent:
+    """Set up a standing shuttle between two of your colonies.
+
+    Runs forever: load at the origin, fly, unload at the destination, return,
+    repeat. This is what makes local stockpiles playable asynchronously -- an
+    outpost's need does not pause overnight, so neither does the route.
+    """
+    if origin_colony_id == dest_colony_id:
+        raise ValueError("a supply route needs two different colonies")
+    return _queue(
+        session,
+        civ,
+        IntentKind.SUPPLY_ROUTE,
+        {
+            "fleet_id": fleet_id,
+            "origin_colony_id": origin_colony_id,
+            "dest_colony_id": dest_colony_id,
+            "manifest": {str(k): float(v) for k, v in manifest.items()},
+            "leg": "outbound",
+        },
+    )
 
 
 def attack(session: Session, civ: Civ, target_civ_id: int) -> Intent:

@@ -555,6 +555,13 @@ def _commission_fleet(ctx: TickContext, colony: Colony, intent) -> None:
         strength=strength,
         colony_pods=int(intent.payload.get("colony_pods", 0)),
         speed_ly_per_hour=ctx.rates.base_speed_ly_per_hour,
+        # Every ship has some hold. A dedicated freighter is one built with a
+        # lot of it and little else, rather than a separate kind of entity --
+        # which is why cargo runs reuse the ordinary movement resolver.
+        cargo_capacity=float(
+            intent.payload.get("cargo_capacity", strength * ctx.rates.cargo_capacity_per_strength)
+        ),
+        cargo={},
         x=position.x,
         y=position.y,
         z=position.z,

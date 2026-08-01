@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from galaxysim.colony.buildings import building_type
+from galaxysim.colony.expedition import Loadout, assess
 from galaxysim.colony.labor import (
     EXTRACTION,
     INDUSTRY,
@@ -386,3 +387,156 @@ def test_building_catalogue_is_coherent():
         assert any(
             sector in spec.sector_bonus or spec.resource_bonus for spec in BUILDING_TYPES
         ), f"nothing improves {sector}"
+
+
+# --------------------------------------------------------------- expedition
+
+
+def test_loadout_cost_scales_with_what_you_send():
+    """No flat fee: the price is the manifest."""
+    light = Loadout(colonists=2.0, equipment=2.0, stores=10.0)
+    heavy = Loadout(colonists=6.0, equipment=8.0, stores=200.0)
+
+    light_cost, heavy_cost = light.cost(), heavy.cost()
+    assert all(heavy_cost[r] > light_cost[r] for r in light_cost)
+    # Stores are volatiles, so a store-heavy expedition is volatiles-heavy.
+    assert heavy_cost[VOLATILES] > heavy_cost[METAL]
+
+
+def test_equipment_buys_a_more_capable_colony():
+    """Loadout decides what the colony wakes up with, not just its price."""
+    bare = Loadout(colonists=3.0, equipment=0.0, stores=0.0)
+    outfitted = Loadout(colonists=3.0, equipment=10.0, stores=0.0)
+
+    assert outfitted.starting_infrastructure() > bare.starting_infrastructure()
+    assert bare.starting_infrastructure() > 0, "even a bare landing can do something"
+
+
+def test_hostility_is_priced_through_what_survival_requires():
+    """A hard world costs more because it needs more, not via a surcharge.
+
+    This is the design decision the whole pricing model rests on: settle a
+    garden world and a bare rock with the *same* manifest and you pay exactly
+    the same. What differs is that on the rock the manifest is not enough.
+    """
+    from galaxysim.engine.rates import DEFAULT_RATES
+
+    class _World:
+        def __init__(self, habitability, yields):
+            self.habitability = habitability
+            self.resource_yield = yields
+
+    loadout = Loadout(colonists=3.0, equipment=4.0, stores=40.0)
+    garden = assess(loadout, _World(1.0, {VOLATILES: 0.5}), DEFAULT_RATES)
+    rock = assess(loadout, _World(0.0, {METAL: 1.2}), DEFAULT_RATES)
+
+    assert garden.cost == rock.cost, "identical manifests cost the same anywhere"
+    assert garden.survival_hours is None and garden.self_sufficient
+    assert rock.survival_hours is not None and not rock.self_sufficient
+    assert rock.burn_per_hour > 0
+    assert "supply route" in rock.summary()
+
+
+def test_a_world_that_makes_its_own_volatiles_stands_alone():
+    from galaxysim.engine.rates import DEFAULT_RATES
+
+    class _World:
+        habitability = 0.1
+        resource_yield = {VOLATILES: 2.0}
+
+    verdict = assess(Loadout(colonists=3.0, equipment=6.0, stores=50.0), _World(), DEFAULT_RATES)
+    assert verdict.self_sufficient
+    assert "Self-sufficient" in verdict.summary()
+
+
+def test_uninhabitable_worlds_can_be_settled_and_live_on_their_stores():
+    """The payoff: the richest worlds are settleable, and fragile.
+
+    Barren worlds and gas giants carry the best yields in the table and cannot
+    keep anyone alive on their own. Settling one is legal, and it starts a
+    countdown.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=818, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        home = home_colony(session, civ)
+        home.stockpile = {METAL: 9999.0, "energy": 9999.0, VOLATILES: 9999.0}
+
+        # A dead rock in the home system, so the fleet is already there.
+        rock = next(
+            w
+            for w in sorted(home.world.system.worlds, key=lambda w: w.id)
+            if w.colony is None
+        )
+        rock.habitability = 0.0
+        rock.world_type = "barren"
+        rock.resource_yield = {METAL: 1.5}
+        rock_id = rock.id
+
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        intents.colonize(
+            session,
+            civ,
+            fleet.id,
+            rock_id,
+            loadout=Loadout(colonists=3.0, equipment=4.0, stores=100.0),
+            name="Deep Rock",
+        )
+
+    run_ticks(engine, universe_id, 12)
+
+    with open_session(engine) as session:
+        colony = session.scalar(select(Colony).where(Colony.name == "Deep Rock"))
+        assert colony is not None, "an uninhabitable world must be settleable"
+        assert colony.population == pytest.approx(3.0), "colonists become population"
+        assert colony.stockpile[VOLATILES] > 0, "stores land with them"
+        assert colony.infrastructure > 0.5, "equipment becomes infrastructure"
+        assert session.scalars(
+            select(Event).where(Event.kind == "colony_founded")
+        ).all()
+
+    # It mines well, and it is burning through its air the whole time.
+    run_ticks(engine, universe_id, 72)
+    with open_session(engine) as session:
+        colony = session.scalar(select(Colony).where(Colony.name == "Deep Rock"))
+        assert colony.stockpile[METAL] > 0, "a rich world, while it lives"
+        assert colony.stockpile[VOLATILES] < 100.0, "and a clock running down"
+
+
+def test_an_expedition_with_no_stores_dies_on_a_dead_world():
+    """A bad loadout is allowed to fail. The game warns; it does not refuse."""
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=819, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        home = home_colony(session, civ)
+        home.stockpile = {METAL: 9999.0, "energy": 9999.0, VOLATILES: 9999.0}
+
+        rock = next(
+            w for w in sorted(home.world.system.worlds, key=lambda w: w.id) if w.colony is None
+        )
+        rock.habitability = 0.0
+        rock.resource_yield = {METAL: 1.5}
+
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        intents.colonize(
+            session,
+            civ,
+            fleet.id,
+            rock.id,
+            loadout=Loadout(colonists=2.0, equipment=1.0, stores=0.0),
+            name="Doomed",
+        )
+
+    run_ticks(engine, universe_id, 400)
+
+    with open_session(engine) as session:
+        colony = session.scalar(select(Colony).where(Colony.name == "Doomed"))
+        assert colony is not None
+        assert colony.population < 0.5, "no air, no colony"
+        assert session.scalars(
+            select(Event).where(Event.kind == "life_support_failing")
+        ).all()

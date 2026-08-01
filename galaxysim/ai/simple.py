@@ -21,7 +21,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from galaxysim.core.resources import COLONY_COST, FLEET_COST_PER_STRENGTH, can_afford
+from galaxysim.colony.expedition import Loadout
+from galaxysim.core.resources import FLEET_COST_PER_STRENGTH, can_afford
 from galaxysim.core.seeds import rng_for
 from galaxysim.core.space import distance
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION
@@ -100,20 +101,40 @@ def _maybe_expand(
     if fleet is None:
         return
 
-    # The expedition is outfitted wherever the ship is, so affordability is a
-    # question about that colony's stockpile, not about the civ as a whole.
-    outfitter = queries.nearest_colony(session, civ.id, fleet.position)
-    if outfitter is None or not can_afford(outfitter.stockpile, COLONY_COST):
-        return
-
     target = _nearest_settleable_world(session, universe, fleet)
     if target is None:
         return
 
     world, system = target
+
+    # The expedition is outfitted wherever the ship is, so affordability is a
+    # question about that colony's stockpile, not about the civ as a whole.
+    outfitter = queries.nearest_colony(session, civ.id, fleet.position)
+    if outfitter is None:
+        return
+
+    loadout = _loadout_for(world)
+    if not can_afford(outfitter.stockpile, loadout.cost()):
+        return
     if distance(fleet.position, system.position) > 0.01:
         intents.move_fleet_to_system(session, civ, fleet.id, system)
-    intents.colonize(session, civ, fleet.id, world.id)
+    intents.colonize(session, civ, fleet.id, world.id, loadout=loadout)
+
+
+def _loadout_for(world) -> Loadout:
+    """Size an expedition to the world it is going to.
+
+    The AI reads hostility the way the pricing model intends: it does not pay a
+    surcharge for a hard world, it packs more stores. A garden world gets a
+    light landing; a bare rock gets enough air to last while a supply line is
+    arranged.
+    """
+    hostility = 1.0 - world.habitability
+    if hostility <= 0.2:
+        return Loadout(colonists=3.0, equipment=4.0, stores=20.0)
+    if hostility <= 0.6:
+        return Loadout(colonists=3.0, equipment=4.0, stores=60.0)
+    return Loadout(colonists=2.0, equipment=3.0, stores=150.0)
 
 
 def _idle_colony_fleet(session: Session, civ: Civ) -> Fleet | None:
@@ -143,6 +164,9 @@ def _nearest_settleable_world(
         if best is not None and span >= best[0]:
             continue
         for world in sorted(system.worlds, key=lambda w: w.id):
+            # Habitable worlds only. Uninhabitable ones are settleable now, but
+            # they survive on a supply route, and this AI does not yet run any --
+            # it would simply be founding colonies to watch them suffocate.
             if world.habitability > 0 and world.colony is None:
                 best = (span, world, system)
                 break

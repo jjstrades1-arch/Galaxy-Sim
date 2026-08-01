@@ -60,6 +60,8 @@ class IntentKind(str, enum.Enum):
     COLONIZE = "colonize"
     BUILD_FLEET = "build_fleet"
     BUILD_STRUCTURE = "build_structure"
+    TRANSFER_CARGO = "transfer_cargo"
+    SUPPLY_ROUTE = "supply_route"
     ATTACK = "attack"
     RESEARCH = "research"
 
@@ -332,6 +334,12 @@ class Fleet(Base):
     colony_pods: Mapped[int] = mapped_column(Integer, default=0)
     speed_ly_per_hour: Mapped[float] = mapped_column(Float, default=1.0)
 
+    #: Goods currently aboard. A freighter is just a fleet with capacity, which
+    #: is why moving cargo reuses the ordinary movement resolver rather than
+    #: needing a second one.
+    cargo: Mapped[dict] = mapped_column(JSONDict, default=dict)
+    cargo_capacity: Mapped[float] = mapped_column(Float, default=0.0)
+
     x: Mapped[float] = mapped_column(Float)
     y: Mapped[float] = mapped_column(Float)
     z: Mapped[float] = mapped_column(Float)
@@ -354,6 +362,14 @@ class Fleet(Base):
     @property
     def in_transit(self) -> bool:
         return self.arrival_tick is not None
+
+    @property
+    def cargo_tonnage(self) -> float:
+        return sum(self.cargo.values())
+
+    @property
+    def cargo_space(self) -> float:
+        return max(0.0, self.cargo_capacity - self.cargo_tonnage)
 
     def __repr__(self) -> str:
         return f"<Fleet {self.name!r} str={self.strength:.1f}>"

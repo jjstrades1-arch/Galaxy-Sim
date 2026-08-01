@@ -156,6 +156,10 @@ class Rates:
     #: work rather than wall-clock hours so that a colony's industry sector
     #: actually determines how fast it builds.
     fleet_work_per_strength: float = 6.0
+    #: Cargo tonnage a ship carries per point of strength, unless the order
+    #: specifies otherwise. Every ship has some hold; a freighter is one built
+    #: with a lot of it.
+    cargo_capacity_per_strength: float = 20.0
 
     # --- Combat ------------------------------------------------------------
     #: Fraction of a side's strength delivered as damage per real hour. Low on
