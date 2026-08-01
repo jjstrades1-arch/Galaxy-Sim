@@ -126,14 +126,23 @@ def test_growth_is_logistic_and_reverses_when_hungry():
 def test_levels_cost_more_and_return_less():
     """The curve that makes expansion beat deepening.
 
-    Cost is quadratic in level and effect is a square root, so the marginal
-    return on the next level falls away sharply. Past a point a civilization is
-    better off founding a new colony -- and nothing had to say so.
+    Materials are quadratic in level and effect is a square root, so the
+    marginal return on the next level falls away sharply. Past a point a
+    civilization is better off founding a new colony -- and nothing had to say
+    so.
+
+    **Work rises faster than materials**, and that split is deliberate: doubling
+    a plant's output roughly doubles its steel but more than doubles the effort,
+    because the hard part stops being fabrication and becomes siting, power and
+    integration. It is also the only thing that lets one curve serve both a
+    fifty-thousand-person outpost and a capital producing a million times as
+    much -- time is what separates them, since a capital's warehouses never bind.
     """
     first = cost_of_level({"steel": 30.0}, 1)["steel"]
     tenth = cost_of_level({"steel": 30.0}, 10)["steel"]
     assert tenth == pytest.approx(first * 100)
-    assert work_of_level(8.0, 10) == pytest.approx(work_of_level(8.0, 1) * 100)
+    assert work_of_level(8.0, 10) == pytest.approx(work_of_level(8.0, 1) * 1000)
+    assert work_of_level(8.0, 10) > tenth / first * work_of_level(8.0, 1)
 
     assert effect_scale(100) == pytest.approx(10.0)
     assert effect_scale(1) == pytest.approx(1.0)

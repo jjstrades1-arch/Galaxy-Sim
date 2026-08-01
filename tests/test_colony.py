@@ -342,13 +342,17 @@ def test_fleet_construction_requires_a_shipyard():
         assert intent.status == IntentStatus.FAILED.value
         assert "shipyard" in intent.result
 
-    # With a yard, the same order goes through.
+    # With a yard, the same order goes through -- ordered at the capital, which
+    # is where hulls actually get built. A hull is hundreds of thousands of
+    # tonnes and days of industry, so a mining outpost has the slipway and no
+    # way to use it, which is the point of gating on the yard *and* the price.
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        session.add(
-            Building(colony_id=colony_id, kind="shipyard", work_remaining=0.0, completed_tick=0)
-        )
-        intents.build_fleet(session, civ, colony_id, 1.0, name="Second Wave")
+        capital = home_colony(session, civ)
+        take_manual_control(session, civ)
+        capital.stockpile = rich_stockpile(1e12)
+        intents.set_labor(session, capital, {INDUSTRY: 1.0})
+        intents.build_fleet(session, civ, capital.id, 1.0, name="Second Wave")
         fleets_before = len(session.scalars(select(Fleet).where(Fleet.civ_id == civ.id)).all())
 
     run_ticks(engine, universe_id, 400)
@@ -372,12 +376,16 @@ def test_buildings_need_industry_labor_to_finish():
         colony = home_colony(session, civ)
         colony.stockpile = rich_stockpile()
         intents.set_labor(session, colony, {EXTRACTION: 1.0})  # nobody building
-        intents.build_structure(session, civ, colony.id, "laboratory")
+        # A collector, because the capital does not already have one: this test
+        # is about a *fresh* level 1 finishing or not, and deepening one of the
+        # capital's existing three-hundred-level industries is a season's work
+        # whatever the labour allocation says.
+        intents.build_structure(session, civ, colony.id, "collector")
         colony_id = colony.id
 
     run_ticks(engine, universe_id, 100)
     with open_session(engine) as session:
-        lab = session.scalar(select(Building).where(Building.kind == "laboratory"))
+        lab = session.scalar(select(Building).where(Building.kind == "collector"))
         assert lab is not None, "foundations should still be laid"
         assert not lab.is_complete, "nobody is working on it"
 
@@ -387,7 +395,7 @@ def test_buildings_need_industry_labor_to_finish():
 
     run_ticks(engine, universe_id, 100)
     with open_session(engine) as session:
-        lab = session.scalar(select(Building).where(Building.kind == "laboratory"))
+        lab = session.scalar(select(Building).where(Building.kind == "collector"))
         assert lab.is_complete
         assert lab.completed_tick is not None
 
@@ -457,18 +465,29 @@ def test_ordering_an_industry_again_deepens_it():
         take_manual_control(session, civ)
         intents.set_labor(session, colony, {INDUSTRY: 1.0})
         colony.stockpile = rich_stockpile(1e12)
-        yard = next(b for b in colony.buildings if b.kind == "shipyard")
-        before, colony_id = yard.level, colony.id
-        intents.build_structure(session, civ, colony.id, "shipyard")
+        colony_id = colony.id
+        # An industry the capital has not started, so both levels are cheap
+        # enough to watch inside a test. The semantics are what is under test,
+        # not the calendar -- see ``tests/test_prices.py`` for how long a deep
+        # level actually takes, which is months.
+        intents.build_structure(session, civ, colony.id, "collector")
+
+    run_ticks(engine, universe_id, 200)
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        built = [b for b in colony.buildings if b.kind == "collector"]
+        assert len(built) == 1 and built[0].level == 1 and built[0].is_complete
+        civ = civ_by_name(session, universe_id, "Terrans")
+        intents.build_structure(session, civ, colony_id, "collector")
 
     run_ticks(engine, universe_id, 200)
 
     with open_session(engine) as session:
         colony = session.get(Colony, colony_id)
-        yards = [b for b in colony.buildings if b.kind == "shipyard"]
-        assert len(yards) == 1, "an industry deepens rather than duplicating"
-        assert yards[0].level == before + 1
-        assert yards[0].is_complete, "and the level should have finished"
+        built = [b for b in colony.buildings if b.kind == "collector"]
+        assert len(built) == 1, "an industry deepens rather than duplicating"
+        assert built[0].level == 2
+        assert built[0].is_complete, "and the level should have finished"
 
 
 def test_unknown_building_kind_fails_with_a_helpful_message():
@@ -815,11 +834,19 @@ def test_a_governor_develops_a_colony_over_time():
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
-        colony = _outpost(session, civ, habitability=0.9, stockpile={}, farmable=True)
         # A world that can supply its own chains end to end: ore for steel and
-        # construction materials, ice for the water its people breathe. Starting
-        # from an empty warehouse, everything it builds it has to dig up and
-        # refine first -- which is the whole point of watching a governor run.
+        # construction materials, ice for the water its people breathe.
+        #
+        # It opens with one delivery's worth of goods rather than an empty
+        # warehouse, because an industry is now tens of thousands of tonnes and
+        # fifty thousand people mine a few tonnes an hour -- so a colony left
+        # entirely to itself spends a year banking its first mine. That is the
+        # right answer and it is what makes a supply line matter, but it is not
+        # what this test is about, which is whether a governor left alone
+        # actually develops the place.
+        colony = _outpost(
+            session, civ, habitability=0.9, stockpile=rich_stockpile(2.0e5), farmable=True
+        )
         give_deposits(
             colony.world, iron=0.03, silicon=0.03, calcium=0.02, carbon=0.01, water_ice=0.02
         )

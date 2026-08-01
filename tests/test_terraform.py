@@ -131,18 +131,12 @@ def test_the_catalogue_is_coherent():
         project("planet_cracker")
 
 
-def test_a_project_costs_a_civilization_rather_than_a_colony():
-    """Terraforming is the sink at the end of the economy.
-
-    A building is an afternoon's work for a developed world. A project has to be
-    weeks of one, or it stops being what the surplus is *for* and becomes another
-    thing you tick off.
-    """
-    from galaxysim.colony.buildings import BUILDING_TYPES
-
-    cheapest_project = min(sum(p.cost.values()) for p in PROJECTS.values())
-    dearest_building = max(sum(b.cost.values()) for b in BUILDING_TYPES)
-    assert cheapest_project > dearest_building * 10_000
+# What a project costs relative to everything else -- and how long it takes,
+# which turned out to matter more -- is calibrated in ``tests/test_prices.py``
+# against a measured reference economy rather than asserted as a ratio here.
+# The version that lived at this spot claimed a project cost ten thousand times
+# the dearest building, which was true only because buildings had been left at
+# pre-rescale prices and cost thirty tonnes.
 
 
 # --- preconditions are physics ------------------------------------------------

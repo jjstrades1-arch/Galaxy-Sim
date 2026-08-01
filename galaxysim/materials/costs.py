@@ -37,18 +37,25 @@ from galaxysim.materials.catalogue import (
 #: so it is allowed to grow with the civilization building it. A homeworld of
 #: seven billion fields strength in the thousands; a frontier outpost fields
 #: single digits. What keeps that honest is upkeep, below.
+#:
+#: Two hundred thousand tonnes a point, which is to say a warship is a warship:
+#: a strength-2 hull masses about what a large ore carrier does. This was
+#: nineteen tonnes for two phases, having been left behind when the economy
+#: moved to real units -- a civilization producing eighty-six million tonnes an
+#: hour bought a capital ship for the price of a lorry, and every constraint
+#: downstream of that was fiction.
 FLEET_COST_PER_STRENGTH: dict[str, float] = {
-    ALLOYS: 6.0,
-    STEEL: 10.0,
-    ELECTRONICS: 3.0,
+    ALLOYS: 63_000.0,
+    STEEL: 105_000.0,
+    ELECTRONICS: 32_000.0,
 }
 
 #: Per tonne of cargo capacity. A freighter is mostly hull: cheap per tonne, and
 #: deliberately far cheaper than strength, so hauling is affordable and fighting
-#: is not.
+#: is not. A big freighter comes out at well under a single point of warship.
 FREIGHTER_COST_PER_CAPACITY: dict[str, float] = {
-    STEEL: 0.35,
-    ALLOYS: 0.1,
+    STEEL: 3.5,
+    ALLOYS: 1.0,
 }
 
 #: Ongoing, per point of fleet strength per real hour. Without upkeep a fleet is
@@ -60,9 +67,14 @@ FREIGHTER_COST_PER_CAPACITY: dict[str, float] = {
 #: than any absolute figure -- strength is allowed to grow with the civilization
 #: building it, and upkeep grows with it, so a civ can sustain a fleet drawing
 #: about a tenth of its refined output whatever its size.
+#:
+#: That paragraph has been here since the constant was written and was false for
+#: most of that time: the real figure was 0.00002% of output, and it was never
+#: checked. ``tests/test_prices.py`` now checks both halves -- the ratio against
+#: build cost, and the bill against what a capital's industry actually makes.
 FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {
-    FUEL: 0.24,
-    ALLOYS: 0.05,
+    FUEL: 2_480.0,
+    ALLOYS: 520.0,
 }
 
 # --- expeditions -------------------------------------------------------------
@@ -73,11 +85,16 @@ FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {
 COLONIST_COST: dict[str, float] = {CONSTRUCTION: 0.9, FOOD: 1.2, WATER: 1.0}
 
 #: Per unit of equipment, which becomes the colony's starting infrastructure.
+#:
+#: Priced against a level of industry rather than against a crate, because that
+#: is what it becomes: a unit of equipment is a working installation on landing,
+#: and one that cost nineteen tonnes made a colony's entire industrial base
+#: cheaper than the food its settlers ate on the way.
 EQUIPMENT_COST: dict[str, float] = {
-    STEEL: 8.0,
-    ALLOYS: 3.0,
-    ELECTRONICS: 2.0,
-    CONSTRUCTION: 6.0,
+    STEEL: 12_000.0,
+    ALLOYS: 4_500.0,
+    ELECTRONICS: 3_000.0,
+    CONSTRUCTION: 9_000.0,
 }
 
 #: Per unit of life-support stores — the colony's survival clock on a world that

@@ -22,14 +22,20 @@ continent wants people it does not have.
 
 Levels cost more as they rise and return less, so nothing runs away:
 
-* **Cost scales with the square of the level being built**, so the tenth level
-  of a mine costs a hundred times the first and total investment is cubic.
+* **Materials scale with the square of the level being built**, so the tenth
+  level of a mine costs a hundred times the first and total investment is cubic.
+* **Work scales with the cube**, because effort and tonnage do not rise
+  together: the hard part of a bigger plant is siting, power and integration
+  rather than fabrication.
 * **Effect scales with the square root of level**, so a level-100 mine is ten
   times a level-1 mine rather than a hundred times.
 
-The gap between those two is enormous on purpose, because the economies it has
-to span are: a landing party of fifty thousand has to be able to afford level 1,
+The gap between those is enormous on purpose, because the economies it has to
+span are: a landing party of fifty thousand has to be able to afford level 1,
 and a civilization of eighteen billion has to find level 300 a real commitment.
+Those two differ by a factor of a million in construction output, and *time* is
+what separates them -- at real scale a capital's warehouses are never what stops
+it.
 
 The consequence is the one the design wants. Past a point the next tonne of steel
 is always better spent founding a *new* colony than deepening an old one, so
@@ -99,9 +105,27 @@ def levels_in_use(buildings) -> int:
 #: make it so.
 LEVEL_COST_EXPONENT = 2.0
 
+#: How sharply the *effort* rises, as opposed to the tonnage. Steeper, and the
+#: split matters more than either number.
+#:
+#: Materials and labour do not scale together in real industry. Doubling a
+#: plant's output roughly doubles the steel; it more than doubles the work,
+#: because the hard part stops being fabrication and becomes siting, power,
+#: integration and finding somewhere to put the spoil. A level-300 mining
+#: district is not three hundred level-1 mines standing in a row, it is one
+#: machine the size of a subcontinent.
+#:
+#: It is also the only thing that makes the ladder span the economies it has to.
+#: A fifty-thousand-person outpost produces about 0.24 units of construction an
+#: hour; a developed capital produces 261,000 -- a factor of a million. A single
+#: exponent cannot make level 1 affordable to the first and level 300 expensive
+#: to the second. Cubic can: at a base of ~17, level 1 is three days of an
+#: outpost's whole output and level 320 is three months of a capital's.
+LEVEL_WORK_EXPONENT = 3.0
 
-def _level_factor(level: int) -> float:
-    return float(max(1, level)) ** LEVEL_COST_EXPONENT
+
+def _level_factor(level: int, exponent: float = LEVEL_COST_EXPONENT) -> float:
+    return float(max(1, level)) ** exponent
 
 
 def cost_of_level(base_cost: dict[str, float], level: int) -> dict[str, float]:
@@ -111,8 +135,13 @@ def cost_of_level(base_cost: dict[str, float], level: int) -> dict[str, float]:
 
 
 def work_of_level(base_work: float, level: int) -> float:
-    """Industry-work for the ``level``-th level. Same curve as the materials."""
-    return base_work * _level_factor(level)
+    """Industry-work for the ``level``-th level.
+
+    Steeper than the materials: see :data:`LEVEL_WORK_EXPONENT`. Time is what
+    actually stops a capital from maxing out its world in an afternoon, because
+    at real scale a capital's warehouses are never the binding constraint.
+    """
+    return base_work * _level_factor(level, LEVEL_WORK_EXPONENT)
 
 
 def effect_scale(level: int) -> float:

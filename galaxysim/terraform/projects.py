@@ -70,10 +70,19 @@ class Project:
     effect: str
     #: Materials consumed at the colony running it, when work begins.
     cost: dict[str, float]
-    #: Industry-work to finish. Enormous next to a building: a developed
-    #: capital pouring its whole construction capacity into one of these spends
-    #: one to two weeks on it, and a full sequence from dead rock to breathable
-    #: world is a campaign rather than an errand.
+    #: Industry-work to finish. Enormous next to a building, and calibrated
+    #: against the *sequence* rather than the project: turning a cold rock into
+    #: somewhere people can breathe takes about fourteen of these, so a single
+    #: one is a day or two of a developed capital's whole construction capacity
+    #: and the campaign is roughly three weeks.
+    #:
+    #: That is for a civilization with one developed world. Projects pool
+    #: construction across every colony within supply range
+    #: (:mod:`galaxysim.engine.resolvers.terraform`), so an empire with a
+    #: developed neighbourhood around the target does the same campaign in a
+    #: day or two -- which is the largest single reward for having expanded, and
+    #: the reason planet-scale engineering is something you grow into rather
+    #: than something you start with.
     work: float
     #: How much of the effect one completed run delivers. Units depend on the
     #: effect -- bar, kelvin, fraction -- and each is documented below.
@@ -103,7 +112,7 @@ PROJECTS: dict[str, Project] = {
             "Nothing else is worth starting until this stands.",
             effect=SHIELD,
             cost={STEEL: 4.0e8, ALLOYS: 2.0e8, ELECTRONICS: 1.2e8, FISSILES: 4.0e6},
-            work=6e+05,
+            work=5.2e+07,
             magnitude=1.0,
         ),
         Project(
@@ -114,7 +123,7 @@ PROJECTS: dict[str, Project] = {
             "precondition for every kind of weather.",
             effect=THICKEN_ATMOSPHERE,
             cost={STEEL: 3.0e8, CERAMICS: 1.5e8, POLYMERS: 8.0e7, FUEL: 1.0e8},
-            work=4.5e+05,
+            work=3.9e+07,
             #: Bar of nitrogen added per run.
             magnitude=0.25,
             requires=(NEEDS_SHIELD,),
@@ -127,7 +136,7 @@ PROJECTS: dict[str, Project] = {
             "pressurised.",
             effect=WARM,
             cost={CONSTRUCTION: 2.0e8, POLYMERS: 1.5e8, FUEL: 1.2e8},
-            work=3e+05,
+            work=2.6e+07,
             #: Kelvin added to the surface per run.
             magnitude=18.0,
             requires=(NEEDS_ATMOSPHERE,),
@@ -140,7 +149,7 @@ PROJECTS: dict[str, Project] = {
             "helps a world that is too hot rather than too cold.",
             effect=COOL,
             cost={ALLOYS: 3.5e8, ELECTRONICS: 1.5e8, CERAMICS: 1.0e8},
-            work=5e+05,
+            work=4.35e+07,
             #: Kelvin removed from the surface per run.
             magnitude=20.0,
         ),
@@ -152,7 +161,7 @@ PROJECTS: dict[str, Project] = {
             "never had one.",
             effect=DELIVER_WATER,
             cost={FUEL: 4.0e8, FISSILES: 1.0e7, ALLOYS: 1.0e8, WATER_ICE: 5.0e7},
-            work=7e+05,
+            work=6.1e+07,
             #: Fraction of the surface covered in water per run.
             magnitude=0.18,
             requires=(NEEDS_ATMOSPHERE, NEEDS_TOLERABLE_TEMPERATURE),
@@ -165,7 +174,7 @@ PROJECTS: dict[str, Project] = {
             "no atmosphere at all, and this is what closes that gap.",
             effect=SCRUB_TOXINS,
             cost={CERAMICS: 2.5e8, ELECTRONICS: 1.0e8, CONSTRUCTION: 1.5e8},
-            work=4e+05,
+            work=3.5e+07,
             #: Fraction of each toxin removed per run.
             magnitude=0.7,
             requires=(NEEDS_ATMOSPHERE,),
@@ -178,7 +187,7 @@ PROJECTS: dict[str, Project] = {
             "stop paying: a biosphere oxygenates its own sky.",
             effect=SEED_LIFE,
             cost={FERTILISER: 3.0e8, POLYMERS: 1.0e8, CONSTRUCTION: 2.0e8},
-            work=9e+05,
+            work=7.8e+07,
             #: Advances the biosphere one stage per run.
             magnitude=1.0,
             requires=(NEEDS_ATMOSPHERE, NEEDS_LIQUID_WATER, NEEDS_TOLERABLE_TEMPERATURE),
@@ -191,7 +200,7 @@ PROJECTS: dict[str, Project] = {
             "before people can walk outside.",
             effect=OXYGENATE,
             cost={ELECTRONICS: 2.5e8, FISSILES: 2.0e7, CERAMICS: 2.0e8, ALLOYS: 1.5e8},
-            work=8e+05,
+            work=7.0e+07,
             #: Bar of O2 added per run.
             magnitude=0.08,
             requires=(NEEDS_ATMOSPHERE, NEEDS_SHIELD),

@@ -224,7 +224,13 @@ class Rates:
     #: Industry-work needed per unit of fleet strength. Construction is paid in
     #: work rather than wall-clock hours so that a colony's industry sector
     #: actually determines how fast it builds.
-    fleet_work_per_strength: float = 6.0
+    #:
+    #: Calibrated so a developed capital spends most of a day on a warship and a
+    #: frontier outpost could not finish one in a year. That asymmetry is the
+    #: design -- a shipyard gates fleet construction, but the *price* is what
+    #: makes a mining colony genuinely not a naval base. See
+    #: ``tests/test_prices.py``.
+    fleet_work_per_strength: float = 5.6e6
     #: Cargo tonnage a ship carries per point of strength, unless the order
     #: specifies otherwise. Every ship has some hold; a freighter is one built
     #: with a lot of it.
