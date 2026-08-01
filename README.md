@@ -469,19 +469,20 @@ Named explicitly so nobody mistakes scaffolding for design:
 
 ## Known tuning gaps
 
-- **Expansion plateaus, and it should compound.** A 28-day soak with 8 AI civs
-  reaches 6 colonies by *day 2* and then sits at exactly 6 for the remaining 26
-  days, with population flat at 11.37 B and four techs. Six colonies was meant
-  to be a floor. The opening sprint is the starting pods being spent; what is
-  missing is the second wave, and the suspect is the AI rather than the rules —
-  it settles what it was charted, and then never charts anything else. Nothing
-  artificial is holding it back, which is what makes this a behaviour gap rather
-  than a tuning one.
-- **A tick costs ~390 ms with 8 civs and 48 colonies.** The query *count* is
-  flat in universe size and tested to stay that way, so this is per-row cost
-  rather than the quadratic shape that was fixed last phase — but it is four
-  times what the same shape cost before real-scale colonies, and a shared
-  universe on a five-minute cadence resolves 288 ticks a day.
+- **Expansion levels off at what the population supports.** A 28-day soak with
+  8 AI civs runs 6 → 16 → 18 colonies over the first six days and then holds at
+  18. The shape is right and the ceiling is the design rather than a brake: an
+  outpost holds tens of thousands against a homeworld's eleven billion, so
+  settling rocks barely moves the population, and everything scaled to
+  population — fleet upkeep most of all — stops rising with it. The only thing
+  that lifts it is terraforming a world into somewhere billions can live, which
+  is exactly what the tree is for and exactly what no AI does yet. Whether 18 is
+  the *right* plateau is a question for a play session.
+- **A tick costs ~760 ms with 8 civs and 144 colonies.** About 5 ms a colony,
+  down from 8 — the query count is flat in universe size and tested to stay
+  that way, so this is honest per-row cost rather than the quadratic shape that
+  was fixed last phase. It still wants profiling before a shared universe is
+  real, since a five-minute cadence resolves 288 ticks a day.
 - **Supply routes over-deliver.** A standing route ships its full manifest every
   trip whether or not the destination needs it, so a well-supplied outpost banks
   months of surplus. A route that tops up to a target level would be better.
@@ -497,7 +498,12 @@ Named explicitly so nobody mistakes scaffolding for design:
   outstanding one.
 - **The AI does not terraform.** It expands, supplies and migrates, but the
   biggest thing a mature civilization can do with its surplus is not in its
-  repertoire, so an AI empire plateaus where a player's would not.
+  repertoire, so an AI empire plateaus where a player's would not. This is now
+  the *first* thing to fix, because it is what the plateau above is waiting on.
+- **A fleet cannot be decommissioned.** Upkeep is a one-way ratchet: a colony
+  ship that has landed its pod is a hull with no purpose and a permanent bill,
+  and there is no way to scrap it or recover its materials. The AI ends a soak
+  with two dozen of them.
 - **Nobody has played a core start for long.** Neighbours 1.4 ly apart is a very
   different game from neighbours 10 ly apart, and the difference is currently a
   claim backed by density arithmetic rather than a session.

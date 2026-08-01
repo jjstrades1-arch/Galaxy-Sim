@@ -5,8 +5,20 @@ order stays queued rather than failing, so a player can queue "move there, then
 settle it" in one sitting and log off -- which is the whole point of an async
 game.
 
-Settling takes wall-clock hours (:attr:`Rates.colonization_hours`), charged and
-timed the same way construction is.
+**An expedition is loaded before it leaves.** That is the physical reading and
+it is also the only one that works: outfitting on arrival means shopping for a
+year of water and fertiliser at whatever colony happens to be nearest the
+*destination*, which on a frontier run is the outpost you founded last week and
+which has nothing. An order in that position never fails and never completes --
+it sits forever reporting that the warehouse at the edge of your territory is
+empty, because it always will be.
+
+So the cost is charged at the origin, while the ship is still somewhere with a
+warehouse, and what it carries is what it paid for. If the expedition is called
+off after loading, the cargo goes back where it came from.
+
+Settling then takes wall-clock hours (:attr:`Rates.colonization_hours`), timed
+the same way construction is.
 """
 
 from __future__ import annotations
@@ -24,6 +36,13 @@ from galaxysim.model.entities import Civ, Colony, Fleet, IntentKind, IntentStatu
 #: approximately there.
 ARRIVAL_TOLERANCE_LY = 0.01
 
+#: How long an order will wait for its origin to be able to afford the loadout
+#: before giving up, in hours. Waiting is right -- a capital mid-way through a
+#: shipyard run will have the materials next week -- but waiting *forever* is
+#: how one unaffordable order silently ends a civilization's expansion, so the
+#: patience is finite and the fleet is released when it runs out.
+OUTFITTING_PATIENCE_HOURS = 24.0 * 14.0
+
 
 def resolve(ctx: TickContext) -> None:
     for intent in queries.active_intents(ctx.session, ctx.universe.id, IntentKind.COLONIZE.value):
@@ -40,6 +59,8 @@ def resolve(ctx: TickContext) -> None:
             _fail(ctx, intent, f"{world.name} is already settled")
             continue
 
+        loadout = Loadout.from_payload(intent.payload)
+
         # Note what is *not* checked here: habitability. A world with none can
         # be settled, on wholly artificial life support, and lives or dies by
         # its supply line. Since barren worlds and gas giants carry the richest
@@ -54,29 +75,19 @@ def resolve(ctx: TickContext) -> None:
             _fail(ctx, intent, f"{fleet.name} carries no colony pods")
             continue
 
+        # Load first, wherever the ship currently is. On a normal order that is
+        # the colony it was built at, before it has gone anywhere.
+        if not intent.payload.get("outfitted_colony_id"):
+            if not _outfit(ctx, intent, civ, fleet, loadout):
+                continue
+
         if fleet.in_transit or distance(fleet.position, world.system.position) > ARRIVAL_TOLERANCE_LY:
             # Not there yet. Wait rather than fail -- the fleet is probably on
             # its way under a move order queued at the same time.
-            intent.result = "awaiting fleet arrival"
+            intent.result = "expedition loaded, awaiting fleet arrival"
             continue
 
-        loadout = Loadout.from_payload(intent.payload)
-
         if intent.status == IntentStatus.QUEUED.value:
-            # An expedition is outfitted somewhere specific, and what it carries
-            # is what it costs. There is no flat fee and no hostility surcharge:
-            # a hard world is expensive because surviving it takes more cargo.
-            outfitter = queries.nearest_colony(ctx.session, civ.id, fleet.position)
-            if outfitter is None:
-                _fail(ctx, intent, "no colony available to outfit the expedition")
-                continue
-
-            cost = loadout.cost()
-            if not can_afford(outfitter.stockpile, cost):
-                intent.result = f"insufficient resources at {outfitter.name} to outfit"
-                continue
-
-            spend(outfitter.stockpile, cost)
             intent.status = IntentStatus.IN_PROGRESS.value
             intent.result = ""
             intent.payload["completes_tick"] = ctx.tick + ctx.cadence.ticks_for_hours(
@@ -124,7 +135,68 @@ def resolve(ctx: TickContext) -> None:
             )
 
 
+def _outfit(ctx: TickContext, intent, civ: Civ, fleet: Fleet, loadout: Loadout) -> bool:
+    """Load the expedition out of the nearest colony's warehouse.
+
+    Returns whether the ship is now loaded. A ``False`` leaves the order queued:
+    either it is still waiting for the materials to exist, or its patience has
+    run out and it has failed outright.
+
+    What it carries is what it costs. There is no flat fee and no hostility
+    surcharge -- a hard world is expensive because surviving it takes more
+    cargo, which is a fact about the manifest rather than a price list.
+    """
+    outfitter = queries.nearest_colony(ctx.session, civ.id, fleet.position)
+    if outfitter is None:
+        _fail(ctx, intent, "no colony available to outfit the expedition")
+        return False
+
+    cost = loadout.cost()
+    if not can_afford(outfitter.stockpile, cost):
+        waited = (ctx.tick - intent.queued_tick) * ctx.cadence.hours_per_tick
+        if waited >= OUTFITTING_PATIENCE_HOURS:
+            _fail(
+                ctx,
+                intent,
+                f"{outfitter.name} could not outfit the expedition in "
+                f"{OUTFITTING_PATIENCE_HOURS / 24:.0f} days; order abandoned",
+            )
+            return False
+        intent.result = f"insufficient resources at {outfitter.name} to outfit"
+        return False
+
+    spend(outfitter.stockpile, cost)
+    intent.payload["outfitted_colony_id"] = outfitter.id
+    intent.result = "expedition loaded"
+    ctx.log(
+        "expedition_outfitted",
+        f"{outfitter.name} loaded {fleet.name} for the settlement of "
+        f"{loadout.colonists:,.0f} colonists",
+        civ_id=civ.id,
+        payload={"colony_id": outfitter.id, "fleet_id": fleet.id},
+    )
+    return True
+
+
 def _fail(ctx: TickContext, intent, reason: str) -> None:
+    """Abandon an order, returning anything already loaded to where it came from.
+
+    An expedition that is called off is cargo sitting in a hold, not cargo that
+    was burned -- so it goes back on the shelf. Without this, a world settled by
+    a rival while your convoy was in transit would silently destroy a year of a
+    colony's production.
+    """
+    colony_id = intent.payload.get("outfitted_colony_id") if intent.payload else None
+    if colony_id:
+        origin = ctx.session.get(Colony, colony_id)
+        if origin is not None:
+            returned = dict(origin.stockpile)
+            for material, amount in Loadout.from_payload(intent.payload).cost().items():
+                returned[material] = returned.get(material, 0.0) + amount
+            origin.stockpile = returned
+            reason = f"{reason}; the expedition was returned to {origin.name}"
+        intent.payload["outfitted_colony_id"] = None
+
     intent.status = IntentStatus.FAILED.value
     intent.resolved_tick = ctx.tick
     intent.result = reason

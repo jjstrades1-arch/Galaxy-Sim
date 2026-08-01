@@ -151,7 +151,7 @@ def test_colonize_waits_for_the_fleet_then_settles(game):
             select(Intent).where(Intent.kind == "colonize").order_by(Intent.id)
         )
         assert colonize_intent.status == IntentStatus.QUEUED.value
-        assert colonize_intent.result == "awaiting fleet arrival"
+        assert colonize_intent.result == "expedition loaded, awaiting fleet arrival"
 
     # 12 ticks per light-year at 1 ly/hour and 5-minute ticks, plus the six
     # hours of settling once the fleet is down.
@@ -162,6 +162,55 @@ def test_colonize_waits_for_the_fleet_then_settles(game):
         colonies = session.scalars(select(Colony).where(Colony.civ_id == terrans.id)).all()
         assert len(colonies) == colonies_before + 1
         assert session.get(Fleet, fleet_id).colony_pods == 0
+
+
+def test_an_expedition_is_paid_for_where_it_departs(game):
+    """The bug that quietly ended every AI civilization's expansion.
+
+    An expedition used to be outfitted on *arrival*, from whichever colony was
+    nearest the destination -- which on a frontier run is the outpost you
+    founded last week, and which has nothing. The order then never failed and
+    never completed: it reported an empty warehouse at the edge of your
+    territory forever, and since a civ only settles one world at a time, that
+    single stuck order stopped it expanding again for the rest of the game.
+
+    A colony ship is loaded before it leaves. That is both the physical reading
+    and the one that cannot deadlock, because the place it is charged is a
+    place that has something.
+    """
+    engine, universe_id = game
+
+    with open_session(engine) as session:
+        terrans = civ_by_name(session, universe_id, "Terrans")
+        home = session.scalar(select(Colony).where(Colony.civ_id == terrans.id).order_by(Colony.id))
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == terrans.id).order_by(Fleet.id))
+        target = next(
+            system
+            for system in session.scalars(
+                select(StarSystem)
+                .where(StarSystem.universe_id == universe_id)
+                .order_by(StarSystem.id)
+            )
+            if any(w.colony is None for w in system.worlds)
+            and distance(Vec3(system.x, system.y, system.z), fleet.position) > 0.01
+        )
+        world = next(w for w in sorted(target.worlds, key=lambda w: w.id) if w.colony is None)
+        before = dict(home.stockpile)
+        intents.move_fleet_to_system(session, terrans, fleet.id, target)
+        intents.colonize(session, terrans, fleet.id, world.id)
+        home_id = home.id
+
+    run_ticks(engine, universe_id, 3)
+
+    with open_session(engine) as session:
+        home = session.get(Colony, home_id)
+        order = session.scalar(select(Intent).where(Intent.kind == "colonize"))
+        assert order.payload["outfitted_colony_id"] == home_id, (
+            "the capital should have loaded the ship before it left"
+        )
+        # Something was actually taken out of the warehouse it departed from.
+        spent = {k: before.get(k, 0.0) - home.stockpile.get(k, 0.0) for k in before}
+        assert any(amount > 0 for amount in spent.values())
 
 
 def test_research_is_a_standing_order(hourly_game):

@@ -86,6 +86,31 @@ TONNES_PER_SETTLER = 0.5
 #: military proportional to the economy paying for it at any scale.
 MAX_STRENGTH_PER_BILLION_POP = 4.0
 
+#: Warship strength the AI garrisons per colony it holds. Deliberately modest:
+#: this is the *reason* to build a warship, where
+#: :data:`MAX_STRENGTH_PER_BILLION_POP` is only the ceiling on what the economy
+#: can pay upkeep for. Wanting a navy and being able to afford one are different
+#: questions and the AI used to conflate them, with the result that it bought
+#: hulls until it could not afford to expand.
+DEFENSIVE_STRENGTH_PER_COLONY = 2.0
+
+#: The most of the affordable ceiling the AI will let *newly built* warships
+#: occupy, leaving the rest as headroom for settlers and freighters.
+#:
+#: This does not stop the empire settling into a steady state, and it is worth
+#: being clear about why, because the reason is the design rather than a bug.
+#: Settling dead worlds adds almost no *people* -- a civ can go from six
+#: colonies to thirty and its population barely moves, because an outpost holds
+#: tens of thousands against a homeworld's eighteen billion. So the upkeep
+#: budget, which scales with population, is very nearly a constant, and an
+#: expanding civilization eventually spends all of it. Where it stops is
+#: therefore set by how many people it has, and the only thing in the game that
+#: changes that is terraforming a world into somewhere billions can live.
+#:
+#: What this constant does is stop *deliberate* warship purchases from eating
+#: the expansion budget first.
+NAVY_SHARE_OF_UPKEEP_BUDGET = 0.55
+
 
 def take_all_turns(session: Session, universe: Universe) -> int:
     """Let every AI civ in ``universe`` queue its orders. Returns how many acted."""
@@ -117,7 +142,7 @@ def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
     _maybe_expand(session, universe, civ, pending)
     _maybe_supply(session, universe, civ, pending)
     _maybe_migrate(session, universe, civ, pending)
-    _maybe_build(session, civ, pending, rng)
+    _maybe_build(session, universe, civ, pending, rng)
 
 
 def _set_policies(session: Session, civ: Civ) -> None:
@@ -156,32 +181,41 @@ def _pending_by_kind(session: Session, civ: Civ) -> dict[str, list[Intent]]:
 def _maybe_expand(
     session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
 ) -> None:
-    """Send an idle colony ship at the nearest unclaimed habitable world."""
-    if pending.get(IntentKind.COLONIZE.value):
-        return  # already settling something
+    """Send every idle colony ship at the nearest unclaimed world it can afford.
 
-    fleet = _idle_colony_fleet(session, civ)
-    if fleet is None:
-        return
+    Every, not one. A civ that has built fourteen colony ships has fourteen
+    expeditions' worth of intent, and settling them one at a time means the
+    other thirteen sit in orbit paying upkeep for a month. The bound on how fast
+    it expands should be what its warehouses can outfit, which is a real
+    constraint, rather than a queue of one, which is not.
+    """
+    ordered = pending.get(IntentKind.COLONIZE.value, [])
+    busy_fleets = {i.payload.get("fleet_id") for i in ordered}
+    claimed = {i.payload.get("world_id") for i in ordered}
 
-    target = _nearest_settleable_world(session, universe, fleet)
-    if target is None:
-        return
+    for fleet in _idle_colony_fleets(session, civ):
+        if fleet.id in busy_fleets:
+            continue
 
-    world, system = target
+        target = _nearest_settleable_world(session, universe, fleet, claimed)
+        if target is None:
+            return  # nothing left for this fleet is nothing left for any of them
+        world, system = target
 
-    # The expedition is outfitted wherever the ship is, so affordability is a
-    # question about that colony's stockpile, not about the civ as a whole.
-    outfitter = queries.nearest_colony(session, civ.id, fleet.position)
-    if outfitter is None:
-        return
+        # The expedition is loaded before it leaves, so affordability is a
+        # question about the warehouse it is standing next to now.
+        outfitter = queries.nearest_colony(session, civ.id, fleet.position)
+        if outfitter is None:
+            return
 
-    loadout = _loadout_for(world)
-    if not can_afford(outfitter.stockpile, loadout.cost()):
-        return
-    if distance(fleet.position, system.position) > 0.01:
-        intents.move_fleet_to_system(session, civ, fleet.id, system)
-    intents.colonize(session, civ, fleet.id, world.id, loadout=loadout)
+        loadout = _loadout_for(world)
+        if not can_afford(outfitter.stockpile, loadout.cost()):
+            return  # the next ship would ask the same warehouse the same thing
+
+        if distance(fleet.position, system.position) > 0.01:
+            intents.move_fleet_to_system(session, civ, fleet.id, system)
+        intents.colonize(session, civ, fleet.id, world.id, loadout=loadout)
+        claimed.add(world.id)
 
 
 def _loadout_for(world) -> Loadout:
@@ -362,24 +396,29 @@ def _idle_freighter(session: Session, civ: Civ, hold: float | None = None) -> Fl
     return None
 
 
-def _idle_colony_fleet(session: Session, civ: Civ) -> Fleet | None:
-    for fleet in session.scalars(
-        select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
-    ):
-        if fleet.colony_pods > 0 and not fleet.in_transit:
-            return fleet
-    return None
+def _idle_colony_fleets(session: Session, civ: Civ) -> list[Fleet]:
+    return [
+        fleet
+        for fleet in session.scalars(
+            select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
+        )
+        if fleet.colony_pods > 0 and not fleet.in_transit
+    ]
 
 
 def _nearest_settleable_world(
-    session: Session, universe: Universe, fleet: Fleet
+    session: Session,
+    universe: Universe,
+    fleet: Fleet,
+    claimed: set[int] | None = None,
 ) -> tuple[World, StarSystem] | None:
-    """Closest habitable, unclaimed world.
+    """Closest unclaimed world, skipping any another expedition is already after.
 
     Only looks at systems that already have rows -- that is, ones somebody has
-    visited. Once lazy generation lands (step 4) this is exactly the AI's
-    equivalent of a player's star charts, so it stays honest.
+    visited. That is exactly a player's star charts, so the AI is working from
+    the same information a player would have and no more.
     """
+    claimed = claimed or set()
     best: tuple[float, World, StarSystem] | None = None
 
     for system in session.scalars(
@@ -389,7 +428,7 @@ def _nearest_settleable_world(
         if best is not None and span >= best[0]:
             continue
         for world in sorted(system.worlds, key=lambda w: w.id):
-            if world.colony is not None:
+            if world.colony is not None or world.id in claimed:
                 continue
             # Any unclaimed world, including dead ones. That is not recklessness:
             # genuinely habitable worlds are about one in six thousand and every
@@ -402,8 +441,22 @@ def _nearest_settleable_world(
     return (best[1], best[2]) if best else None
 
 
-def _maybe_build(session: Session, civ: Civ, pending: dict[str, list[Intent]], rng) -> None:
-    """Build a fleet when comfortably able to afford one, and to keep it."""
+def _maybe_build(
+    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]], rng
+) -> None:
+    """Build a fleet when there is a reason to and it can afford to keep it.
+
+    What it builds is decided, not rolled. The version of this that flipped a
+    coin between a warship and a settler filled the whole standing-navy budget
+    with idle warships inside two days -- and since the budget scales with
+    population, and population only grows by expanding, the AI then could not
+    afford the colony ship that would have let it grow. Fifty hulls in orbit,
+    three hundred empty worlds in range, and a civilization that never moved
+    again.
+
+    So: expansion first, and a warship only up to what the empire it actually
+    holds would want to defend.
+    """
     if pending.get(IntentKind.BUILD_FLEET.value):
         return
 
@@ -432,13 +485,41 @@ def _maybe_build(session: Session, civ: Civ, pending: dict[str, list[Intent]], r
     if colony is None:
         return
 
+    fleets = session.scalars(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)).all()
+
     # Affording the purchase is not the same as affording the standing bill.
-    strength = sum(
-        f.strength
-        for f in session.scalars(select(Fleet).where(Fleet.civ_id == civ.id))
-    )
+    # Upkeep is charged per strength every hour, so this is the ceiling on what
+    # the economy can carry rather than a rule about how big a navy may be.
     people = sum(c.population for c in colonies)
-    if strength + BUILD_STRENGTH > (people / 1e9) * MAX_STRENGTH_PER_BILLION_POP:
+    budget = (people / 1e9) * MAX_STRENGTH_PER_BILLION_POP
+    strength = sum(f.strength for f in fleets)
+    if strength + BUILD_STRENGTH > budget:
+        return
+
+    # A settler if there is somewhere to send one and nothing to send.
+    wants_settler = not _idle_colony_fleets(session, civ) and any(
+        _nearest_settleable_world(session, universe, fleet) for fleet in fleets[:1]
+    )
+    if wants_settler:
+        intents.build_fleet(
+            session,
+            civ,
+            colony.id,
+            BUILD_STRENGTH,
+            colony_pods=1,
+            name=f"{civ.name} Settler {rng.randrange(100, 999)}",
+        )
+        return
+
+    # Otherwise a warship, and only up to what this many colonies is worth
+    # garrisoning *and* what leaves room to keep expanding. Hulls with nothing
+    # to do still cost upkeep every hour.
+    wanted = min(
+        len(colonies) * DEFENSIVE_STRENGTH_PER_COLONY,
+        budget * NAVY_SHARE_OF_UPKEEP_BUDGET,
+    )
+    warships = sum(f.strength for f in fleets if f.colony_pods <= 0 and f.cargo_capacity <= 100.0)
+    if warships + BUILD_STRENGTH > wanted:
         return
 
     intents.build_fleet(
@@ -446,9 +527,7 @@ def _maybe_build(session: Session, civ: Civ, pending: dict[str, list[Intent]], r
         civ,
         colony.id,
         BUILD_STRENGTH,
-        # Sometimes a warship, sometimes a settler. Enough variation that the
-        # AI does not lock into one shape of play.
-        colony_pods=1 if rng.random() < 0.5 else 0,
+        colony_pods=0,
         name=f"{civ.name} Fleet {rng.randrange(100, 999)}",
     )
 
