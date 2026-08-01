@@ -25,7 +25,7 @@ from galaxysim.model.entities import (
     StarSystem,
     Universe,
 )
-from tests.conftest import civ_by_name, new_universe
+from tests.conftest import civ_by_name, held, new_universe
 
 
 @pytest.fixture
@@ -52,12 +52,12 @@ def test_offline_civ_still_produces(game):
     engine, universe_id = game
 
     with open_session(engine) as session:
-        before = civ_by_name(session, universe_id, "Terrans").resources.get(METAL, 0.0)
+        before = held(session, civ_by_name(session, universe_id, "Terrans"), METAL)
 
     run_ticks(engine, universe_id, 24)
 
     with open_session(engine) as session:
-        after = civ_by_name(session, universe_id, "Terrans").resources.get(METAL, 0.0)
+        after = held(session, civ_by_name(session, universe_id, "Terrans"), METAL)
 
     assert after > before
 
@@ -232,15 +232,16 @@ def test_build_order_charges_up_front_and_delivers(game):
     with open_session(engine) as session:
         vex = civ_by_name(session, universe_id, "Vex")
         colony = session.scalar(select(Colony).where(Colony.civ_id == vex.id).order_by(Colony.id))
-        metal_before = vex.resources[METAL]
+        metal_before = colony.stockpile[METAL]
         fleets_before = len(session.scalars(select(Fleet).where(Fleet.civ_id == vex.id)).all())
         intents.build_fleet(session, vex, colony.id, 2.0, name="Vex Second Fleet")
+        colony_id = colony.id
 
     run_ticks(engine, universe_id, 1)
     with open_session(engine) as session:
-        vex = civ_by_name(session, universe_id, "Vex")
-        # Charged when work began, not on delivery.
-        assert vex.resources[METAL] < metal_before
+        # Charged when work began, not on delivery -- and charged to the yard
+        # that is building it, not to a civ-wide pot.
+        assert session.get(Colony, colony_id).stockpile[METAL] < metal_before
 
     run_ticks(engine, universe_id, 200)
     with open_session(engine) as session:
@@ -320,4 +321,6 @@ def test_each_civ_starts_on_its_own_habitable_world():
         assert len(set(systems)) == 4, "civs must not share a starting system"
 
         civs = session.scalars(select(Civ).order_by(Civ.id)).all()
-        assert all(c.resources[METAL] > 0 for c in civs)
+        # Starting goods sit on the homeworld, not in a treasury.
+        assert all(held(session, c, METAL) > 0 for c in civs)
+        assert all(c.stockpile.get(METAL, 0.0) > 0 for c in colonies)

@@ -11,6 +11,7 @@ timed the same way construction is.
 
 from __future__ import annotations
 
+from galaxysim.colony.labor import balanced_allocation
 from galaxysim.core.resources import COLONY_COST, can_afford, spend
 from galaxysim.core.space import distance
 from galaxysim.engine.context import TickContext
@@ -58,21 +59,19 @@ def resolve(ctx: TickContext) -> None:
             continue
 
         if intent.status == IntentStatus.QUEUED.value:
-            # Each world already held makes the next one dearer. Overhead taxes
-            # what a sprawling civ produces; this is what slows how fast it can
-            # claim in the first place.
-            held = len(queries.colonies_of(ctx.session, civ.id))
-            multiplier = ctx.rates.colony_cost_multiplier(held)
-            cost = {resource: amount * multiplier for resource, amount in COLONY_COST.items()}
-
-            if not can_afford(civ.resources, cost):
-                intent.result = (
-                    f"insufficient resources (settling world {held + 1} costs "
-                    f"{multiplier:.1f}x the base)"
-                )
+            # An expedition is outfitted somewhere specific. Phase 3 replaces
+            # this flat price with a loadout the player composes; for now the
+            # change is only about *where* the bill lands.
+            outfitter = queries.nearest_colony(ctx.session, civ.id, fleet.position)
+            if outfitter is None:
+                _fail(ctx, intent, "no colony available to outfit the expedition")
                 continue
 
-            spend(civ.resources, cost)
+            if not can_afford(outfitter.stockpile, COLONY_COST):
+                intent.result = f"insufficient resources at {outfitter.name}"
+                continue
+
+            spend(outfitter.stockpile, COLONY_COST)
             intent.status = IntentStatus.IN_PROGRESS.value
             intent.result = ""
             intent.payload["completes_tick"] = ctx.tick + ctx.cadence.ticks_for_hours(
@@ -95,6 +94,11 @@ def resolve(ctx: TickContext) -> None:
                 population=1.0,
                 infrastructure=1.0,
                 founded_tick=ctx.tick,
+                # A new colony starts empty. Whatever it needs before its own
+                # extraction comes online has to be shipped in -- which is the
+                # point of founding by loadout in phase 3.
+                stockpile={},
+                labor=balanced_allocation(),
             )
             ctx.session.add(colony)
             intent.status = IntentStatus.COMPLETED.value

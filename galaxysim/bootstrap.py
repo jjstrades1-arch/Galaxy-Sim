@@ -16,12 +16,14 @@ from __future__ import annotations
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+from galaxysim.colony.labor import balanced_allocation
 from galaxysim.core.resources import STARTING_STOCKPILE
 from galaxysim.core.seeds import derive_seed, rng_for
 from galaxysim.core.space import Vec3
 from galaxysim.flavor.names import system_name, world_name
 from galaxysim.model.base import init_db, open_session
 from galaxysim.model.entities import (
+    Building,
     Civ,
     Colony,
     Fleet,
@@ -39,6 +41,11 @@ STARTING_REGION_RADIUS_LY = 40.0
 #: waiting on production, so the first session has something to do.
 STARTING_COLONY_PODS = 1
 STARTING_FLEET_STRENGTH = 3.0
+
+#: Structures the capital opens with, already finished. A homeworld is a place
+#: with history, not a fresh landing -- and the shipyard in particular is
+#: load-bearing, since without one a civ could never build its first ship.
+STARTING_BUILDINGS: tuple[str, ...] = ("shipyard", "spaceport", "mine")
 
 
 def create_universe(
@@ -108,6 +115,7 @@ def seed_starting_region(session: Session, universe: Universe, system_count: int
                     habitability=rolled.habitability,
                     resource_yield=rolled.resource_yield,
                     hazard=rolled.hazard,
+                    slots=rolled.slots,
                 )
             )
 
@@ -133,7 +141,6 @@ def add_civ(
         species_description=species_description,
         is_ai=is_ai,
         seed=derive_seed(universe.seed, "civ", name),
-        resources=dict(STARTING_STOCKPILE),
         research_points=0.0,
         research_invested=0.0,
         techs_known=0,
@@ -145,16 +152,35 @@ def add_civ(
     rng = rng_for(civ.seed, "homeworld")
     homeworld = _prepare_homeworld(session, system, rng)
 
-    session.add(
-        Colony(
-            world_id=homeworld.id,
-            civ_id=civ.id,
-            name=f"{homeworld.name} Prime",
-            population=5.0,
-            infrastructure=2.0,
-            founded_tick=universe.tick_number,
-        )
+    capital = Colony(
+        world_id=homeworld.id,
+        civ_id=civ.id,
+        name=f"{homeworld.name} Prime",
+        population=5.0,
+        infrastructure=2.0,
+        founded_tick=universe.tick_number,
+        # The starting stockpile sits on the homeworld rather than in a
+        # civ-wide treasury: everything a civ owns is somewhere.
+        stockpile=dict(STARTING_STOCKPILE),
+        labor=balanced_allocation(),
     )
+    session.add(capital)
+    session.flush()
+
+    # The capital opens with infrastructure a colony would otherwise have to
+    # build. The shipyard matters most: without one a colony cannot build ships
+    # at all, so a civ with no starting yard could never build its first fleet
+    # and would have no way out of the opening position.
+    for kind in STARTING_BUILDINGS:
+        session.add(
+            Building(
+                colony_id=capital.id,
+                kind=kind,
+                work_remaining=0.0,
+                started_tick=universe.tick_number,
+                completed_tick=universe.tick_number,
+            )
+        )
     session.add(
         Fleet(
             universe_id=universe.id,

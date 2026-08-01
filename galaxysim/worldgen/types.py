@@ -30,6 +30,10 @@ class WorldType:
     hazard: Range
     #: Resource -> the range its per-hour yield multiplier may roll within.
     yields: dict[str, Range] = field(default_factory=dict)
+    #: How many structures a world of this type can host. Cramped and hostile
+    #: worlds support fewer, so the richest worlds are also the ones where you
+    #: must choose what they are *for*.
+    slots: tuple[int, int] = (3, 5)
     #: Relative frequency when picking a type for a fresh world.
     weight: float = 1.0
 
@@ -44,6 +48,7 @@ class WorldType:
                 resource: round(rng.uniform(*bounds), 4)
                 for resource, bounds in sorted(self.yields.items())
             },
+            slots=rng.randint(*self.slots),
         )
 
 
@@ -55,6 +60,7 @@ class RolledWorld:
     habitability: float
     hazard: float
     resource_yield: dict[str, float]
+    slots: int = 4
 
 
 WORLD_TYPES: tuple[WorldType, ...] = (
@@ -63,6 +69,7 @@ WORLD_TYPES: tuple[WorldType, ...] = (
         habitability=(0.55, 1.0),
         hazard=(0.0, 0.15),
         yields={METAL: (0.4, 0.9), ENERGY: (0.3, 0.7), VOLATILES: (0.3, 0.8)},
+        slots=(5, 8),
         weight=0.8,
     ),
     WorldType(
@@ -70,6 +77,7 @@ WORLD_TYPES: tuple[WorldType, ...] = (
         habitability=(0.45, 0.9),
         hazard=(0.05, 0.2),
         yields={METAL: (0.2, 0.5), ENERGY: (0.3, 0.6), VOLATILES: (0.6, 1.2)},
+        slots=(4, 7),
         weight=0.7,
     ),
     WorldType(
@@ -77,6 +85,7 @@ WORLD_TYPES: tuple[WorldType, ...] = (
         habitability=(0.2, 0.6),
         hazard=(0.1, 0.35),
         yields={METAL: (0.6, 1.1), ENERGY: (0.6, 1.0), VOLATILES: (0.05, 0.25)},
+        slots=(4, 7),
         weight=1.0,
     ),
     WorldType(
@@ -84,6 +93,7 @@ WORLD_TYPES: tuple[WorldType, ...] = (
         habitability=(0.1, 0.45),
         hazard=(0.15, 0.4),
         yields={METAL: (0.3, 0.7), ENERGY: (0.1, 0.3), VOLATILES: (0.7, 1.3)},
+        slots=(3, 6),
         weight=1.0,
     ),
     WorldType(
@@ -91,6 +101,7 @@ WORLD_TYPES: tuple[WorldType, ...] = (
         habitability=(0.05, 0.3),
         hazard=(0.35, 0.7),
         yields={METAL: (1.0, 1.8), ENERGY: (0.9, 1.6), VOLATILES: (0.1, 0.3)},
+        slots=(3, 5),
         weight=0.8,
     ),
     WorldType(
@@ -98,15 +109,20 @@ WORLD_TYPES: tuple[WorldType, ...] = (
         habitability=(0.0, 0.2),
         hazard=(0.5, 0.85),
         yields={METAL: (0.5, 1.0), ENERGY: (0.3, 0.7), VOLATILES: (0.9, 1.7)},
+        slots=(3, 5),
         weight=0.7,
     ),
     WorldType(
         name="barren",
-        # Zero habitability: colonization of a barren world fails outright until
-        # tech says otherwise. Mining them is a later unlock, not a v1 mechanic.
+        # Zero habitability: nothing here sustains life on its own, so a colony
+        # survives only on artificial life support and whatever a supply line
+        # brings it. Note the metal yields -- these are among the richest worlds
+        # in the table, which is the trade: the best mining is on the worlds
+        # least able to keep anyone alive.
         habitability=(0.0, 0.0),
         hazard=(0.2, 0.5),
         yields={METAL: (0.8, 1.5), ENERGY: (0.1, 0.4)},
+        slots=(2, 5),
         weight=1.4,
     ),
     WorldType(
@@ -114,6 +130,7 @@ WORLD_TYPES: tuple[WorldType, ...] = (
         habitability=(0.0, 0.0),
         hazard=(0.4, 0.8),
         yields={ENERGY: (1.2, 2.2), VOLATILES: (1.0, 2.0)},
+        slots=(2, 4),
         weight=1.1,
     ),
 )

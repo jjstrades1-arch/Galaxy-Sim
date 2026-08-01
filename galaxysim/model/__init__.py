@@ -2,6 +2,7 @@
 
 from galaxysim.model.base import Base, open_session, create_engine_for, init_db
 from galaxysim.model.entities import (
+    Building,
     Civ,
     Colony,
     Event,
@@ -19,6 +20,7 @@ __all__ = [
     "open_session",
     "create_engine_for",
     "init_db",
+    "Building",
     "Civ",
     "Colony",
     "Event",

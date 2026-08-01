@@ -14,7 +14,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from galaxysim.model.entities import Civ, Intent, IntentKind, IntentStatus, Universe
+from galaxysim.colony.labor import normalize
+from galaxysim.model.entities import Civ, Colony, Intent, IntentKind, IntentStatus, Universe
 
 
 def _queue(session: Session, civ: Civ, kind: IntentKind, payload: dict) -> Intent:
@@ -86,6 +87,30 @@ def build_fleet(
     if name:
         payload["name"] = name
     return _queue(session, civ, IntentKind.BUILD_FLEET, payload)
+
+
+def build_structure(session: Session, civ: Civ, colony_id: int, kind: str) -> Intent:
+    """Construct a building at a colony.
+
+    Resources are charged when the foundations go in; the rest is paid for in
+    industry-work, so a colony with nobody assigned to industry will sit on a
+    half-finished structure indefinitely.
+    """
+    return _queue(
+        session, civ, IntentKind.BUILD_STRUCTURE, {"colony_id": colony_id, "kind": str(kind)}
+    )
+
+
+def set_labor(session: Session, colony: Colony, allocation: dict[str, float]) -> None:
+    """Reassign a colony's population across labor sectors.
+
+    Applies immediately rather than queueing. Moving your own people between
+    jobs is not an action against the world -- it carries no cost, competes with
+    nobody, and gives no advantage for being awake when you do it, so there is
+    nothing for the tick to arbitrate. The values are normalized, so they are
+    read as relative weights.
+    """
+    colony.labor = normalize(allocation)
 
 
 def attack(session: Session, civ: Civ, target_civ_id: int) -> Intent:

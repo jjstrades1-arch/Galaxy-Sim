@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import Engine, select
 
 from galaxysim.bootstrap import add_civ, create_universe
+from galaxysim.engine.resolvers import queries
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import (
     Civ,
@@ -63,6 +64,22 @@ def civ_by_name(session, universe_id: int, name: str) -> Civ:
     return civ
 
 
+def held(session, civ: Civ, resource: str) -> float:
+    """How much of ``resource`` a civ holds across all its colonies.
+
+    Reporting only -- see :func:`queries.total_stockpile`. Nothing spends from
+    this; goods are spendable where they sit.
+    """
+    return queries.total_stockpile(session, civ.id).get(resource, 0.0)
+
+
+def home_colony(session, civ: Civ) -> Colony:
+    """A civ's first colony, which is where bootstrap puts its starting goods."""
+    colony = session.scalar(select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id))
+    assert colony is not None, f"{civ.name} has no colonies"
+    return colony
+
+
 def snapshot(engine: Engine, universe_id: int) -> list[tuple]:
     """A comparable, fully ordered dump of everything a tick can change.
 
@@ -86,7 +103,6 @@ def snapshot(engine: Engine, universe_id: int) -> list[tuple]:
                     round(civ.research_points, 6),
                     round(civ.research_invested, 6),
                     civ.techs_known,
-                    tuple(sorted((k, round(v, 6)) for k, v in civ.resources.items())),
                 )
             )
 
@@ -99,6 +115,7 @@ def snapshot(engine: Engine, universe_id: int) -> list[tuple]:
                     round(colony.population, 6),
                     round(colony.infrastructure, 6),
                     colony.founded_tick,
+                    tuple(sorted((k, round(v, 6)) for k, v in colony.stockpile.items())),
                 )
             )
 

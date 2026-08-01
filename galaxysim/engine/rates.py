@@ -85,8 +85,12 @@ class Rates:
     """
 
     # --- Economy -----------------------------------------------------------
-    #: Base output of a colony, per resource type, per real hour.
-    colony_output_per_hour: float = 1.0
+    #: Resource output per worker assigned to extraction, per real hour, before
+    #: world yields and building bonuses.
+    extraction_per_worker_per_hour: float = 1.0
+    #: Industry-work per worker assigned to industry, per real hour. Buildings
+    #: and ships are both paid for in this.
+    industry_per_worker_per_hour: float = 0.5
     #: Fraction of a colony's population that grows per real hour, before any
     #: habitability or tech modifier. 0.5%/hour is roughly 12%/day compounding.
     population_growth_per_hour: float = 0.005
@@ -104,14 +108,32 @@ class Rates:
     #: itself: each new colony makes every existing one slightly more expensive.
     colony_overhead_base: float = 0.15
     colony_overhead_exponent: float = 1.35
-    #: Settling the next world costs
-    #: ``COLONY_COST * (1 + colonies_held) ** colony_cost_exponent``.
+
+    # --- Life support ------------------------------------------------------
+    #: Life-support load per person per real hour on a wholly uninhabitable
+    #: world. Scaled by ``(1 - effective_habitability)``, so a garden world
+    #: costs nothing and a gas giant costs all of it.
+    life_support_per_pop_per_hour: float = 0.08
+    #: Life support one worker can sustain per real hour, before hydroponics.
+    #: The ratio against the line above is what sets the workforce tax: at these
+    #: numbers a fully hostile world spends roughly a fifth of its people just
+    #: staying alive, before any dome is built.
+    life_support_per_worker_per_hour: float = 0.4
+    #: Volatiles consumed per unit of life support *delivered* -- not per unit
+    #: of shortfall. Sealed habitats need consumable input; workers cannot make
+    #: air out of nothing on a bare rock.
     #:
-    #: Overhead alone was not enough: it taxes what a sprawling civ *produces*
-    #: but does nothing to slow how fast it *claims*. A flat colony price meant
-    #: a civ could grab ten worlds in a fortnight and simply eat the drag. This
-    #: makes each additional world a visibly larger commitment than the last.
-    colony_cost_exponent: float = 1.5
+    #: This is what makes hostile worlds supply-dependent rather than merely
+    #: labor-expensive, and it interacts with the world type table to decide
+    #: which ones can stand alone. Ice and toxic worlds have high volatiles
+    #: yields and can sustain themselves; **barren worlds yield only metal and
+    #: energy**, so the richest metal worlds in the game cannot feed themselves
+    #: and live or die by their supply line.
+    volatiles_per_life_support: float = 1.0
+    #: Fraction of population lost per real hour at a total life-support
+    #: failure. Deliberately gradual: an offline player should be able to see a
+    #: colony dying and still have time to save it.
+    starvation_per_hour: float = 0.04
 
     # --- Research ----------------------------------------------------------
     #: Research points a colony contributes per real hour, before it is scaled
@@ -130,8 +152,10 @@ class Rates:
     base_speed_ly_per_hour: float = 1.0
 
     # --- Construction ------------------------------------------------------
-    #: Wall-clock hours to build one unit of fleet strength.
-    fleet_build_hours: float = 4.0
+    #: Industry-work needed per unit of fleet strength. Construction is paid in
+    #: work rather than wall-clock hours so that a colony's industry sector
+    #: actually determines how fast it builds.
+    fleet_work_per_strength: float = 6.0
 
     # --- Combat ------------------------------------------------------------
     #: Fraction of a side's strength delivered as damage per real hour. Low on
@@ -154,12 +178,6 @@ class Rates:
         if colony_count <= 0:
             return 0.0
         return self.colony_overhead_base * colony_count**self.colony_overhead_exponent
-
-    def colony_cost_multiplier(self, colonies_held: int) -> float:
-        """Price multiplier on settling the next world."""
-        if colonies_held < 0:
-            raise ValueError("colonies_held must be non-negative")
-        return (1.0 + colonies_held) ** self.colony_cost_exponent
 
     def research_cost(self, depth: float) -> float:
         """Research points to acquire a tech at ``depth`` along its lineage."""

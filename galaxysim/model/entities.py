@@ -59,6 +59,7 @@ class IntentKind(str, enum.Enum):
     MOVE_FLEET = "move_fleet"
     COLONIZE = "colonize"
     BUILD_FLEET = "build_fleet"
+    BUILD_STRUCTURE = "build_structure"
     ATTACK = "attack"
     RESEARCH = "research"
 
@@ -118,7 +119,9 @@ class Civ(Base):
     #: Every roll specific to this civ descends from it.
     seed: Mapped[int] = mapped_column(BigInteger, default=0)
 
-    resources: Mapped[dict] = mapped_column(JSONDict, default=dict)
+    #: Research is civ-wide: a discovery is known everywhere the moment it is
+    #: made. Matter is not -- there is no civ treasury, only the stockpile each
+    #: colony holds. See :attr:`Colony.stockpile`.
     research_points: Mapped[float] = mapped_column(Float, default=0.0)
     #: Cumulative research ever paid. The balance invariant ties total power to
     #: this number, so it is never spent down -- ``research_points`` is the
@@ -216,6 +219,10 @@ class World(Base):
     resource_yield: Mapped[dict] = mapped_column(JSONDict, default=dict)
     #: 0.0-1.0 environmental danger, applied against colony growth.
     hazard: Mapped[float] = mapped_column(Float, default=0.0)
+    #: How many structures this world can host. Part of its identity, not a
+    #: global constant: a cramped gas giant supports far less than a
+    #: terrestrial, so what a world is *for* is decided partly here.
+    slots: Mapped[int] = mapped_column(Integer, default=4)
     description: Mapped[str] = mapped_column(Text, default="")
 
     system: Mapped[StarSystem] = relationship(back_populates="worlds")
@@ -228,7 +235,13 @@ class World(Base):
 
 
 class Colony(Base):
-    """A civilization's settlement on a world. At most one per world."""
+    """A civilization's settlement on a world. At most one per world.
+
+    A colony is a *place*, not a line in a civ-wide ledger. It holds its own
+    stockpile, and there is no treasury behind it: metal mined here is here
+    until a ship carries it somewhere else. That is what makes a remote outpost
+    genuinely remote, and what gives supply lines something to cut.
+    """
 
     __tablename__ = "colonies"
 
@@ -245,11 +258,55 @@ class Colony(Base):
     infrastructure: Mapped[float] = mapped_column(Float, default=1.0)
     founded_tick: Mapped[int] = mapped_column(Integer, default=0)
 
+    #: Resources physically present here. Everything this colony pays for comes
+    #: out of this bag, and nothing else can spend it without shipping it first.
+    stockpile: Mapped[dict] = mapped_column(JSONDict, default=dict)
+
+    #: Fractions of the population assigned to each labor sector, normalized to
+    #: sum to 1. See :mod:`galaxysim.colony.labor`.
+    labor: Mapped[dict] = mapped_column(JSONDict, default=dict)
+
     world: Mapped[World] = relationship(back_populates="colony")
     civ: Mapped[Civ] = relationship(back_populates="colonies")
+    buildings: Mapped[list["Building"]] = relationship(
+        back_populates="colony", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Colony {self.name!r} pop={self.population:.1f}>"
+
+
+class Building(Base):
+    """A structure on a colony, under construction or finished.
+
+    Construction is progress-based rather than timed: a building consumes
+    industry-work each tick from whatever its colony's industry sector produces.
+    A colony with nobody assigned to industry never finishes anything, which is
+    what makes the labor allocation a real decision rather than a display.
+    """
+
+    __tablename__ = "buildings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    colony_id: Mapped[int] = mapped_column(
+        ForeignKey("colonies.id", ondelete="CASCADE"), index=True
+    )
+    #: Matches a kind in :data:`galaxysim.colony.buildings.BUILDING_TYPES`.
+    kind: Mapped[str] = mapped_column(String(40))
+    #: Industry-work still needed. Zero means finished and contributing.
+    work_remaining: Mapped[float] = mapped_column(Float, default=0.0)
+    started_tick: Mapped[int] = mapped_column(Integer, default=0)
+    completed_tick: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    colony: Mapped[Colony] = relationship(back_populates="buildings")
+
+    @property
+    def is_complete(self) -> bool:
+        return self.work_remaining <= 0.0
+
+    def __repr__(self) -> str:
+        state = "complete" if self.is_complete else f"{self.work_remaining:.1f} work left"
+        return f"<Building {self.kind} ({state})>"
 
 
 class Fleet(Base):

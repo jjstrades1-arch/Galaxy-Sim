@@ -12,6 +12,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from galaxysim.core.space import Vec3, distance
 from galaxysim.model.entities import Civ, Colony, Fleet, Intent, IntentStatus, World
 
 #: Statuses an intent can be in and still need work this tick.
@@ -56,3 +57,30 @@ def active_intents(session: Session, universe_id: int, kind: str) -> list[Intent
 
 def world_by_id(session: Session, world_id: int) -> World | None:
     return session.get(World, world_id)
+
+
+def total_stockpile(session: Session, civ_id: int) -> dict[str, float]:
+    """Everything a civ owns, summed across its colonies.
+
+    A reporting view only. Nothing may *spend* from this -- goods are spendable
+    where they physically sit, and summing them would quietly reinstate the
+    civ-wide treasury this design removed.
+    """
+    totals: dict[str, float] = {}
+    for colony in colonies_of(session, civ_id):
+        for resource, amount in sorted(colony.stockpile.items()):
+            totals[resource] = totals.get(resource, 0.0) + amount
+    return totals
+
+
+def nearest_colony(session: Session, civ_id: int, position: Vec3) -> Colony | None:
+    """The civ's colony closest to ``position``, or None if it holds none.
+
+    Used to decide which stockpile pays for a fleet in the field. Ties break on
+    colony id so two equidistant colonies always resolve the same way -- an
+    arbitrary-but-fixed rule, which is what determinism needs.
+    """
+    colonies = colonies_of(session, civ_id)
+    if not colonies:
+        return None
+    return min(colonies, key=lambda c: (distance(position, c.world.system.position), c.id))

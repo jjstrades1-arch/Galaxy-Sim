@@ -24,7 +24,10 @@ from sqlalchemy.orm import Session
 from galaxysim.core.resources import COLONY_COST, FLEET_COST_PER_STRENGTH, can_afford
 from galaxysim.core.seeds import rng_for
 from galaxysim.core.space import distance
+from galaxysim.colony.buildings import FLEET_CONSTRUCTION
 from galaxysim.engine import intents
+from galaxysim.engine.resolvers import queries
+from galaxysim.engine.resolvers.production import colony_effects
 from galaxysim.model.entities import (
     Civ,
     Colony,
@@ -92,11 +95,15 @@ def _maybe_expand(
     """Send an idle colony ship at the nearest unclaimed habitable world."""
     if pending.get(IntentKind.COLONIZE.value):
         return  # already settling something
-    if not can_afford(civ.resources, COLONY_COST):
-        return
 
     fleet = _idle_colony_fleet(session, civ)
     if fleet is None:
+        return
+
+    # The expedition is outfitted wherever the ship is, so affordability is a
+    # question about that colony's stockpile, not about the civ as a whole.
+    outfitter = queries.nearest_colony(session, civ.id, fleet.position)
+    if outfitter is None or not can_afford(outfitter.stockpile, COLONY_COST):
         return
 
     target = _nearest_settleable_world(session, universe, fleet)
@@ -152,15 +159,26 @@ def _maybe_build(session: Session, civ: Civ, pending: dict[str, list[Intent]], r
         resource: amount * BUILD_STRENGTH * BUILD_RESERVE
         for resource, amount in FLEET_COST_PER_STRENGTH.items()
     }
-    if not can_afford(civ.resources, cost):
-        return
 
     colonies = session.scalars(
         select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
     ).all()
     if not colonies:
         return
-    colony = colonies[0]
+
+    # Build wherever the materials actually are, rather than always at the
+    # capital -- with local stockpiles the capital is often not the richest.
+    # A yard is required, so most colonies are not candidates at all.
+    colony = next(
+        (
+            c
+            for c in colonies
+            if FLEET_CONSTRUCTION in colony_effects(c).grants and can_afford(c.stockpile, cost)
+        ),
+        None,
+    )
+    if colony is None:
+        return
 
     # Affording the purchase is not the same as affording the standing bill.
     strength = sum(

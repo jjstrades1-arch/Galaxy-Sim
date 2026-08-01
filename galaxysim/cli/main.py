@@ -25,6 +25,7 @@ from galaxysim.bootstrap import add_civ, create_universe
 from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
 from galaxysim.engine.rates import Cadence
+from galaxysim.engine.resolvers import queries
 from galaxysim.engine.tick import resolve_tick
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import (
@@ -141,19 +142,28 @@ def status() -> None:
             f"({elapsed_hours:.1f}h elapsed) - [bold]{civ.name}[/bold]"
         )
 
-        stock = ", ".join(f"{k} {v:,.0f}" for k, v in sorted(civ.resources.items()))
+        totals = queries.total_stockpile(session, civ.id)
+        stock = ", ".join(f"{k} {v:,.0f}" for k, v in sorted(totals.items())) or "nothing"
         console.print(
-            f"Resources: {stock}\n"
+            f"Held across all colonies: {stock}\n"
             f"Research: {civ.research_points:,.1f} banked, "
             f"{civ.techs_known} techs, {civ.research_invested:,.1f} invested"
+        )
+        console.print(
+            "[dim]Stockpiles are local -- goods are spendable only where they sit.[/dim]"
         )
 
         colonies = session.scalars(
             select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
         ).all()
         if colonies:
-            table = Table("id", "colony", "world", "type", "pop", "infra", title="Colonies")
+            table = Table(
+                "id", "colony", "world", "type", "pop", "infra", "stockpile", title="Colonies"
+            )
             for colony in colonies:
+                held = ", ".join(
+                    f"{k} {v:,.0f}" for k, v in sorted(colony.stockpile.items()) if v >= 1
+                )
                 table.add_row(
                     str(colony.id),
                     colony.name,
@@ -161,6 +171,7 @@ def status() -> None:
                     colony.world.world_type,
                     f"{colony.population:,.1f}",
                     f"{colony.infrastructure:.1f}",
+                    held or "[dim]empty[/dim]",
                 )
             console.print(table)
 

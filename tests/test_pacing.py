@@ -19,7 +19,7 @@ from galaxysim.engine.rates import CADENCE_FIVE_MINUTE, CADENCE_HOURLY, DEFAULT_
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Civ, Colony, Event, Fleet, Universe
-from tests.conftest import civ_by_name, new_universe
+from tests.conftest import civ_by_name, held, home_colony, new_universe
 
 SIMULATED_HOURS = 48
 
@@ -45,7 +45,7 @@ def _run_for_hours(seconds_per_tick: int, hours: int, seed: int = 777) -> dict[s
         assert colony is not None
         return {
             "population": colony.population,
-            "metal": civ.resources.get("metal", 0.0),
+            "metal": held(session, civ, "metal"),
             "research_invested": civ.research_invested,
             "techs_known": float(civ.techs_known),
         }
@@ -121,22 +121,6 @@ def test_expansion_and_research_costs_are_superlinear():
     assert rates.colony_overhead(20) / 20 > rates.colony_overhead(2) / 2
 
 
-def test_each_colony_costs_more_than_the_last():
-    """Expansion is a rising commitment, not a flat fee.
-
-    Overhead taxes what a sprawling civ produces but does nothing to slow how
-    fast it claims. Without this curve the first pacing run had AI civs holding
-    ten worlds inside a fortnight and simply eating the drag.
-    """
-    rates = DEFAULT_RATES
-    multipliers = [rates.colony_cost_multiplier(n) for n in range(0, 12)]
-
-    assert multipliers[0] == pytest.approx(1.0), "the first colony pays the base price"
-    assert all(b > a for a, b in zip(multipliers, multipliers[1:]))
-    deltas = [b - a for a, b in zip(multipliers, multipliers[1:])]
-    assert all(b > a for a, b in zip(deltas, deltas[1:])), "cost must accelerate, not just rise"
-
-
 def test_fleet_upkeep_is_charged_and_unpaid_fleets_desert():
     """A navy is a standing bill, not a one-time purchase.
 
@@ -149,9 +133,10 @@ def test_fleet_upkeep_is_charged_and_unpaid_fleets_desert():
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
-        # A navy far beyond what one colony can support, and an empty treasury.
+        # A navy far beyond what one colony can support, and a bare stockpile at
+        # the only colony that could supply it.
         fleet.strength = 500.0
-        civ.resources = {"metal": 0.0, "energy": 0.0, "volatiles": 0.0}
+        home_colony(session, civ).stockpile = {"metal": 0.0, "energy": 0.0, "volatiles": 0.0}
         fleet_id, strength_before = fleet.id, fleet.strength
 
     run_ticks(engine, universe_id, 24)
@@ -172,7 +157,7 @@ def test_solvent_civ_keeps_its_fleet():
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
-        civ.resources = {"metal": 1e6, "energy": 1e6, "volatiles": 1e6}
+        home_colony(session, civ).stockpile = {"metal": 1e6, "energy": 1e6, "volatiles": 1e6}
         fleet_id, strength_before = fleet.id, fleet.strength
 
     run_ticks(engine, universe_id, 48)

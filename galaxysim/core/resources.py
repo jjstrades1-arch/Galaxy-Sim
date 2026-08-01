@@ -30,9 +30,8 @@ FLEET_COST_PER_STRENGTH: dict[str, float] = {METAL: 10.0, ENERGY: 5.0}
 #: can I actually afford" a decision rather than a formality.
 FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {METAL: 0.05, ENERGY: 0.1}
 
-#: Base cost to establish a colony, charged when settling begins. Scaled by
-#: :meth:`Rates.colony_cost_multiplier` against how many colonies the civ
-#: already holds.
+#: Base cost to establish a colony, charged when settling begins. Replaced in
+#: phase 3 by an expedition loadout the player composes.
 COLONY_COST: dict[str, float] = {METAL: 25.0, VOLATILES: 15.0}
 
 
