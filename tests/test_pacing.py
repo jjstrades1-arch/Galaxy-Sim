@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from galaxysim.engine import intents
+from galaxysim.materials import MATERIALS, STEEL
 from galaxysim.engine.rates import CADENCE_FIVE_MINUTE, CADENCE_HOURLY, DEFAULT_RATES, Cadence
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
@@ -45,7 +46,7 @@ def _run_for_hours(seconds_per_tick: int, hours: int, seed: int = 777) -> dict[s
         assert colony is not None
         return {
             "population": colony.population,
-            "metal": held(session, civ, "metal"),
+            "steel": held(session, civ, STEEL),
             "research_invested": civ.research_invested,
             "techs_known": float(civ.techs_known),
         }
@@ -62,7 +63,7 @@ def test_growth_is_equivalent_across_cadences():
     fine = _run_for_hours(CADENCE_FIVE_MINUTE.seconds_per_tick, SIMULATED_HOURS)
     coarse = _run_for_hours(CADENCE_HOURLY.seconds_per_tick, SIMULATED_HOURS)
 
-    for key in ("population", "metal", "research_invested"):
+    for key in ("population", "steel", "research_invested"):
         assert fine[key] == pytest.approx(coarse[key], rel=0.05), (
             f"{key} diverged across cadences: {fine[key]} vs {coarse[key]}. "
             "Something is almost certainly authored per tick instead of per hour."
@@ -136,7 +137,7 @@ def test_fleet_upkeep_is_charged_and_unpaid_fleets_desert():
         # A navy far beyond what one colony can support, and a bare stockpile at
         # the only colony that could supply it.
         fleet.strength = 500.0
-        home_colony(session, civ).stockpile = {"metal": 0.0, "energy": 0.0, "volatiles": 0.0}
+        home_colony(session, civ).stockpile = {}
         fleet_id, strength_before = fleet.id, fleet.strength
 
     run_ticks(engine, universe_id, 24)
@@ -157,7 +158,7 @@ def test_solvent_civ_keeps_its_fleet():
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
-        home_colony(session, civ).stockpile = {"metal": 1e6, "energy": 1e6, "volatiles": 1e6}
+        home_colony(session, civ).stockpile = {key: 1e6 for key in MATERIALS}
         fleet_id, strength_before = fleet.id, fleet.strength
 
     run_ticks(engine, universe_id, 48)

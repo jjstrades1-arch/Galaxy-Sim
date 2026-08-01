@@ -30,18 +30,21 @@ class TickContext:
     tick: int
     seed: int
     events: list[Event] = field(default_factory=list)
-    #: Per-tick memo of derived colony state, keyed by colony id. Buildings do
-    #: not change mid-tick except when one completes, and construction clears
-    #: the entry when that happens. Without this, three resolvers each rebuild
-    #: the same aggregate for every colony on every tick.
-    _colony_cache: dict[int, object] = field(default_factory=dict)
+    #: Per-tick memo of derived state, keyed by colony id for building effects
+    #: and by ``("mining", world_id)`` for a world's extraction rates. Buildings
+    #: do not change mid-tick except when one completes, and construction clears
+    #: the entry when that happens; geology does not change at all outside a
+    #: terraforming project. Without this, several resolvers each rebuild the
+    #: same aggregates -- and the mining rates in particular mean re-parsing a
+    #: world's survey document -- for every colony on every tick.
+    _colony_cache: dict[object, object] = field(default_factory=dict)
 
-    def cached_effects(self, colony_id: int, build):
-        """Return memoized derived state for a colony, computing it once."""
-        cached = self._colony_cache.get(colony_id)
+    def cached_effects(self, key, build):
+        """Return memoized derived state for ``key``, computing it once."""
+        cached = self._colony_cache.get(key)
         if cached is None:
             cached = build()
-            self._colony_cache[colony_id] = cached
+            self._colony_cache[key] = cached
         return cached
 
     def invalidate_colony(self, colony_id: int) -> None:

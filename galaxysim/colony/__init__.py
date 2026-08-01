@@ -3,7 +3,7 @@
 A colony is the unit of play the economy is built around. This package holds the
 hand-authored pieces of that -- which jobs exist, which structures exist, and
 what they do. Nothing here is procedurally generated, on the same principle as
-:mod:`galaxysim.worldgen.types`: what a player learns about a Mine has to stay
+:mod:`galaxysim.materials.catalogue`: what a player learns about a Mine has to stay
 true.
 """
 

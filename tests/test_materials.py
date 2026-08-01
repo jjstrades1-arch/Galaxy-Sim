@@ -16,7 +16,16 @@ import pytest
 
 from galaxysim.core.seeds import rng_for
 from galaxysim.materials import (
+    CALCIUM,
+    CARBON,
     CONSUMABLES,
+    ELECTRONICS,
+    IRON,
+    RARE_EARTHS,
+    SILICON,
+    STEEL,
+    WATER,
+    WATER_ICE,
     MATERIALS,
     RAW_MATERIALS,
     RECIPES,
@@ -25,10 +34,17 @@ from galaxysim.materials import (
     deposit,
     material,
     recipes_producing,
+    refine,
     spend,
     total_mass,
 )
 from galaxysim.materials.catalogue import STARTING_STOCKPILE, MaterialClass
+from galaxysim.materials.costs import (
+    ACCELERANT_PER_PROGRESS,
+    RESEARCH_ACCELERANTS,
+    RESEARCH_COST_PER_PROGRESS,
+    accelerant_multiplier,
+)
 from galaxysim.materials.extraction import (
     STRATEGIC_MATERIALS,
     extract,
@@ -38,6 +54,7 @@ from galaxysim.materials.extraction import (
 )
 from galaxysim.materials.recipes import GROWN_NOT_REFINED, POWER_FUELS, missing_inputs
 from galaxysim.worldgen.geology import EARTH_CRUST, Deposit
+from galaxysim.worldgen.serialize import has_surface_water
 from galaxysim.worldgen.star import Star, roll_star
 from galaxysim.worldgen.survey import plausible_mass, plausible_orbits, survey_world
 
@@ -298,3 +315,132 @@ def test_material_classes_partition_cleanly():
     for key in REFINED_MATERIALS:
         assert MATERIALS[key].material_class is MaterialClass.REFINED
         assert not MATERIALS[key].is_raw
+
+
+# --- running the chains ------------------------------------------------------
+
+
+def test_refining_turns_ore_into_things_you_can_actually_spend():
+    """The step that makes a world an economy rather than a pile of rock.
+
+    Everything in the game is priced in refined goods -- buildings in steel and
+    construction materials, ships in alloys and electronics, life support in
+    water. A colony holding nothing but ore can buy none of it.
+    """
+    stock = {IRON: 500.0, CARBON: 200.0, SILICON: 400.0, CALCIUM: 200.0, WATER_ICE: 300.0}
+    spent, produced = refine(stock, work=200.0, hours=1.0)
+
+    assert spent > 0
+    assert produced.get(STEEL, 0.0) > 0, "iron and carbon should have become steel"
+    assert produced.get(WATER, 0.0) > 0, "ice should have become water"
+    assert stock[IRON] < 500.0, "and the ore should be gone from the ground floor"
+
+
+def test_refining_cannot_run_a_chain_the_world_cannot_supply():
+    """Nothing substitutes. A world with no copper makes no electronics."""
+    stock = {SILICON: 1000.0, RARE_EARTHS: 1000.0}  # no copper
+    _, produced = refine(stock, work=500.0, hours=1.0, priorities={"electronics": 1.0})
+    assert ELECTRONICS not in produced
+
+
+def test_refining_conserves_mass_at_run_time_too():
+    """Not just per recipe -- across a whole tick of mixed chains.
+
+    The per-recipe check elsewhere proves the table is honest. This proves the
+    runner is: no ordering of chains, no leftover budget, no second pass can
+    launder ten tonnes of ore into twenty tonnes of steel.
+    """
+    stock = {key: 400.0 for key in RAW_MATERIALS}
+    before = total_mass(stock)
+    refine(stock, work=1000.0, hours=1.0)
+    assert total_mass(stock) < before
+    assert all(amount >= -1e-9 for amount in stock.values()), "nothing may go negative"
+
+
+def test_a_refining_plan_beats_leaving_it_automatic():
+    """Automation is deliberately mediocre.
+
+    A colony nobody has configured spreads its industry across every chain it
+    can run. Naming the one chain this world is good at should beat that -- if
+    it did not, there would be no reason to ever look at a colony.
+    """
+    ore = {IRON: 1000.0, CARBON: 1000.0, SILICON: 1000.0, CALCIUM: 1000.0}
+
+    automatic = dict(ore)
+    refine(automatic, work=100.0, hours=1.0)
+
+    directed = dict(ore)
+    refine(directed, work=100.0, hours=1.0, priorities={"smelting": 1.0})
+
+    assert directed[STEEL] > automatic[STEEL]
+
+
+def test_an_unknown_chain_falls_back_rather_than_idling():
+    """A colony must never stop working because its plan was nonsense."""
+    stock = {IRON: 200.0, CARBON: 200.0}
+    spent, _ = refine(stock, work=50.0, hours=1.0, priorities={"perpetual_motion": 1.0})
+    assert spent > 0
+
+
+def test_one_chain_cannot_strip_a_shared_input_in_an_hour():
+    """Silicates feed ceramics, construction and electronics alike.
+
+    Without a draw limit the first chain in the plan eats the lot and the player
+    has to babysit priorities just to stop the economy consuming itself.
+    """
+    stock = {SILICON: 100.0, CALCIUM: 100.0}
+    refine(stock, work=10_000.0, hours=1.0, priorities={"ceramics": 1.0})
+    assert stock[SILICON] > 50.0, "an hour cannot take more than a fraction of the seam"
+
+
+# --- what research costs -----------------------------------------------------
+
+
+def test_research_is_priced_in_common_goods_only():
+    """Geology must never lock a civilization out of a branch of tech.
+
+    A metal-poor start should research *slower*, not not at all. So the bill is
+    payable in things every civ can make by more than one route, and the rare
+    materials appear only as accelerants -- which are optional by construction.
+    """
+    for key in RESEARCH_COST_PER_PROGRESS:
+        assert key in REFINED_MATERIALS, f"{key} is not something industry makes"
+        assert key not in STRATEGIC_MATERIALS, f"{key} would let geology gate research"
+
+    for key in RESEARCH_ACCELERANTS:
+        assert key in MATERIALS
+        assert RESEARCH_ACCELERANTS[key] > 1.0, "an accelerant that slows you down"
+
+
+def test_accelerants_help_in_proportion_and_never_stack():
+    """Three multiplicative bonuses would outrun the cost curve they sit under."""
+    progress = 10.0
+    wanted = progress * ACCELERANT_PER_PROGRESS
+
+    none, consumed = accelerant_multiplier({}, progress)
+    assert none == 1.0 and consumed == {}
+
+    # A trickle gives a partial speed-up, so shipping some is worth doing.
+    trickle, _ = accelerant_multiplier({"rare_earths": wanted * 0.1}, progress)
+    full, manifest = accelerant_multiplier({"rare_earths": wanted * 10}, progress)
+    assert 1.0 < trickle < full
+    assert manifest["rare_earths"] == pytest.approx(wanted), "no more than it can absorb"
+
+    # Everything at once still buys only the best one.
+    everything = {key: wanted * 10 for key in RESEARCH_ACCELERANTS}
+    best, manifest = accelerant_multiplier(everything, progress)
+    assert len(manifest) == 1
+    assert best == pytest.approx(max(RESEARCH_ACCELERANTS.values()))
+
+
+def test_a_wet_world_supplies_its_own_water_and_a_dry_one_does_not():
+    """The line between a place and a permanent supply liability.
+
+    It is drawn by the phase diagram, not by a flag somebody set: liquid water
+    on the surface means life support is labour and nothing more. Ice in the
+    ground is not the same thing -- getting water out of it is a chain somebody
+    has to run.
+    """
+    assert has_surface_water({"hydrosphere": {"liquid_water": True}})
+    assert not has_surface_water({"hydrosphere": {"liquid_water": False}})
+    assert not has_surface_water({}), "an unsurveyed rock is dry until proven otherwise"

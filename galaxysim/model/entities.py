@@ -121,12 +121,17 @@ class Civ(Base):
     #: Every roll specific to this civ descends from it.
     seed: Mapped[int] = mapped_column(BigInteger, default=0)
 
-    #: Research is civ-wide: a discovery is known everywhere the moment it is
-    #: made. Matter is not -- there is no civ treasury, only the stockpile each
-    #: colony holds. See :attr:`Colony.stockpile`.
-    research_points: Mapped[float] = mapped_column(Float, default=0.0)
+    #: Research **already paid for in materials** and not yet spent on a tech.
+    #:
+    #: Knowledge is the one thing that is civ-wide: a discovery is known
+    #: everywhere the moment it is made. Matter is not -- there is no civ
+    #: treasury, only the stockpile each colony holds (:attr:`Colony.stockpile`),
+    #: and every point in this pool was bought out of one of them. There are no
+    #: free abstract research points: a colony with laboratories, workers and an
+    #: empty warehouse produces nothing.
+    research_progress: Mapped[float] = mapped_column(Float, default=0.0)
     #: Cumulative research ever paid. The balance invariant ties total power to
-    #: this number, so it is never spent down -- ``research_points`` is the
+    #: this number, so it is never spent down -- ``research_progress`` is the
     #: spendable pool, this is the odometer.
     research_invested: Mapped[float] = mapped_column(Float, default=0.0)
     #: Placeholder for the generated tech lineage of build-order step 5. Until
@@ -231,8 +236,6 @@ class World(Base):
     #: How many people this world could ultimately support, from real land area
     #: at a real population density scaled by how pleasant it is.
     carrying_capacity: Mapped[float] = mapped_column(Float, default=0.0)
-    #: Resource type -> per-hour yield multiplier at this world.
-    resource_yield: Mapped[dict] = mapped_column(JSONDict, default=dict)
     #: 0.0-1.0 environmental danger, applied against colony growth.
     hazard: Mapped[float] = mapped_column(Float, default=0.0)
     #: How many structures this world can host. Part of its identity, not a
@@ -254,7 +257,7 @@ class Colony(Base):
     """A civilization's settlement on a world. At most one per world.
 
     A colony is a *place*, not a line in a civ-wide ledger. It holds its own
-    stockpile, and there is no treasury behind it: metal mined here is here
+    stockpile, and there is no treasury behind it: ore mined here is here
     until a ship carries it somewhere else. That is what makes a remote outpost
     genuinely remote, and what gives supply lines something to cut.
     """
@@ -281,6 +284,13 @@ class Colony(Base):
     #: Fractions of the population assigned to each labor sector, normalized to
     #: sum to 1. See :mod:`galaxysim.colony.labor`.
     labor: Mapped[dict] = mapped_column(JSONDict, default=dict)
+
+    #: Recipe key -> relative weight: which refining chains this colony's
+    #: industry runs, and in what proportion. Empty means "work through
+    #: everything you can", which keeps an unattended colony alive and is
+    #: deliberately worse than a plan somebody chose.
+    #: See :mod:`galaxysim.materials.refining`.
+    refining: Mapped[dict] = mapped_column(JSONDict, default=dict)
 
     #: ``manual`` or ``governor``. Colony depth is opt-in: a governed colony
     #: runs itself to a policy, so a large empire does not require managing

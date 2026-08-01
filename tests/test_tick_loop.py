@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from galaxysim.core.resources import METAL
+from galaxysim.materials import IRON, STEEL
 from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
 from galaxysim.engine.tick import run_ticks
@@ -56,12 +56,12 @@ def test_offline_civ_still_produces(game):
         # No governor spending the stockpile: this test is about production
         # continuing for an absent player, not about what a governor buys.
         take_manual_control(session, civ)
-        before = held(session, civ, METAL)
+        before = held(session, civ, IRON)
 
     run_ticks(engine, universe_id, 24)
 
     with open_session(engine) as session:
-        after = held(session, civ_by_name(session, universe_id, "Terrans"), METAL)
+        after = held(session, civ_by_name(session, universe_id, "Terrans"), IRON)
 
     assert after > before
 
@@ -165,7 +165,7 @@ def test_research_is_a_standing_order(game):
         assert terrans.research_invested > 0
         # Vex never ordered research, so it banks points but spends none.
         assert vex.techs_known == 0
-        assert vex.research_points > 0
+        assert vex.research_progress > 0
 
 
 def test_fleets_only_fight_when_hostility_is_declared(game):
@@ -237,7 +237,7 @@ def test_build_order_charges_up_front_and_delivers(game):
         vex = civ_by_name(session, universe_id, "Vex")
         take_manual_control(session, vex)
         colony = session.scalar(select(Colony).where(Colony.civ_id == vex.id).order_by(Colony.id))
-        metal_before = colony.stockpile[METAL]
+        steel_before = colony.stockpile[STEEL]
         fleets_before = len(session.scalars(select(Fleet).where(Fleet.civ_id == vex.id)).all())
         intents.build_fleet(session, vex, colony.id, 2.0, name="Vex Second Fleet")
         colony_id = colony.id
@@ -246,9 +246,12 @@ def test_build_order_charges_up_front_and_delivers(game):
     with open_session(engine) as session:
         # Charged when work began, not on delivery -- and charged to the yard
         # that is building it, not to a civ-wide pot.
-        assert session.get(Colony, colony_id).stockpile[METAL] < metal_before
+        assert session.get(Colony, colony_id).stockpile[STEEL] < steel_before
 
-    run_ticks(engine, universe_id, 200)
+    # Long enough to finish: construction only gets the share of industry that
+    # refining leaves it, so a hull takes about twice as many hours as it did
+    # when ore went straight into ships.
+    run_ticks(engine, universe_id, 300)
     with open_session(engine) as session:
         vex = civ_by_name(session, universe_id, "Vex")
         fleets = session.scalars(select(Fleet).where(Fleet.civ_id == vex.id)).all()
@@ -327,5 +330,5 @@ def test_each_civ_starts_on_its_own_habitable_world():
 
         civs = session.scalars(select(Civ).order_by(Civ.id)).all()
         # Starting goods sit on the homeworld, not in a treasury.
-        assert all(held(session, c, METAL) > 0 for c in civs)
-        assert all(c.stockpile.get(METAL, 0.0) > 0 for c in colonies)
+        assert all(held(session, c, STEEL) > 0 for c in civs)
+        assert all(c.stockpile.get(STEEL, 0.0) > 0 for c in colonies)

@@ -25,7 +25,19 @@ from galaxysim.materials.catalogue import MATERIALS, RAW_MATERIALS
 from galaxysim.worldgen.geology import Deposit
 
 #: Scales a deposit's yield index into tonnes per worker per hour.
-EXTRACTION_SCALE = 62.0
+#:
+#: Calibrated against the *other* side of the economy rather than picked: a
+#: worker-hour of industry can push about 1.1 tonnes of ore through the refining
+#: chains, and at this scale a median world gives up about 2.5 tonnes per
+#: worker-hour across all its deposits combined. So a colony splitting its people
+#: evenly mines a little faster than it can process, ore accumulates slowly, and
+#: shipping the surplus somewhere with spare industry is worth doing.
+#:
+#: The first version of this number was seventy times higher, and the result was
+#: a colony sitting on forty thousand tonnes of bauxite it could never refine --
+#: which makes both extraction and geology meaningless, since every world is
+#: effectively infinite.
+EXTRACTION_SCALE = 0.9
 
 #: Compresses the output range. Real crustal abundance spans five orders of
 #: magnitude -- silicon is thousands of times commoner than copper, which is

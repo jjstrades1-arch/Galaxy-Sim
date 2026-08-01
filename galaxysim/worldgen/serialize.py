@@ -67,44 +67,25 @@ def survey_from_json(data: dict) -> Survey:
     )
 
 
-#: How the real element inventory maps onto the three legacy resources the
-#: economy currently runs on. Phase 2 replaces the legacy resources with the
-#: elements themselves; until then this keeps the existing economy working off
-#: real geology rather than a rolled yield table.
-LEGACY_RESOURCE_SOURCES: dict[str, tuple[str, ...]] = {
-    "metal": ("iron", "aluminium", "titanium", "copper", "nickel"),
-    "energy": ("uranium", "thorium", "helium3", "deuterium", "carbon"),
-    "volatiles": ("water_ice", "carbon", "sulfur", "phosphates"),
-}
+def has_surface_water(data: dict) -> bool:
+    """Whether a world's own hydrosphere can supply a colony with water.
 
-#: Scales the summed yield index of the contributing elements into the 0-2ish
-#: range the existing production code expects. Calibrated against a sample of
-#: generated worlds so the median lands near 0.6 -- the middle of the old
-#: hand-authored yield ranges -- rather than saturating or vanishing. The
-#: figures differ by orders of magnitude because the underlying crustal
-#: abundances do: iron is percent-level, uranium is parts per million.
-LEGACY_YIELD_SCALE: dict[str, float] = {
-    "metal": 2.37,
-    "energy": 1400.0,
-    "volatiles": 144.0,
-}
-
-
-def legacy_resource_yield(survey: Survey) -> dict[str, float]:
-    """Derive the old three-resource yields from real deposits.
-
-    A bridge, deliberately: it means a world's economic value already follows
-    from its actual geology -- ore grade, deposit depth, formation history --
-    while the resource system itself is still the simple one.
+    Life support runs on water, and where there are oceans a colony draws its
+    own. This is the line between a world that merely costs labour to live on
+    and one that is permanently dependent on a supply route -- and it falls out
+    of the phase diagram rather than being assigned. A frozen or dry world is
+    supply-dependent no matter how much ice is locked in its crust, because
+    getting water out of that ice is a refining chain somebody has to run.
     """
-    yields: dict[str, float] = {}
-    for resource, elements in LEGACY_RESOURCE_SOURCES.items():
-        total = sum(
-            survey.deposits[element].yield_index
-            for element in elements
-            if element in survey.deposits
-        )
-        scaled = total * LEGACY_YIELD_SCALE[resource]
-        if scaled > 0.001:
-            yields[resource] = round(min(3.0, scaled), 4)
-    return yields
+    return bool(data.get("hydrosphere", {}).get("liquid_water", False))
+
+
+def deposits_from_json(data: dict) -> dict[str, Deposit]:
+    """Just the geology out of a stored survey.
+
+    Production asks this of every colony on every tick, and rebuilding the whole
+    survey -- star, orbit, atmosphere, climate, biosphere, moons -- to read the
+    ore grades would be an absurd amount of work to throw away. Extraction is
+    the one part of the document the engine reads hot.
+    """
+    return {name: Deposit(**d) for name, d in sorted(data.get("deposits", {}).items())}

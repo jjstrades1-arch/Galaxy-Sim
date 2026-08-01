@@ -5,13 +5,20 @@ the next step the moment the civ can afford it. That is what keeps an offline
 player advancing -- research should not stall because nobody was awake to click
 it.
 
+**Everything spent here was paid for in materials.** This resolver only spends
+:attr:`Civ.research_progress`, and every point in that pool was bought out of
+some colony's stockpile in
+:func:`galaxysim.engine.resolvers.production._research_output` -- electronics,
+polymers, ceramics and fuel, consumed where the laboratories stand. There is no
+abstract currency here that appears out of assigning people to a sector.
+
 Cost is superlinear in depth (:meth:`Rates.research_cost`), so each step along a
 lineage costs meaningfully more than the last. That curve is the whole
 anti-runaway story for research: there is no depth at which progress becomes
 cheap, and a civ that pours everything into one direction buys fewer and fewer
 techs for it.
 
-Build-order step 5 replaces the depth counter here with real generated tech --
+Build-order step 7 replaces the depth counter here with real generated tech --
 genomes, an effect grammar, and a frontier of candidates. The economics of
 paying for the next step do not change when it lands; only what you receive
 does.
@@ -39,10 +46,10 @@ def resolve(ctx: TickContext) -> None:
         # overflow when five-minute ticks would not.
         while True:
             cost = ctx.rates.research_cost(civ.techs_known)
-            if civ.research_points < cost:
+            if civ.research_progress < cost:
                 break
 
-            civ.research_points -= cost
+            civ.research_progress -= cost
             civ.research_invested += cost
             civ.techs_known += 1
             ctx.log(

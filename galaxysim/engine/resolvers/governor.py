@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from galaxysim.colony.buildings import BUILDING_TYPES_BY_KIND
 from galaxysim.colony.labor import EXTRACTION, INDUSTRY, LIFE_SUPPORT, RESEARCH, normalize
-from galaxysim.core.resources import can_afford
+from galaxysim.materials import can_afford
 from galaxysim.engine import intents
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries

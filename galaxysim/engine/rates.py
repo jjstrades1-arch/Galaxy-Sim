@@ -88,9 +88,16 @@ class Rates:
     #: Resource output per worker assigned to extraction, per real hour, before
     #: world yields and building bonuses.
     extraction_per_worker_per_hour: float = 1.0
-    #: Industry-work per worker assigned to industry, per real hour. Buildings
-    #: and ships are both paid for in this.
+    #: Industry-work per worker assigned to industry, per real hour. Refining,
+    #: buildings and ships are all paid for in this.
     industry_per_worker_per_hour: float = 0.5
+    #: Share of a colony's industry-work that goes to running refining chains
+    #: rather than to construction. Ore is useless until it is processed and
+    #: nothing is built out of ore, so a colony that put everything into
+    #: construction would finish its current project and then have nothing to
+    #: build the next one from. Half is the neutral default; tech and buildings
+    #: are the right places to move it.
+    refining_share_of_industry: float = 0.5
     #: Fraction of a colony's population that grows per real hour, before any
     #: habitability or tech modifier. 0.5%/hour is roughly 12%/day compounding.
     population_growth_per_hour: float = 0.005
@@ -119,25 +126,30 @@ class Rates:
     #: numbers a fully hostile world spends roughly a fifth of its people just
     #: staying alive, before any dome is built.
     life_support_per_worker_per_hour: float = 0.4
-    #: Volatiles consumed per unit of life support *delivered* -- not per unit
-    #: of shortfall. Sealed habitats need consumable input; workers cannot make
-    #: air out of nothing on a bare rock.
+    #: Water consumed per unit of life support *delivered* -- not per unit of
+    #: shortfall. Sealed habitats need consumable input; workers cannot make air
+    #: out of nothing on a bare rock.
     #:
     #: This is what makes hostile worlds supply-dependent rather than merely
-    #: labor-expensive, and it interacts with the world type table to decide
-    #: which ones can stand alone. Ice and toxic worlds have high volatiles
-    #: yields and can sustain themselves; **barren worlds yield only metal and
-    #: energy**, so the richest metal worlds in the game cannot feed themselves
-    #: and live or die by their supply line.
-    volatiles_per_life_support: float = 1.0
+    #: labour-expensive, and with real geology it decides which worlds can stand
+    #: alone. Water ice occurs on roughly a tenth of worlds, so most colonies
+    #: import their water -- and the richest mining worlds, which are dry by
+    #: definition, live or die by their supply line.
+    water_per_life_support: float = 1.0
+    #: Water yielded per unit of water ice refined. The water_processing recipe
+    #: is the only route, so a colony without ice in the ground has none.
+    water_per_ice: float = 0.8
     #: Fraction of population lost per real hour at a total life-support
     #: failure. Deliberately gradual: an offline player should be able to see a
     #: colony dying and still have time to save it.
     starvation_per_hour: float = 0.04
 
     # --- Research ----------------------------------------------------------
-    #: Research points a colony contributes per real hour, before it is scaled
-    #: by infrastructure and by the square root of population.
+    #: Research a colony's laboratories *could* do per real hour, before scaling
+    #: by infrastructure and the square root of population. Capacity, not
+    #: output: realising it costs materials out of that colony's stockpile
+    #: (:data:`galaxysim.materials.costs.RESEARCH_COST_PER_PROGRESS`), and a
+    #: colony with the workers but not the goods realises none of it.
     research_per_colony_per_hour: float = 0.5
     #: Cost of the next tech along a lineage scales as
     #: ``research_cost_base * (depth + 1) ** research_cost_exponent``. Also

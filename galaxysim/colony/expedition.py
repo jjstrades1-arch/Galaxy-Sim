@@ -21,13 +21,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from galaxysim.core.resources import ENERGY, METAL, VOLATILES
-
-#: Cost per unit of each expedition component.
-COLONIST_COST: dict[str, float] = {METAL: 4.0, VOLATILES: 3.0}
-EQUIPMENT_COST: dict[str, float] = {METAL: 12.0, ENERGY: 6.0}
-#: Life-support stores are just volatiles, shipped as cargo and burned later.
-STORES_COST: dict[str, float] = {VOLATILES: 1.0}
+from galaxysim.materials.catalogue import FOOD, WATER
+from galaxysim.materials.costs import COLONIST_COST, EQUIPMENT_COST, STORES_COST
+from galaxysim.materials.extraction import extraction_rates
 
 #: Infrastructure a colony gains per unit of equipment landed. Infrastructure
 #: multiplies extraction, industry and research, so equipment is the difference
@@ -93,7 +89,11 @@ class Loadout:
         Only the stores: equipment becomes infrastructure and colonists become
         population.
         """
-        return {VOLATILES: self.stores} if self.stores > 0 else {}
+        if self.stores <= 0:
+            return {}
+        # Stores land as what they actually are: water and food. Life support
+        # draws on the first, and the population eats the second.
+        return {WATER: self.stores * 0.7, FOOD: self.stores * 0.3}
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +103,7 @@ class Assessment:
     loadout: "Loadout"
     cost: dict[str, float]
     habitability: float
-    #: Volatiles per hour life support will burn once landed.
+    #: Water per hour life support will consume once landed.
     burn_per_hour: float
     #: Hours the stores cover. ``None`` means indefinitely -- the world is
     #: habitable enough to need nothing.
@@ -118,14 +118,14 @@ class Assessment:
     def summary(self) -> str:
         """One line a player can act on."""
         if self.self_sufficient:
-            return "Self-sufficient: local volatiles cover life support."
+            return "Self-sufficient: local water covers life support."
         if self.survival_hours is None:
             return "No life support required."
         days = self.survival_hours / 24.0
         if self.survival_hours <= 0:
             return "WILL DIE ON ARRIVAL: no stores and nothing local to burn."
         return (
-            f"Stores last about {days:.1f} days ({self.burn_per_hour:.2f} volatiles/hour). "
+            f"Stores last about {days:.1f} days ({self.burn_per_hour:.2f} water/hour). "
             "Needs a supply route before then."
         )
 
@@ -154,7 +154,7 @@ def assess(loadout: Loadout, world, rates) -> Assessment:
         loadout.colonists
         * rates.life_support_per_pop_per_hour
         * (1.0 - habitability)
-        * rates.volatiles_per_life_support
+        * rates.water_per_life_support
     )
     if burn <= 0:
         return Assessment(
@@ -166,16 +166,35 @@ def assess(loadout: Loadout, world, rates) -> Assessment:
             self_sufficient=True,
         )
 
-    # Can the world itself keep up? Extraction is only part of the population,
-    # so compare against a realistic share rather than the whole colony mining
-    # volatiles and nobody breathing.
-    local_yield = float(world.resource_yield.get(VOLATILES, 0.0))
+    # Can the world itself keep up? Two ways it can, and the difference matters
+    # a great deal to whoever is going there.
+    #
+    # Oceans: a wet world hands its colonists water for free, so life support is
+    # labour and nothing else. Ice: a dry world can still make water, but only
+    # by mining and refining it, so its independence is bounded by how good the
+    # seam is. A world with neither is a permanent supply liability regardless
+    # of how rich it is -- which is exactly the bargain the best mining worlds
+    # offer.
+    from galaxysim.worldgen.serialize import deposits_from_json, has_surface_water
+
+    survey = world.survey or {}
+    if has_surface_water(survey):
+        return Assessment(
+            loadout=loadout,
+            cost=cost,
+            habitability=habitability,
+            burn_per_hour=0.0,
+            survival_hours=None,
+            self_sufficient=True,
+        )
+
+    ice_rate = extraction_rates(deposits_from_json(survey)).get("water_ice", 0.0)
     local_per_hour = (
-        local_yield
+        ice_rate
         * loadout.colonists
         * 0.25  # a balanced allocation's extraction share
-        * rates.extraction_per_worker_per_hour
         * loadout.starting_infrastructure()
+        * rates.water_per_ice  # refining yield
     )
 
     return Assessment(

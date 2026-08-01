@@ -22,7 +22,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from galaxysim.colony.labor import balanced_allocation
-from galaxysim.core.resources import STARTING_STOCKPILE
+from galaxysim.materials import STARTING_STOCKPILE
 from galaxysim.core.seeds import derive_seed, rng_for
 from galaxysim.core.space import Vec3
 from galaxysim.flavor.names import system_name, world_name
@@ -37,11 +37,7 @@ from galaxysim.model.entities import (
     UniverseMode,
     World,
 )
-from galaxysim.worldgen.serialize import (
-    legacy_resource_yield,
-    survey_from_json,
-    survey_to_json,
-)
+from galaxysim.worldgen.serialize import survey_to_json
 from galaxysim.worldgen.star import Star, roll_star
 from galaxysim.worldgen.survey import plausible_mass, plausible_orbits, survey_world
 
@@ -138,7 +134,6 @@ def _world_from_survey(survey, system: StarSystem, rng, orbit_index: int) -> Wor
         world_type=survey.world_class,
         orbit_index=orbit_index,
         habitability=survey.habitability,
-        resource_yield=legacy_resource_yield(survey),
         # Hazard is now a consequence of the world rather than its own roll:
         # volcanism, radiation where there is no magnetic field, and whatever
         # the local biology does to an unadapted coloniser.
@@ -179,7 +174,7 @@ def add_civ(
         species_description=species_description,
         is_ai=is_ai,
         seed=derive_seed(universe.seed, "civ", name),
-        research_points=0.0,
+        research_progress=0.0,
         research_invested=0.0,
         techs_known=0,
     )
@@ -355,7 +350,6 @@ def _apply_survey(world: World, generated: World) -> None:
     world.name = generated.name
     world.world_type = generated.world_type
     world.habitability = generated.habitability
-    world.resource_yield = generated.resource_yield
     world.hazard = generated.hazard
     world.slots = generated.slots
     world.survey = generated.survey

@@ -28,7 +28,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/galaxysim move 1 24                  # send fleet 1 to system 24
 .venv/bin/galaxysim colonize 1 60 --preview    # what would settling cost?
 .venv/bin/galaxysim colonize 1 60 --stores 200 # send an expedition
-.venv/bin/galaxysim route 2 --from 1 --to 3 --carry volatiles:50
+.venv/bin/galaxysim route 2 --from 1 --to 3 --carry water:50
 .venv/bin/galaxysim tick 24                    # advance a day
 .venv/bin/galaxysim log                        # what happened
 ```
@@ -96,12 +96,50 @@ Breathable worlds are about 1 in 6,000. Finding one is an event; a civ's own
 homeworld is guaranteed by searching a life-bearing star's habitable zone for a
 world the generator would genuinely produce — never by overwriting a number.
 
+## The economy is made of real substances
+
+There is no `metal`, no `energy`, no `volatiles`. There are twenty-nine
+materials, and the raw ones are **the elements the geology generator already
+produces** — extraction is a direct lookup against a world's crust, with no
+mapping layer in between.
+
+**A world produces what it is made of.** Iron ore, bauxite, rare earths,
+uranium, water ice, helium-3 — each with an abundance, a concentration set by
+how tectonically active the world is, and a depth. A world with no uranium in
+its crust yields none at any labour allocation, any infrastructure level and any
+technology. Absence is real, which is what makes a uranium-bearing world an
+objective rather than a preference.
+
+**Refining is where specialisation lives.** Ore is nearly useless: buildings are
+priced in steel and construction materials, ships in alloys and electronics,
+life support in water. Twelve chains convert one into the other, mass is
+conserved minus tailings, and **nothing substitutes**. Alloys and fissiles each
+have a fallback route so geology can never lock a civ out of a whole tier;
+electronics deliberately has one, needing copper, rare earths and silicon
+together — it is meant to be the chain that forces trade.
+
+Refining draws on the same industry-work pool as construction, split by
+`Rates.refining_share_of_industry`. A colony cannot both process everything it
+digs and build at full speed. Left alone it works through every chain it can,
+evenly — deliberately mediocre, so naming the two or three chains a world is
+actually good at beats it (`galaxysim refining <id> --chain smelting:2`).
+
+**Research is bought, not banked.** Laboratories consume electronics, polymers,
+ceramics and fuel out of the stockpile where they stand. A colony with the
+workers, the buildings and an empty warehouse discovers nothing — so an
+industrial base is a prerequisite for a scientific one, and cutting a rival's
+supply line slows their tech without any rule saying so. The bill is payable in
+common goods only, never strategic ones, so a metal-poor start researches
+*slower*, never not at all. Rare earths, fissiles and helium-3 appear as
+optional **accelerants**: they speed research when supplied and cost nothing but
+the material when they are not.
+
 ## The colony
 
 A colony is a place you run, not a number that goes up.
 
 **Matter is local; knowledge is civ-wide.** There is no treasury. Each colony
-holds its own stockpile, and metal mined on one world is on that world until a
+holds its own stockpile, and ore mined on one world is on that world until a
 ship carries it elsewhere. Ships are paid for by the yard building them, fleet
 upkeep by the nearest colony to the fleet — so projecting force far from home
 means feeding it out there. Research is the one exception: a discovery is known
@@ -112,14 +150,15 @@ life support. The fourth is the interesting one. Life-support load scales with
 `1 - habitability`, so a hostile world takes a bite out of the workforce before
 anyone mines anything. Habitability is not a growth cap, it is a tax on labor.
 
-**Life support consumes volatiles as well as people.** Sealed habitats need
-consumable input; workers cannot make air out of nothing. This is what makes
-hostile worlds *supply-dependent* rather than merely expensive, and it plays
-against the world table on purpose:
+**Life support consumes water as well as people.** Sealed habitats need
+consumable input; workers cannot make air out of nothing. A world with oceans
+hands its colonists water for free. A dry world has two options — mine ice and
+refine it, or import every drop — and a world with neither ice nor ocean has
+only the second. This is what makes hostile worlds *supply-dependent* rather
+than merely expensive, and geology plays against it on purpose:
 
-> Barren worlds yield metal and energy but **no volatiles**. They are among the
-> richest worlds in the game and they cannot feed themselves. The best mining is
-> on the worlds least able to keep anyone alive.
+> The best mining worlds are dry by definition. They are among the richest
+> worlds in the game and they cannot keep anyone alive without a supply line.
 
 **Buildings occupy limited per-world slots** and are paid for in industry-work,
 so a colony with nobody in industry finishes nothing. Shipyards gate fleet
@@ -221,9 +260,10 @@ Resolution order is fixed and meaningful (`galaxysim/engine/tick.py`):
 
 ```
 galaxysim/
-  core/        seeds, RNG derivation, continuous-space coordinates, resources
+  core/        seeds, RNG derivation, continuous-space coordinates
+  materials/   catalogue, refining chains, extraction, prices
   model/       SQLAlchemy entities (SQLite for solo, Postgres for shared)
-  worldgen/    world type table; lazy system_at() lands in step 4
+  worldgen/    stars, planetary physics, geology, biospheres, surveys
   colony/      labor sectors, building catalogue, expedition loadouts
   engine/      rates, intent queue, tick pipeline, resolvers
   ai/          AI civs, driving the same intent API a player uses
@@ -236,7 +276,7 @@ galaxysim/
 Named explicitly so nobody mistakes scaffolding for design:
 
 - **Tech is a depth counter.** `Civ.techs_known` stands in for the generated
-  lineage of step 5 — genomes, a bounded effect grammar, and a frontier of
+  lineage of step 7 — genomes, a bounded effect grammar, and a frontier of
   candidate techs derived from what a civ already knows. The economics of
   paying for the next step will not change when it lands; only what you receive.
 - **The starting region is generated eagerly.** `bootstrap.seed_starting_region`
@@ -260,9 +300,14 @@ Named explicitly so nobody mistakes scaffolding for design:
 - **Supply routes over-deliver.** A standing route ships its full manifest every
   trip whether or not the destination needs it, so a well-supplied outpost banks
   months of surplus. A route that tops up to a target level would be better.
-- **Resources outrun their sinks.** Buildings help, but stockpiles still climb
-  once a colony is developed. More sinks (infrastructure upgrades, terraforming,
-  resource costs on research) arrive with the deeper economy.
+- **Ships take about twice as long to build.** Refining now takes half the
+  industry pool, so construction runs at half the rate it did. That is the
+  intended shape — ore has to become steel before it can become a hull — but the
+  split is a first-pass number that wants a play session, not a spreadsheet.
+- **Raw materials still outrun their sinks.** Research consuming refined goods
+  is a real sink and the draw limit stops one chain cornering the input, but a
+  developed colony still accumulates ore faster than it processes it.
+  Terraforming and infrastructure upgrades are the next sinks.
 - **Tick cost is ~88 ms with 6 AI civs.** Caching derived colony state per tick
   brought this down from ~105 ms, but the colony layer made a tick meaningfully
   more expensive than the ~60 ms it was before. Wants profiling before the

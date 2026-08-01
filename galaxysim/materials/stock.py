@@ -28,6 +28,21 @@ def spend(stock: dict[str, float], cost: dict[str, float]) -> None:
         stock[key] = stock.get(key, 0.0) - amount
 
 
+def draw(stock: dict[str, float], cost: dict[str, float]) -> None:
+    """Deduct ``cost``, flooring each line at zero instead of raising.
+
+    For callers that computed the amount *from* the stockpile a moment earlier --
+    research buying as much progress as it can pay for, life support burning
+    what it has. There, ``a / b * b > a`` in floating point is a routine event
+    and refusing the spend over a billionth of a tonne would be absurd.
+
+    Everything a player or the AI *orders* still goes through :func:`spend`,
+    which raises: an order that cannot be paid for must fail loudly.
+    """
+    for key, amount in cost.items():
+        stock[key] = max(0.0, stock.get(key, 0.0) - amount)
+
+
 def deposit(stock: dict[str, float], gains: dict[str, float]) -> None:
     """Add ``gains`` to ``stock`` in place, creating keys as needed."""
     for key, amount in gains.items():

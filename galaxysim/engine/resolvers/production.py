@@ -7,10 +7,20 @@ punishes people for sleeping.
 A colony's tick runs in a deliberate order:
 
 1. **Life support first.** People have to breathe before they work. A hostile
-   world consumes labor, then stockpiled volatiles, and then population.
-2. **Extraction, industry, research** from whatever labor is left, modified by
-   the world's yields and the colony's buildings.
-3. **Construction** spends the industry-work just produced.
+   world consumes labor, then stockpiled water, and then population.
+2. **Extraction** pulls real elements out of the world's real deposits -- so a
+   colony's output list *is* its crust, and a world with no uranium yields none
+   at any labour allocation, infrastructure level or tech.
+3. **Refining** turns some of that ore into the steel, alloys, electronics and
+   fuel that everything is actually priced in. This is where a world stops
+   being a pile of rock and becomes an economy.
+4. **Research** buys progress with materials, out of the stockpile where the
+   laboratories stand.
+5. **Construction** spends whatever industry-work refining left.
+
+Steps 3 and 5 draw on the same industry-work pool, split by
+:attr:`Rates.refining_share_of_industry`. That competition is the point: a
+colony cannot both process everything it digs and build at full speed.
 
 The pacing rules live here more than anywhere else:
 
@@ -36,17 +46,23 @@ from galaxysim.colony.labor import (
     normalize,
     workers_in,
 )
-from galaxysim.core.resources import (
+from galaxysim.materials import (
     FLEET_COST_PER_STRENGTH,
     FLEET_UPKEEP_PER_STRENGTH,
-    VOLATILES,
+    RESEARCH_COST_PER_PROGRESS,
+    WATER,
+    accelerant_multiplier,
     can_afford,
     deposit,
+    draw,
+    extraction_rates,
+    refine,
     spend,
 )
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
 from galaxysim.model.entities import Building, Civ, Colony, Fleet, IntentKind, IntentStatus
+from galaxysim.worldgen.serialize import deposits_from_json, has_surface_water
 
 
 def resolve(ctx: TickContext) -> None:
@@ -79,11 +95,14 @@ def _produce(ctx: TickContext, civ: Civ) -> None:
 
         _grow_population(ctx, colony, effects)
         _extract(ctx, colony, allocation, effects, drag)
+        _refine(ctx, colony)
         research_gain += _research_output(ctx, colony, allocation, effects) * drag
 
     # Knowledge is the one thing that is civ-wide: a discovery is known
-    # everywhere the moment it is made.
-    civ.research_points += research_gain
+    # everywhere the moment it is made. Note what is *not* civ-wide: the
+    # materials that bought it, which came out of specific warehouses on
+    # specific worlds.
+    civ.research_progress += research_gain
     _charge_fleet_upkeep(ctx, civ)
 
 
@@ -102,6 +121,7 @@ def colony_effects(colony: Colony) -> "ColonyEffects":
     sector_bonus: dict[str, float] = {}
     resource_bonus: dict[str, float] = {}
     habitability_offset = 0.0
+    refining_bonus = 0.0
     recycling = 0.0
     grants: set[str] = set()
     throughput = 0.0
@@ -117,6 +137,7 @@ def colony_effects(colony: Colony) -> "ColonyEffects":
         for resource, bonus in sorted(spec.resource_bonus.items()):
             resource_bonus[resource] = resource_bonus.get(resource, 0.0) + bonus
         habitability_offset += spec.habitability_offset
+        refining_bonus += spec.refining_bonus
         recycling += spec.life_support_recycling
         grants.update(spec.grants)
         throughput += spec.cargo_throughput
@@ -125,6 +146,7 @@ def colony_effects(colony: Colony) -> "ColonyEffects":
         sector_bonus=sector_bonus,
         resource_bonus=resource_bonus,
         habitability_offset=habitability_offset,
+        refining_bonus=refining_bonus,
         # Capped below 1.0: perfect recycling would make a colony need no
         # supplies at all, which would undo the whole point of supply lines.
         life_support_recycling=min(0.9, recycling),
@@ -140,6 +162,7 @@ class ColonyEffects:
         "sector_bonus",
         "resource_bonus",
         "habitability_offset",
+        "refining_bonus",
         "life_support_recycling",
         "grants",
         "cargo_throughput",
@@ -150,6 +173,7 @@ class ColonyEffects:
         sector_bonus: dict[str, float],
         resource_bonus: dict[str, float],
         habitability_offset: float,
+        refining_bonus: float,
         life_support_recycling: float,
         grants: frozenset[str],
         cargo_throughput: float,
@@ -157,6 +181,7 @@ class ColonyEffects:
         self.sector_bonus = sector_bonus
         self.resource_bonus = resource_bonus
         self.habitability_offset = habitability_offset
+        self.refining_bonus = refining_bonus
         self.life_support_recycling = life_support_recycling
         self.grants = grants
         self.cargo_throughput = cargo_throughput
@@ -184,10 +209,16 @@ def _run_life_support(
 ) -> None:
     """Keep the colony breathing, or start killing it.
 
-    Three layers, in order: assigned workers, then stockpiled volatiles, then
+    Three layers, in order: assigned workers, then stockpiled water, then
     population. A colony at the end of a cut supply line works through its
     stores and only then starts dying -- so the failure is visible in the log
     for a long while before it is fatal.
+
+    Water rather than an abstract supply number, and water a colony can only
+    make by refining ice it has dug up itself or had shipped in. Water ice
+    occurs on roughly a tenth of worlds, so most colonies breathe at the end of
+    a supply line -- and the richest mining worlds, dry by definition, are the
+    most dependent of all.
 
     Runs in every management mode. A manually run colony still breathes;
     forgetting to assign life-support labor must not silently kill a colony
@@ -213,13 +244,20 @@ def _run_life_support(
         * effects.sector(LIFE_SUPPORT)
     )
 
-    per_unit = ctx.rates.volatiles_per_life_support * (1.0 - effects.life_support_recycling)
-    available = colony.stockpile.get(VOLATILES, 0.0)
+    # A world with oceans supplies its own. Life support there is a labour cost
+    # and nothing more, which is why a marginally habitable but *wet* world is a
+    # far better place to be than a rich dry one.
+    per_unit = (
+        0.0
+        if has_surface_water(colony.world.survey or {})
+        else ctx.rates.water_per_life_support * (1.0 - effects.life_support_recycling)
+    )
+    available = colony.stockpile.get(WATER, 0.0)
     supply_capacity = (available / per_unit) if per_unit > 0 else need
 
     delivered = min(need, labor_capacity, supply_capacity)
     if delivered > 0 and per_unit > 0:
-        colony.stockpile[VOLATILES] = max(0.0, available - delivered * per_unit)
+        colony.stockpile[WATER] = max(0.0, available - delivered * per_unit)
 
     deficit = need - delivered
     if deficit <= 1e-12:
@@ -231,7 +269,7 @@ def _run_life_support(
     lost = colony.population * unmet * ctx.per_tick(ctx.rates.starvation_per_hour)
     colony.population = max(0.0, colony.population - lost)
 
-    starved_of = "volatiles" if supply_capacity < labor_capacity else "life-support workers"
+    starved_of = "water" if supply_capacity < labor_capacity else "life-support workers"
     ctx.log(
         "life_support_failing",
         f"{colony.name} cannot sustain its population -- out of {starved_of} "
@@ -283,6 +321,11 @@ def _extract(
 ) -> None:
     """Mine the world with whoever is assigned to it.
 
+    What comes out is what the crust holds. There is no yield table between the
+    geology and the stockpile any more: :func:`extraction_rates` reads the
+    world's actual deposits, so a colony's output list is a statement about the
+    planet rather than about its owner.
+
     Output lands where it was produced. There is no treasury to sweep it into --
     moving it anywhere else is a shipping problem.
     """
@@ -290,48 +333,141 @@ def _extract(
     if workers <= 0:
         return
 
-    gains: dict[str, float] = {}
-    for resource, yield_factor in sorted(colony.world.resource_yield.items()):
-        per_hour = (
-            ctx.rates.extraction_per_worker_per_hour
-            * workers
-            * colony.infrastructure
-            * float(yield_factor)
-            * effects.sector(EXTRACTION)
-            * effects.resource(resource)
-        )
-        gains[resource] = ctx.per_tick(per_hour) * drag
+    rates = mining_rates(ctx, colony)
+    if not rates:
+        # A world with nothing worth digging. Perfectly legal -- and a reason to
+        # settle it only for where it is rather than what it holds.
+        return
 
-    deposit(colony.stockpile, gains)
+    worker_hours = ctx.per_tick(
+        ctx.rates.extraction_per_worker_per_hour
+        * workers
+        * colony.infrastructure
+        * effects.sector(EXTRACTION)
+    ) * drag
+
+    deposit(
+        colony.stockpile,
+        {
+            material: rate * worker_hours * effects.resource(material)
+            for material, rate in rates.items()
+        },
+    )
+
+
+def mining_rates(ctx: TickContext, colony: Colony) -> dict[str, float]:
+    """Tonnes per worker-hour this colony can pull, by material.
+
+    Memoized for the tick: the deposits live inside the world's survey document
+    and rebuilding them per colony per tick is the one hot read in the whole
+    generation layer.
+    """
+    return ctx.cached_effects(
+        ("mining", colony.world_id),
+        lambda: extraction_rates(deposits_from_json(colony.world.survey or {})),
+    )
+
+
+def _refine(ctx: TickContext, colony: Colony) -> None:
+    """Run this colony's processing chains on part of its industry output.
+
+    Ore is nearly useless: buildings are priced in steel and construction
+    materials, ships in alloys and electronics, life support in water. All of
+    those come out of a recipe. So a colony that mines and never refines
+    accumulates a growing pile of rock it cannot spend -- which is exactly what
+    should happen to one whose owner never assigned anybody to industry.
+    """
+    effects = effects_for(ctx, colony)
+    budget = (
+        industry_output(ctx, colony)
+        * ctx.rates.refining_share_of_industry
+        * (1.0 + effects.refining_bonus)
+    )
+    if budget <= 0:
+        return
+
+    # No efficiency multiplier here: industry_output already carries the
+    # colony's factory bonus, and applying it twice would let one building
+    # compound against itself.
+    refine(
+        colony.stockpile,
+        budget,
+        ctx.cadence.hours_per_tick,
+        priorities=colony.refining or None,
+    )
 
 
 def _research_output(
     ctx: TickContext, colony: Colony, allocation: dict[str, float], effects: ColonyEffects
 ) -> float:
-    """Research points this colony contributes this tick.
+    """Research this colony contributes this tick, and what it cost to get it.
 
-    Sublinear in headcount: a colony twice the size does not think twice as
-    fast. Linear would make population the only thing that matters, and combined
-    with the superlinear cost curve it would leave research income and cost
-    growing at the same rate, so progress would never actually slow down.
+    Research is **bought, not banked**. Laboratories consume instruments,
+    optics, reactor parts and reagents at a real rate, and those are made of
+    electronics, polymers, ceramics and fuel out of the warehouse next door. A
+    colony with the workers, the buildings and an empty stockpile discovers
+    nothing -- which is what makes an industrial base a prerequisite for a
+    scientific one rather than a parallel track.
+
+    What that buys, deliberately, is that a rival's research programme is
+    something you can *reach*: cut the supply line feeding their laboratory
+    world and their tech rate falls, without anyone needing a rule that says so.
+
+    Capacity is sublinear in headcount: a colony twice the size does not think
+    twice as fast. Linear would make population the only thing that matters, and
+    combined with the superlinear cost curve it would leave research income and
+    cost growing at the same rate, so progress would never actually slow down.
     """
     workers = workers_in(colony.population, allocation, RESEARCH)
     if workers <= 0:
         return 0.0
-    return ctx.per_tick(
+
+    capacity = ctx.per_tick(
         ctx.rates.research_per_colony_per_hour
         * math.sqrt(workers)
         * colony.infrastructure
         * effects.sector(RESEARCH)
     )
+    if capacity <= 0:
+        return 0.0
+
+    # How much of that capacity the stockpile can actually supply. The binding
+    # constraint is whichever input runs out first, so a colony short of one
+    # thing is short of research -- there is no substituting polymers for
+    # electronics.
+    affordable = capacity
+    for material, per_progress in sorted(RESEARCH_COST_PER_PROGRESS.items()):
+        if per_progress <= 0:
+            continue
+        affordable = min(affordable, colony.stockpile.get(material, 0.0) / per_progress)
+
+    progress = max(0.0, min(capacity, affordable))
+    if progress <= 0:
+        return 0.0
+
+    draw(colony.stockpile, {m: c * progress for m, c in RESEARCH_COST_PER_PROGRESS.items()})
+
+    # Rare materials never gate research -- they only speed it up, out of
+    # whatever this colony happens to be sitting on. A civ that draws a
+    # metal-poor start researches slower, never not at all.
+    multiplier, consumed = accelerant_multiplier(colony.stockpile, progress)
+    if consumed:
+        draw(colony.stockpile, consumed)
+
+    return progress * multiplier
+
+
+def construction_output(ctx: TickContext, colony: Colony) -> float:
+    """Industry-work left for building things after refining has taken its cut."""
+    return industry_output(ctx, colony) * (1.0 - ctx.rates.refining_share_of_industry)
 
 
 def industry_output(ctx: TickContext, colony: Colony) -> float:
-    """Industry-work this colony produces this tick.
+    """Total industry-work this colony produces this tick.
 
-    The currency of construction: buildings and ships are both paid for in it,
-    so a colony with nobody in industry finishes nothing regardless of how rich
-    it is.
+    The currency of everything industrial: refining, buildings and ships are all
+    paid for out of it, so a colony with nobody in industry neither processes
+    nor finishes anything regardless of how rich the ground under it is.
     """
     allocation = normalize(colony.labor)
     workers = workers_in(colony.population, allocation, INDUSTRY)
@@ -531,7 +667,7 @@ def _advance_construction(ctx: TickContext) -> None:
             if projects == 0:
                 continue
 
-            share = industry_output(ctx, colony) / projects
+            share = construction_output(ctx, colony) / projects
             if share <= 0:
                 continue
 

@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from galaxysim.colony.expedition import Loadout
-from galaxysim.core.resources import FLEET_COST_PER_STRENGTH, can_afford
+from galaxysim.materials import FLEET_COST_PER_STRENGTH, can_afford
 from galaxysim.core.seeds import rng_for
 from galaxysim.core.space import distance
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION

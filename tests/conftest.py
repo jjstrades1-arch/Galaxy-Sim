@@ -73,6 +73,42 @@ def held(session, civ: Civ, resource: str) -> float:
     return queries.total_stockpile(session, civ.id).get(resource, 0.0)
 
 
+def rich_stockpile(amount: float = 9999.0) -> dict[str, float]:
+    """A stockpile holding plenty of everything.
+
+    For tests about some *other* mechanic. With real materials, "can this colony
+    pay for it" is a question with twenty-nine parts, and a test about labor
+    allocation should not be quietly failing because the world has no bauxite.
+    """
+    from galaxysim.materials import MATERIALS
+
+    return {key: amount for key in MATERIALS}
+
+
+def give_deposits(world: World, **yields: float) -> None:
+    """Rewrite a world's geology so a test can say what comes out of it.
+
+    There is no yield column to poke any more -- extraction reads the survey's
+    real deposits -- so a test that wants "a world rich in iron" has to state it
+    as geology. ``yields`` are yield *indices*, the one number extraction
+    consumes: for reference a good iron world sits near 0.02 and a poor uranium
+    one near 1e-5.
+
+    Abundance carries the whole figure and the deposit is placed shallow at
+    ordinary concentration, so the world reads as plausible if anyone prints it.
+    """
+    world.survey = dict(world.survey or {})
+    world.survey["deposits"] = {
+        element: {
+            "element": element,
+            "abundance": index,
+            "concentration": 1.0,
+            "depth": 0.0,
+        }
+        for element, index in sorted(yields.items())
+    }
+
+
 def take_manual_control(session, civ: Civ) -> None:
     """Switch every colony a civ holds to manual management.
 
@@ -112,7 +148,7 @@ def snapshot(engine: Engine, universe_id: int) -> list[tuple]:
                 (
                     "civ",
                     civ.name,
-                    round(civ.research_points, 6),
+                    round(civ.research_progress, 6),
                     round(civ.research_invested, 6),
                     civ.techs_known,
                 )

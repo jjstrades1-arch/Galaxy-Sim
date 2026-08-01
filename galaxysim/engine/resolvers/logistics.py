@@ -21,7 +21,7 @@ building.
 
 from __future__ import annotations
 
-from galaxysim.core.resources import deposit
+from galaxysim.materials import deposit
 from galaxysim.core.space import distance
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries

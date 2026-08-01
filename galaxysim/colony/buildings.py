@@ -25,7 +25,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from galaxysim.colony.labor import EXTRACTION, INDUSTRY, LIFE_SUPPORT, RESEARCH
-from galaxysim.core.resources import ENERGY, METAL, VOLATILES
+from galaxysim.materials.catalogue import (
+    ALLOYS,
+    CERAMICS,
+    CONSTRUCTION,
+    ELECTRONICS,
+    IRON,
+    POLYMERS,
+    PHOSPHATES,
+    SILICON,
+    STEEL,
+    SULFUR,
+    WATER_ICE,
+)
 
 #: Capability tokens a building can grant its colony.
 FLEET_CONSTRUCTION = "fleet_construction"
@@ -47,12 +59,18 @@ class BuildingType:
 
     #: Multiplier added to a labor sector's output, e.g. 0.5 means +50%.
     sector_bonus: dict[str, float] = field(default_factory=dict)
-    #: Multiplier added to extraction of one specific resource.
+    #: Multiplier added to extraction of one specific material.
     resource_bonus: dict[str, float] = field(default_factory=dict)
+    #: Multiplier added to the industry-work this colony can put into refining,
+    #: over and above what the sector produces. Ore is worthless until it is
+    #: processed, so a colony that mines well and refines badly is sitting on a
+    #: pile of rock -- this is the building that fixes that specifically,
+    #: without also making everything else build faster.
+    refining_bonus: float = 0.0
     #: Added to the world's habitability when computing life-support need. The
     #: only way to make a hostile world genuinely cheap to hold.
     habitability_offset: float = 0.0
-    #: Fraction of life-support volatiles consumption recovered by recycling.
+    #: Fraction of life-support water consumption recovered by recycling.
     #: Where a dome reduces how much life support is *needed*, this reduces how
     #: much *supply* delivering it burns -- so the two answer different halves
     #: of the same problem and a colony under real pressure wants both.
@@ -67,33 +85,39 @@ BUILDING_TYPES: tuple[BuildingType, ...] = (
     BuildingType(
         kind="mine",
         name="Mine",
-        description="Deep extraction works. Raises metal yield.",
-        cost={METAL: 40.0},
+        description="Shafts, draglines and ore processing. Raises the yield of "
+        "the structural metals and silicates every chain starts from.",
+        cost={STEEL: 30.0, CONSTRUCTION: 25.0},
         work=8.0,
-        resource_bonus={METAL: 0.6},
+        resource_bonus={IRON: 0.6, SILICON: 0.3},
     ),
     BuildingType(
         kind="collector",
-        name="Energy Collector",
-        description="Orbital and surface collection arrays. Raises energy yield.",
-        cost={METAL: 30.0, ENERGY: 15.0},
+        name="Volatiles Collector",
+        description="Cryogenic traps and regolith bakers. Raises the yield of "
+        "ice and silicates -- which on a dry world is the difference between "
+        "making your own water and importing every drop of it.",
+        cost={STEEL: 25.0, ELECTRONICS: 12.0},
         work=7.0,
-        resource_bonus={ENERGY: 0.6},
+        resource_bonus={WATER_ICE: 0.4, SILICON: 0.3},
     ),
     BuildingType(
         kind="refinery",
         name="Refinery",
-        description="Volatile processing and cracking. Raises volatiles yield.",
-        cost={METAL: 35.0, ENERGY: 10.0},
+        description="Cracking towers and separation trains. Puts more of this "
+        "colony's industry into running its refining chains, so the ore it digs "
+        "becomes goods it can actually spend.",
+        cost={STEEL: 30.0, CERAMICS: 15.0},
         work=8.0,
-        resource_bonus={VOLATILES: 0.6},
+        resource_bonus={SULFUR: 0.6, PHOSPHATES: 0.6},
+        refining_bonus=0.6,
     ),
     BuildingType(
         kind="factory",
         name="Factory",
         description="Heavy fabrication. Raises industry output, so everything "
         "else on this world gets built faster.",
-        cost={METAL: 50.0, ENERGY: 20.0},
+        cost={STEEL: 45.0, CONSTRUCTION: 30.0, ELECTRONICS: 10.0},
         work=12.0,
         sector_bonus={INDUSTRY: 0.7},
     ),
@@ -101,7 +125,7 @@ BUILDING_TYPES: tuple[BuildingType, ...] = (
         kind="shipyard",
         name="Shipyard",
         description="Orbital slipways. Required to build fleets here at all.",
-        cost={METAL: 80.0, ENERGY: 40.0},
+        cost={STEEL: 70.0, ALLOYS: 40.0, ELECTRONICS: 25.0},
         work=20.0,
         grants=(FLEET_CONSTRUCTION,),
     ),
@@ -109,7 +133,7 @@ BUILDING_TYPES: tuple[BuildingType, ...] = (
         kind="laboratory",
         name="Laboratory",
         description="Research institutes. Raises research output.",
-        cost={METAL: 45.0, ENERGY: 25.0},
+        cost={STEEL: 25.0, ELECTRONICS: 40.0, CERAMICS: 15.0},
         work=10.0,
         sector_bonus={RESEARCH: 0.8},
     ),
@@ -118,7 +142,7 @@ BUILDING_TYPES: tuple[BuildingType, ...] = (
         name="Habitat Dome",
         description="Sealed pressurised habitation. Raises effective "
         "habitability, cutting how much work staying alive costs.",
-        cost={METAL: 60.0, VOLATILES: 30.0},
+        cost={STEEL: 40.0, POLYMERS: 35.0, CONSTRUCTION: 40.0},
         work=14.0,
         habitability_offset=0.25,
     ),
@@ -126,8 +150,8 @@ BUILDING_TYPES: tuple[BuildingType, ...] = (
         kind="hydroponics",
         name="Hydroponics",
         description="Closed-loop food and air. Frees people for other work and "
-        "recycles most of the volatiles life support would otherwise burn.",
-        cost={METAL: 30.0, VOLATILES: 40.0},
+        "recycles most of the water life support would otherwise burn.",
+        cost={CONSTRUCTION: 30.0, POLYMERS: 30.0, ELECTRONICS: 8.0},
         work=9.0,
         sector_bonus={LIFE_SUPPORT: 1.0},
         life_support_recycling=0.5,
@@ -137,7 +161,7 @@ BUILDING_TYPES: tuple[BuildingType, ...] = (
         name="Spaceport",
         description="Bulk cargo handling. Required to load or unload freighters "
         "at any useful rate.",
-        cost={METAL: 55.0, ENERGY: 30.0},
+        cost={STEEL: 50.0, CONSTRUCTION: 45.0, ELECTRONICS: 15.0},
         work=13.0,
         grants=(CARGO_HANDLING,),
         cargo_throughput=25.0,
@@ -147,7 +171,7 @@ BUILDING_TYPES: tuple[BuildingType, ...] = (
         name="Reserve Store",
         description="Hardened stores. Cheap insurance for a colony at the end "
         "of a long supply line.",
-        cost={METAL: 20.0},
+        cost={CONSTRUCTION: 25.0},
         work=5.0,
         sector_bonus={EXTRACTION: 0.15},
         habitability_offset=0.05,

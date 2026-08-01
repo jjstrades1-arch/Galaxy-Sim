@@ -13,14 +13,14 @@ import pytest
 from sqlalchemy import select
 
 from galaxysim.colony.labor import balanced_allocation
-from galaxysim.core.resources import METAL, VOLATILES
+from galaxysim.materials import IRON, WATER
 from galaxysim.core.space import distance
 from galaxysim.engine import intents
 from galaxysim.engine.resolvers.logistics import BASE_THROUGHPUT_PER_HOUR, throughput_per_hour
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Building, Colony, Event, Fleet, IntentStatus, World
-from tests.conftest import civ_by_name, home_colony, new_universe
+from tests.conftest import civ_by_name, give_deposits, home_colony, new_universe
 
 
 def _sibling_outpost(session, civ, home, *, habitability=0.0, stockpile=None):
@@ -35,7 +35,7 @@ def _sibling_outpost(session, civ, home, *, habitability=0.0, stockpile=None):
     world = min(unclaimed, key=lambda w: (distance(origin, w.system.position), w.id))
     world.habitability = habitability
     world.world_type = "barren"
-    world.resource_yield = {METAL: 1.5}
+    give_deposits(world, iron=0.02)
     world.slots = 5
     colony = Colony(
         world_id=world.id,
@@ -81,15 +81,15 @@ def test_cargo_moves_from_one_colony_to_another():
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         home = home_colony(session, civ)
-        home.stockpile = {VOLATILES: 300.0}
+        home.stockpile = {WATER: 300.0}
         # Silence production at both ends so this measures the transfer itself.
         # With geology-derived yields a rich world can out-produce the cargo
         # being moved, which would drown the thing under test.
-        home.world.resource_yield = {}
+        give_deposits(home.world)
         outpost = _sibling_outpost(session, civ, home)
-        outpost.world.resource_yield = {}
+        give_deposits(outpost.world)
         fleet = _freighter(session, civ, home)
-        intents.transfer_cargo(session, civ, fleet.id, home.id, {VOLATILES: 100.0}, loading=True)
+        intents.transfer_cargo(session, civ, fleet.id, home.id, {WATER: 100.0}, loading=True)
         fleet_id, outpost_id, home_id = fleet.id, outpost.id, home.id
 
     # Loading is throughput-limited, so it takes a while at a colony with only
@@ -97,26 +97,26 @@ def test_cargo_moves_from_one_colony_to_another():
     run_ticks(engine, universe_id, 30)
     with open_session(engine) as session:
         fleet = session.get(Fleet, fleet_id)
-        assert fleet.cargo.get(VOLATILES, 0.0) == pytest.approx(100.0)
+        assert fleet.cargo.get(WATER, 0.0) == pytest.approx(100.0)
         # No duplication: the hundred aboard came off the ground. Not exactly
-        # 200 left, because the colony also breathes some of its own volatiles
+        # 200 left, because the colony also breathes some of its own water
         # while the hold fills -- so the invariant is that at least the cargo
         # left, never that nothing else moved.
-        remaining = session.get(Colony, home_id).stockpile[VOLATILES]
+        remaining = session.get(Colony, home_id).stockpile[WATER]
         assert remaining <= 200.0
         assert remaining > 150.0, "only life support should have taken the rest"
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         intents.transfer_cargo(
-            session, civ, fleet_id, outpost_id, {VOLATILES: 100.0}, loading=False
+            session, civ, fleet_id, outpost_id, {WATER: 100.0}, loading=False
         )
 
     run_ticks(engine, universe_id, 30)
     with open_session(engine) as session:
         # Slightly under 100: the outpost is uninhabitable and starts breathing
         # the delivery the moment it lands.
-        assert session.get(Colony, outpost_id).stockpile[VOLATILES] == pytest.approx(100.0, rel=0.05)
+        assert session.get(Colony, outpost_id).stockpile[WATER] == pytest.approx(100.0, rel=0.05)
         assert session.get(Fleet, fleet_id).cargo_tonnage == pytest.approx(0.0)
 
 
@@ -127,9 +127,9 @@ def test_a_hold_cannot_be_overfilled():
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         home = home_colony(session, civ)
-        home.stockpile = {VOLATILES: 5000.0}
+        home.stockpile = {WATER: 5000.0}
         fleet = _freighter(session, civ, home, capacity=50.0)
-        intents.transfer_cargo(session, civ, fleet.id, home.id, {VOLATILES: 1000.0})
+        intents.transfer_cargo(session, civ, fleet.id, home.id, {WATER: 1000.0})
         fleet_id = fleet.id
 
     run_ticks(engine, universe_id, 60)
@@ -150,7 +150,7 @@ def test_a_transfer_waits_for_the_fleet_to_arrive():
         home = home_colony(session, civ)
         fleet = _freighter(session, civ, home)
         fleet.x += 20.0  # parked well away
-        intents.transfer_cargo(session, civ, fleet.id, home.id, {VOLATILES: 10.0})
+        intents.transfer_cargo(session, civ, fleet.id, home.id, {WATER: 10.0})
 
     run_ticks(engine, universe_id, 2)
 
@@ -187,7 +187,7 @@ def test_spaceports_raise_throughput():
 def test_a_supply_route_keeps_a_dead_world_alive():
     """The payoff the whole design is arranged around.
 
-    A barren world yields metal but no volatiles, so it suffocates on its own.
+    A barren world yields metal but no water, so it suffocates on its own.
     One standing route, set up once, keeps it alive indefinitely -- and the
     player never has to log in again to sustain it.
     """
@@ -197,18 +197,18 @@ def test_a_supply_route_keeps_a_dead_world_alive():
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         home = home_colony(session, civ)
-        home.stockpile = {VOLATILES: 100000.0, METAL: 1000.0}
+        home.stockpile = {WATER: 100000.0, IRON: 1000.0}
         home.world.habitability = 1.0  # the capital needs no life support itself
-        outpost = _sibling_outpost(session, civ, home, stockpile={VOLATILES: 30.0})
+        outpost = _sibling_outpost(session, civ, home, stockpile={WATER: 30.0})
         fleet = _freighter(session, civ, home, capacity=300.0)
 
         intents.supply_route(
-            session, civ, fleet.id, home.id, outpost.id, {VOLATILES: 250.0}
+            session, civ, fleet.id, home.id, outpost.id, {WATER: 250.0}
         )
         outpost_id = outpost.id
         founding_population = outpost.population
 
-    # Two simulated weeks. Unsupplied, 30 volatiles is about three days of air.
+    # Two simulated weeks. Unsupplied, 30 water is about three days of air.
     run_ticks(engine, universe_id, 336)
 
     with open_session(engine) as session:
@@ -216,7 +216,7 @@ def test_a_supply_route_keeps_a_dead_world_alive():
         assert outpost.population == pytest.approx(founding_population, rel=0.05), (
             "the route should have kept it alive"
         )
-        assert outpost.stockpile.get(METAL, 0.0) > 0, "and it should have been mining throughout"
+        assert outpost.stockpile.get(IRON, 0.0) > 0, "and it should have been mining throughout"
         assert session.scalars(
             select(Event).where(Event.kind == "supply_delivered")
         ).all(), "deliveries should be logged"
@@ -230,14 +230,14 @@ def test_cutting_the_route_kills_the_colony():
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         home = home_colony(session, civ)
-        home.stockpile = {VOLATILES: 100000.0}
+        home.stockpile = {WATER: 100000.0}
         home.world.habitability = 1.0
-        outpost = _sibling_outpost(session, civ, home, stockpile={VOLATILES: 30.0})
+        outpost = _sibling_outpost(session, civ, home, stockpile={WATER: 30.0})
         fleet = _freighter(session, civ, home, capacity=60.0)
         # A small manifest on purpose: a big delivery would leave months of air
         # banked and the colony would outlive the test rather than the cut.
         route = intents.supply_route(
-            session, civ, fleet.id, home.id, outpost.id, {VOLATILES: 40.0}
+            session, civ, fleet.id, home.id, outpost.id, {WATER: 40.0}
         )
         outpost_id, route_id = outpost.id, route.id
 
@@ -257,7 +257,7 @@ def test_cutting_the_route_kills_the_colony():
         route = session.get(intents.Intent, route_id)
         intents.cancel(session, route)
         outpost = session.get(Colony, outpost_id)
-        outpost.stockpile[VOLATILES] = 5.0  # about a day of air
+        outpost.stockpile[WATER] = 5.0  # about a day of air
 
     run_ticks(engine, universe_id, 500)
 
@@ -277,11 +277,11 @@ def test_a_route_runs_without_further_orders():
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
         home = home_colony(session, civ)
-        home.stockpile = {VOLATILES: 100000.0}
+        home.stockpile = {WATER: 100000.0}
         home.world.habitability = 1.0
-        outpost = _sibling_outpost(session, civ, home, stockpile={VOLATILES: 50.0})
+        outpost = _sibling_outpost(session, civ, home, stockpile={WATER: 50.0})
         fleet = _freighter(session, civ, home, capacity=100.0)
-        intents.supply_route(session, civ, fleet.id, home.id, outpost.id, {VOLATILES: 80.0})
+        intents.supply_route(session, civ, fleet.id, home.id, outpost.id, {WATER: 80.0})
         route_id = session.scalar(
             select(intents.Intent).where(intents.Intent.kind == "supply_route")
         ).id
@@ -308,7 +308,7 @@ def test_a_route_between_other_peoples_colonies_is_rejected():
         their_colony = home_colony(session, vex)
         fleet = _freighter(session, terrans, home)
         intents.supply_route(
-            session, terrans, fleet.id, home.id, their_colony.id, {VOLATILES: 10.0}
+            session, terrans, fleet.id, home.id, their_colony.id, {WATER: 10.0}
         )
 
     run_ticks(engine, universe_id, 3)
@@ -330,4 +330,4 @@ def test_a_route_needs_two_distinct_colonies():
         home = home_colony(session, civ)
         fleet = _freighter(session, civ, home)
         with pytest.raises(ValueError):
-            intents.supply_route(session, civ, fleet.id, home.id, home.id, {VOLATILES: 1.0})
+            intents.supply_route(session, civ, fleet.id, home.id, home.id, {WATER: 1.0})

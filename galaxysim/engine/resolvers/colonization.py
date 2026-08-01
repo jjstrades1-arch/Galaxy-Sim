@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from galaxysim.colony.expedition import Loadout, assess
 from galaxysim.colony.labor import balanced_allocation
-from galaxysim.core.resources import can_afford, spend
+from galaxysim.materials import can_afford, spend
 from galaxysim.core.space import distance
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries

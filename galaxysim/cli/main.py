@@ -38,7 +38,15 @@ from galaxysim.colony.labor import (
     SECTORS,
     normalize,
 )
-from galaxysim.core.resources import VOLATILES
+from galaxysim.materials import (
+    MATERIALS,
+    RECIPES,
+    WATER,
+    extraction_rates,
+    material,
+    missing_inputs,
+)
+from galaxysim.materials.refining import DEFAULT_PLAN, plan_for
 from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
 from galaxysim.engine.rates import DEFAULT_RATES, Cadence
@@ -47,7 +55,7 @@ from galaxysim.engine.resolvers.governor import POLICIES
 from galaxysim.engine.resolvers.production import colony_effects, effective_habitability
 from galaxysim.cli.survey_view import format_count
 from galaxysim.cli.survey_view import render as render_survey
-from galaxysim.worldgen.serialize import survey_from_json
+from galaxysim.worldgen.serialize import has_surface_water, survey_from_json
 from galaxysim.engine.tick import resolve_tick
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import (
@@ -168,7 +176,7 @@ def status() -> None:
         stock = ", ".join(f"{k} {v:,.0f}" for k, v in sorted(totals.items())) or "nothing"
         console.print(
             f"Held across all colonies: {stock}\n"
-            f"Research: {civ.research_points:,.1f} banked, "
+            f"Research: {civ.research_progress:,.1f} paid for and unspent, "
             f"{civ.techs_known} techs, {civ.research_invested:,.1f} invested"
         )
         console.print(
@@ -431,21 +439,28 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
         need = colony.population * DEFAULT_RATES.life_support_per_pop_per_hour * (
             1.0 - habitability
         )
-        if need > 0:
-            per_unit = DEFAULT_RATES.volatiles_per_life_support * (
+        if need <= 0:
+            console.print("[green]Life support: not required.[/green]")
+        elif has_surface_water(world.survey or {}):
+            # Oceans. Life support is a labour cost here and nothing more, which
+            # is the difference between a place and a supply liability.
+            console.print(
+                f"[green]Life support: {need:.2f}/hour, drawn from this world's "
+                "own water. No supply line required.[/green]"
+            )
+        else:
+            per_unit = DEFAULT_RATES.water_per_life_support * (
                 1.0 - effects.life_support_recycling
             )
             burn = need * per_unit
-            stock = colony.stockpile.get(VOLATILES, 0.0)
+            stock = colony.stockpile.get(WATER, 0.0)
             hours = (stock / burn) if burn > 0 else None
             colour = "red" if hours is not None and hours < 48 else "yellow"
             console.print(
-                f"[{colour}]Life support: burning {burn:.2f} volatiles/hour"
+                f"[{colour}]Life support: burning {burn:.2f} water/hour"
                 + (f" - about {hours / 24:.1f} days of air left" if hours is not None else "")
                 + "[/]"
             )
-        else:
-            console.print("[green]Life support: not required.[/green]")
 
         allocation = normalize(colony.labor)
         table = Table("sector", "share", "workers", title="Labor")
@@ -468,8 +483,111 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
             table.add_row("[dim]none[/dim]", "")
         console.print(table)
 
+        # What the ground under this colony will actually give up. This is the
+        # world talking, not the colony: an identical colony on a different rock
+        # produces an entirely different list.
+        rates = extraction_rates(survey_from_json(world.survey).deposits) if world.survey else {}
+        if rates:
+            table = Table("material", "t/worker-hour", "with structures", title="Extraction")
+            for key, rate in sorted(rates.items(), key=lambda kv: -kv[1]):
+                bonus = effects.resource(key)
+                table.add_row(
+                    MATERIALS[key].name,
+                    f"{rate:,.3f}",
+                    f"{rate * bonus:,.3f}" + (" [green]+[/green]" if bonus > 1.0 else ""),
+                )
+            console.print(table)
+        else:
+            console.print("[dim]Nothing in this crust is worth the shaft.[/dim]")
+
+        # And what industry is doing with it.
+        plan = colony.refining or None
+        table = Table("chain", "state", title="Refining" + ("" if plan else " (automatic)"))
+        for recipe, _weight in plan_for(plan):
+            missing = missing_inputs(recipe, colony.stockpile)
+            table.add_row(
+                recipe.name,
+                "[green]running[/green]"
+                if not missing
+                else "[yellow]short of " + ", ".join(MATERIALS[m].name for m in missing) + "[/]",
+            )
+        console.print(table)
+
         stock = ", ".join(f"{k} {v:,.1f}" for k, v in sorted(colony.stockpile.items()))
         console.print(f"Stockpile: {stock or '[dim]empty[/dim]'}")
+
+
+@app.command()
+def refining(
+    colony_id: int = typer.Argument(..., help="Colony to reprioritise."),
+    chain: list[str] = typer.Option(
+        None,
+        "--chain",
+        help="Chain as recipe or recipe:weight, repeatable. Omit to return to automatic.",
+    ),
+) -> None:
+    """Choose which refining chains a colony runs, and in what proportion.
+
+    A colony left alone works through everything it can, evenly. That keeps it
+    alive and is deliberately mediocre: naming the two or three chains this
+    world is actually good at will beat it, and on a world with one rich seam it
+    will beat it by a lot.
+    """
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        target = session.get(Colony, colony_id)
+        if target is None or target.civ_id != civ.id:
+            console.print("[red]No such colony.[/red]")
+            raise typer.Exit(1)
+
+        if not chain:
+            target.refining = {}
+            console.print(
+                f"[green]{target.name}:[/green] refining back on automatic "
+                f"({len(DEFAULT_PLAN)} chains, evenly)."
+            )
+            return
+
+        plan: dict[str, float] = {}
+        for entry in chain:
+            key, _, weight = entry.partition(":")
+            if key not in RECIPES:
+                console.print(
+                    f"[red]No such chain {key!r}.[/red] Known: {', '.join(sorted(RECIPES))}"
+                )
+                raise typer.Exit(1)
+            plan[key] = float(weight) if weight else 1.0
+
+        target.refining = plan
+        console.print(
+            f"[green]{target.name}:[/green] "
+            + ", ".join(f"{RECIPES[k].name} {v:g}" for k, v in sorted(plan.items()))
+        )
+
+
+@app.command()
+def chains(
+    material_key: str = typer.Argument(None, help="Optional: only chains making this material."),
+) -> None:
+    """The refining catalogue: what turns into what, and at what cost in work."""
+    table = Table("chain", "inputs", "outputs", "work", "yield")
+    for recipe in RECIPES.values():
+        if material_key and material_key not in recipe.outputs:
+            continue
+        table.add_row(
+            f"{recipe.name}\n[dim]{recipe.key}[/dim]",
+            "\n".join(f"{a:g} {material(k).name}" for k, a in sorted(recipe.inputs.items())),
+            "\n".join(f"{a:g} {material(k).name}" for k, a in sorted(recipe.outputs.items())),
+            f"{recipe.work:g}",
+            f"{recipe.yield_fraction * 100:.0f}%",
+        )
+    console.print(table)
+    console.print(
+        "[dim]Yield is below 100% everywhere: refining discards tailings, so a "
+        "civilization can never hold more matter than it has dug up.[/dim]"
+    )
 
 
 @app.command()
@@ -583,7 +701,7 @@ def route(
     origin: int = typer.Option(..., "--from", help="Colony to load at."),
     destination: int = typer.Option(..., "--to", help="Colony to deliver to."),
     carry: list[str] = typer.Option(
-        ..., "--carry", help="Cargo as resource:amount, repeatable. e.g. volatiles:50"
+        ..., "--carry", help="Cargo as material:amount, repeatable. e.g. water:50"
     ),
 ) -> None:
     """Set up a standing supply route between two of your colonies.
