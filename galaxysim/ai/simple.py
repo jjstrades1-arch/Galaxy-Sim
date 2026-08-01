@@ -304,6 +304,16 @@ def _maybe_supply(
             continue  # it draws its own water; it can wait
         fleet = _idle_freighter(session, civ)
         if fleet is None:
+            # Freighters pay upkeep like anything else, and they used to slip
+            # past the check that asks whether the civ can carry it -- so a
+            # supply fleet quietly grew until the ships keeping the outposts
+            # alive were themselves deserting.
+            if not _can_carry_more_upkeep(
+                colonies,
+                session.scalars(select(Fleet).where(Fleet.civ_id == civ.id)).all(),
+                FREIGHTER_STRENGTH,
+            ):
+                return
             _order_freighter(session, civ, source, pending)
             return
         intents.supply_route(session, civ, fleet.id, source.id, colony.id, dict(ROUTE_MANIFEST))
@@ -590,14 +600,29 @@ def _maybe_scout(
     if scout is None:
         return
 
-    for stub in systems_near(
-        universe.seed, scout.position, SCOUT_RANGE_LY, limit=SCOUT_CANDIDATES
-    ):
-        if existing_system(session, universe, stub) is None:
-            intents.move_fleet(
-            session, civ, scout.id, stub.position.x, stub.position.y, stub.position.z
-        )
-            return
+    # Measured from the *colonies*, not from the ship. Measuring from the ship
+    # let a scout hop twenty light-years, then twenty more from wherever it had
+    # got to, walking steadily out of supply range until it deserted somewhere
+    # nobody would ever look. Anchoring the leash to the empire is what makes
+    # the charted frontier expand only as fast as the settled one.
+    colonies = queries.colonies_of(session, civ.id)
+    for colony in queries.sorted_by_distance(colonies, scout.position):
+        for stub in systems_near(
+            universe.seed,
+            colony.world.system.position,
+            SCOUT_RANGE_LY,
+            limit=SCOUT_CANDIDATES,
+        ):
+            if existing_system(session, universe, stub) is None:
+                intents.move_fleet(
+                    session,
+                    civ,
+                    scout.id,
+                    stub.position.x,
+                    stub.position.y,
+                    stub.position.z,
+                )
+                return
 
 
 def _maybe_build(

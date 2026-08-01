@@ -111,7 +111,15 @@ PROJECTS: dict[str, Project] = {
             "otherwise strip away anything you release into the sky. "
             "Nothing else is worth starting until this stands.",
             effect=SHIELD,
-            cost={STEEL: 4.0e8, ALLOYS: 2.0e8, ELECTRONICS: 1.2e8, FISSILES: 4.0e6},
+            # No fissiles, deliberately, and it is the only project here without
+            # them. A shield is a superconducting loop -- an enormous amount of
+            # wire and switchgear, not a reactor. It also happens to be the
+            # project that gates every other one, and requiring a rare material
+            # for the first step meant a civilization that had not yet found
+            # uranium could not begin terraforming at all: not slowly, not
+            # expensively, but never. Fissiles still gate cometary redirection
+            # and oxygenation, which genuinely are nuclear work.
+            cost={STEEL: 4.0e8, ALLOYS: 2.0e8, ELECTRONICS: 1.2e8},
             work=5.2e+07,
             magnitude=1.0,
         ),

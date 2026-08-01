@@ -72,9 +72,22 @@ FREIGHTER_COST_PER_CAPACITY: dict[str, float] = {
 #: most of that time: the real figure was 0.00002% of output, and it was never
 #: checked. ``tests/test_prices.py`` now checks both halves -- the ratio against
 #: build cost, and the bill against what a capital's industry actually makes.
+#: The split between the two matters as much as the total, and the first
+#: version got it wrong in a way only a soak could show. Putting five sixths of
+#: upkeep into fuel looked reasonable -- ships burn fuel -- but fuel is
+#: synthesised from water ice and carbon, and it is also the input to *both*
+#: routes to fissiles. So a navy did not merely cost fuel, it consumed the
+#: entire chain: no fissiles, therefore no magnetic shields, therefore no
+#: terraforming, in a civilization sitting on a hundred million tonnes of
+#: alloys. One material was silently gating the whole endgame.
+#:
+#: Weighted toward alloys now -- hull plating and spares, which any industrial
+#: world makes -- with fuel still a large enough share to be strategic. Same
+#: total, same 1.5% ratio, and fuel goes back to being a thing you compete over
+#: rather than the only thing that exists.
 FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {
-    FUEL: 2_480.0,
-    ALLOYS: 520.0,
+    FUEL: 1_100.0,
+    ALLOYS: 1_900.0,
 }
 
 # --- expeditions -------------------------------------------------------------
