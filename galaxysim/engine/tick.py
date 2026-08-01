@@ -7,9 +7,11 @@ Resolution order is fixed and meaningful:
    reach a starving colony before life support is computed against them.
 3. **Combat** -- a fleet that arrived this tick is immediately at risk, and one
    that left is out of reach.
-4. **Production** -- survivors produce; casualties do not.
-5. **Research** -- spends what production just banked.
-6. **Colonization** -- last, so a world contested this tick is resolved before
+4. **Governor** -- governed colonies decide their labor and building orders
+   before production reads them, so a decision applies on the tick it is made.
+5. **Production** -- survivors produce; casualties do not.
+6. **Research** -- spends what production just banked.
+7. **Colonization** -- last, so a world contested this tick is resolved before
    anyone settles it.
 
 Everything random descends from ``tick_seed(universe_seed, tick_number)``, and
@@ -34,6 +36,7 @@ from galaxysim.engine.rates import DEFAULT_RATES, Cadence, Rates
 from galaxysim.engine.resolvers import (
     colonization,
     combat,
+    governor,
     logistics,
     movement,
     production,
@@ -47,6 +50,7 @@ PIPELINE = (
     ("movement", movement.resolve),
     ("logistics", logistics.resolve),
     ("combat", combat.resolve),
+    ("governor", governor.resolve),
     ("production", production.resolve),
     ("research", research.resolve),
     ("colonization", colonization.resolve),

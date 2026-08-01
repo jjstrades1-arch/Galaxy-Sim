@@ -73,6 +73,18 @@ def held(session, civ: Civ, resource: str) -> float:
     return queries.total_stockpile(session, civ.id).get(resource, 0.0)
 
 
+def take_manual_control(session, civ: Civ) -> None:
+    """Switch every colony a civ holds to manual management.
+
+    New colonies are governed by default, and a governor genuinely plays: it
+    reassigns labor and spends the stockpile on buildings. Tests that exercise a
+    mechanic by hand need to be the only thing touching the colony, so they take
+    control first -- exactly as a player would.
+    """
+    for colony in queries.colonies_of(session, civ.id):
+        colony.management_mode = "manual"
+
+
 def home_colony(session, civ: Civ) -> Colony:
     """A civ's first colony, which is where bootstrap puts its starting goods."""
     colony = session.scalar(select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id))

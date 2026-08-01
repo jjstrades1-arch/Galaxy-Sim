@@ -30,6 +30,23 @@ class TickContext:
     tick: int
     seed: int
     events: list[Event] = field(default_factory=list)
+    #: Per-tick memo of derived colony state, keyed by colony id. Buildings do
+    #: not change mid-tick except when one completes, and construction clears
+    #: the entry when that happens. Without this, three resolvers each rebuild
+    #: the same aggregate for every colony on every tick.
+    _colony_cache: dict[int, object] = field(default_factory=dict)
+
+    def cached_effects(self, colony_id: int, build):
+        """Return memoized derived state for a colony, computing it once."""
+        cached = self._colony_cache.get(colony_id)
+        if cached is None:
+            cached = build()
+            self._colony_cache[colony_id] = cached
+        return cached
+
+    def invalidate_colony(self, colony_id: int) -> None:
+        """Drop a colony's memo, after something changed what it derives from."""
+        self._colony_cache.pop(colony_id, None)
 
     @classmethod
     def build(

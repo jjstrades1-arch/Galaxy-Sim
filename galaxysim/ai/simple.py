@@ -27,7 +27,7 @@ from galaxysim.core.seeds import rng_for
 from galaxysim.core.space import distance
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION
 from galaxysim.engine import intents
-from galaxysim.engine.resolvers import queries
+from galaxysim.engine.resolvers import governor, queries
 from galaxysim.engine.resolvers.production import colony_effects
 from galaxysim.model.entities import (
     Civ,
@@ -79,8 +79,35 @@ def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
     if not pending.get(IntentKind.RESEARCH.value):
         intents.research(session, civ)
 
+    _set_policies(session, civ)
     _maybe_expand(session, universe, civ, pending)
     _maybe_build(session, civ, pending, rng)
+
+
+def _set_policies(session: Session, civ: Civ) -> None:
+    """Leave colonies governed, and pick a sensible policy for each.
+
+    The AI runs its empire the way a player with many colonies would: it does
+    not micromanage labor or building queues, it delegates and chooses a
+    posture. Everything that used to be duplicated here now lives in
+    :mod:`galaxysim.engine.resolvers.governor`, so the AI and a player's
+    governed colonies behave identically -- which is what makes solo play an
+    honest rehearsal for the real thing.
+    """
+    colonies = queries.colonies_of(session, civ.id)
+    for index, colony in enumerate(colonies):
+        if not colony.is_governed:
+            continue
+        if colony.world.habitability < 0.5:
+            policy = governor.SURVIVAL
+        elif index == 0:
+            # The capital carries the war effort and the shipyard.
+            policy = governor.INDUSTRY_POLICY
+        elif index % 3 == 2:
+            policy = governor.RESEARCH_POLICY
+        else:
+            policy = governor.EXTRACTION_POLICY
+        colony.governor_policy = policy
 
 
 def _pending_by_kind(session: Session, civ: Civ) -> dict[str, list[Intent]]:

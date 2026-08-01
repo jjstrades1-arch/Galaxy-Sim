@@ -22,10 +22,29 @@ from sqlalchemy import Engine, select
 
 from galaxysim.ai import take_all_turns
 from galaxysim.bootstrap import add_civ, create_universe
+from galaxysim.colony.buildings import BUILDING_TYPES, building_type
+from galaxysim.colony.expedition import (
+    DEFAULT_COLONISTS,
+    DEFAULT_EQUIPMENT,
+    DEFAULT_STORES,
+    Loadout,
+    assess,
+)
+from galaxysim.colony.labor import (
+    EXTRACTION,
+    INDUSTRY,
+    LIFE_SUPPORT,
+    RESEARCH,
+    SECTORS,
+    normalize,
+)
+from galaxysim.core.resources import VOLATILES
 from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
-from galaxysim.engine.rates import Cadence
+from galaxysim.engine.rates import DEFAULT_RATES, Cadence
 from galaxysim.engine.resolvers import queries
+from galaxysim.engine.resolvers.governor import POLICIES
+from galaxysim.engine.resolvers.production import colony_effects, effective_habitability
 from galaxysim.engine.tick import resolve_tick
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import (
@@ -287,8 +306,23 @@ def move(
 def colonize(
     fleet_id: int = typer.Argument(..., help="Fleet carrying a colony pod."),
     world_id: int = typer.Argument(..., help="World to settle."),
+    colonists: float = typer.Option(DEFAULT_COLONISTS, "--colonists", help="People to send."),
+    equipment: float = typer.Option(
+        DEFAULT_EQUIPMENT, "--equipment", help="Equipment; becomes starting infrastructure."
+    ),
+    stores: float = typer.Option(
+        DEFAULT_STORES, "--stores", help="Life-support stores; the colony's survival clock."
+    ),
+    preview: bool = typer.Option(
+        False, "--preview", help="Show the cost and survival estimate without ordering."
+    ),
 ) -> None:
-    """Settle a world. Safe to queue before the fleet has arrived."""
+    """Settle a world.
+
+    What you send is what you pay, and what the colony wakes up with. There is
+    no surcharge for a hostile world -- it simply needs more stores, and running
+    out of them kills the colony. Use --preview to see the arithmetic first.
+    """
     with open_session(_engine()) as session:
         universe = _require_universe(session)
         civ = _require_player(session, universe)
@@ -297,12 +331,253 @@ def colonize(
         if world is None:
             console.print("[red]No such world.[/red]")
             raise typer.Exit(1)
+        if world.colony is not None:
+            console.print(f"[red]{world.name} is already settled.[/red]")
+            raise typer.Exit(1)
 
-        intents.colonize(session, civ, fleet_id, world_id)
+        loadout = Loadout(colonists=colonists, equipment=equipment, stores=stores)
+        verdict = assess(loadout, world, DEFAULT_RATES)
+
+        manifest = ", ".join(f"{v:,.0f} {k}" for k, v in sorted(verdict.cost.items()))
         console.print(
-            f"[green]Ordered[/green] settlement of {world.name}. "
-            "The order waits until the fleet arrives."
+            f"[bold]{world.name}[/bold] ({world.world_type}, "
+            f"habitability {world.habitability:.2f}, {world.slots} slots)\n"
+            f"Expedition: {colonists:.0f} colonists, {equipment:.0f} equipment, "
+            f"{stores:.0f} stores\n"
+            f"Cost: {manifest}"
         )
+
+        style = "green" if verdict.self_sufficient else "yellow"
+        if verdict.survival_hours is not None and verdict.survival_hours <= 0:
+            style = "red"
+        console.print(f"[{style}]{verdict.summary()}[/{style}]")
+
+        if preview:
+            return
+
+        intents.colonize(session, civ, fleet_id, world_id, loadout=loadout)
+        console.print(
+            "[green]Ordered.[/green] The expedition is charged to your nearest "
+            "colony when it lands, and waits until the fleet arrives."
+        )
+
+
+@app.command()
+def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> None:
+    """Inspect one colony: labor, life support, buildings, stockpile."""
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        colony = session.get(Colony, colony_id)
+        if colony is None or colony.civ_id != civ.id:
+            console.print("[red]No such colony.[/red]")
+            raise typer.Exit(1)
+
+        effects = colony_effects(colony)
+        habitability = effective_habitability(colony, effects)
+        world = colony.world
+        mode = (
+            f"governed ([bold]{colony.governor_policy}[/bold])"
+            if colony.is_governed
+            else "[bold]manual[/bold]"
+        )
+
+        console.print(
+            f"[bold]{colony.name}[/bold] on {world.name} ({world.world_type}) - {mode}\n"
+            f"Population {colony.population:,.1f} - infrastructure "
+            f"{colony.infrastructure:.2f} - habitability {world.habitability:.2f}"
+            + (
+                f" (effectively {habitability:.2f} with structures)"
+                if habitability > world.habitability
+                else ""
+            )
+        )
+
+        # Life support, the number that decides whether this place survives.
+        need = colony.population * DEFAULT_RATES.life_support_per_pop_per_hour * (
+            1.0 - habitability
+        )
+        if need > 0:
+            per_unit = DEFAULT_RATES.volatiles_per_life_support * (
+                1.0 - effects.life_support_recycling
+            )
+            burn = need * per_unit
+            stock = colony.stockpile.get(VOLATILES, 0.0)
+            hours = (stock / burn) if burn > 0 else None
+            colour = "red" if hours is not None and hours < 48 else "yellow"
+            console.print(
+                f"[{colour}]Life support: burning {burn:.2f} volatiles/hour"
+                + (f" - about {hours / 24:.1f} days of air left" if hours is not None else "")
+                + "[/]"
+            )
+        else:
+            console.print("[green]Life support: not required.[/green]")
+
+        allocation = normalize(colony.labor)
+        table = Table("sector", "share", "workers", title="Labor")
+        for sector in SECTORS:
+            table.add_row(
+                sector,
+                f"{allocation[sector] * 100:.0f}%",
+                f"{colony.population * allocation[sector]:,.1f}",
+            )
+        console.print(table)
+
+        table = Table("building", "state", title=f"Buildings ({len(colony.buildings)}/{world.slots})")
+        for building in sorted(colony.buildings, key=lambda b: b.id):
+            spec = building_type(building.kind)
+            table.add_row(
+                spec.name,
+                "complete" if building.is_complete else f"{building.work_remaining:.1f} work left",
+            )
+        if not colony.buildings:
+            table.add_row("[dim]none[/dim]", "")
+        console.print(table)
+
+        stock = ", ".join(f"{k} {v:,.1f}" for k, v in sorted(colony.stockpile.items()))
+        console.print(f"Stockpile: {stock or '[dim]empty[/dim]'}")
+
+
+@app.command()
+def labor(
+    colony_id: int = typer.Argument(..., help="Colony to reassign."),
+    extraction: float = typer.Option(0.0, "--extraction"),
+    industry: float = typer.Option(0.0, "--industry"),
+    research_share: float = typer.Option(0.0, "--research"),
+    life_support: float = typer.Option(0.0, "--life-support"),
+) -> None:
+    """Reassign a colony's population. Values are relative weights.
+
+    Taking manual control of labor takes the colony off its governor.
+    """
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        colony = session.get(Colony, colony_id)
+        if colony is None or colony.civ_id != civ.id:
+            console.print("[red]No such colony.[/red]")
+            raise typer.Exit(1)
+
+        allocation = {
+            EXTRACTION: extraction,
+            INDUSTRY: industry,
+            RESEARCH: research_share,
+            LIFE_SUPPORT: life_support,
+        }
+        intents.set_labor(session, colony, allocation)
+        shares = ", ".join(f"{k} {v * 100:.0f}%" for k, v in sorted(colony.labor.items()))
+        console.print(f"[green]{colony.name}:[/green] {shares}")
+        console.print("[dim]Now under manual control.[/dim]")
+
+
+@app.command()
+def structure(
+    colony_id: int = typer.Argument(..., help="Colony to build at."),
+    kind: str = typer.Argument("", help="Building kind; omit to list what is available."),
+) -> None:
+    """Build a structure. Slots are limited by the world."""
+    if not kind:
+        table = Table("kind", "name", "cost", "work", "what it does", title="Buildings")
+        for spec in BUILDING_TYPES:
+            table.add_row(
+                spec.kind,
+                spec.name,
+                ", ".join(f"{v:.0f} {k}" for k, v in sorted(spec.cost.items())),
+                f"{spec.work:.0f}",
+                spec.description,
+            )
+        console.print(table)
+        return
+
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        colony = session.get(Colony, colony_id)
+        if colony is None or colony.civ_id != civ.id:
+            console.print("[red]No such colony.[/red]")
+            raise typer.Exit(1)
+        try:
+            spec = building_type(kind)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from None
+
+        intents.build_structure(session, civ, colony_id, kind)
+        console.print(
+            f"[green]Queued[/green] a {spec.name} at {colony.name}. "
+            "It is paid for in industry-work, so assign people to industry."
+        )
+
+
+@app.command()
+def govern(
+    colony_id: int = typer.Argument(..., help="Colony to hand over or take back."),
+    policy: str = typer.Option("balanced", "--policy", help=f"One of: {', '.join(POLICIES)}"),
+    manual: bool = typer.Option(False, "--manual", help="Take back manual control instead."),
+) -> None:
+    """Hand a colony to a governor, or take it back.
+
+    A governor runs the colony to a policy using the same orders you would --
+    it gets no bonus you could not get yourself. Delegate the colonies you do
+    not want to think about.
+    """
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        colony = session.get(Colony, colony_id)
+        if colony is None or colony.civ_id != civ.id:
+            console.print("[red]No such colony.[/red]")
+            raise typer.Exit(1)
+
+        if not manual and policy not in POLICIES:
+            console.print(f"[red]Unknown policy.[/red] Try one of: {', '.join(POLICIES)}")
+            raise typer.Exit(1)
+
+        intents.set_management(session, colony, governed=not manual, policy=policy)
+        if manual:
+            console.print(f"[green]{colony.name}[/green] is now under manual control.")
+        else:
+            console.print(f"[green]{colony.name}[/green] handed to a {policy} governor.")
+
+
+@app.command()
+def route(
+    fleet_id: int = typer.Argument(..., help="Freighter to run the route."),
+    origin: int = typer.Option(..., "--from", help="Colony to load at."),
+    destination: int = typer.Option(..., "--to", help="Colony to deliver to."),
+    carry: list[str] = typer.Option(
+        ..., "--carry", help="Cargo as resource:amount, repeatable. e.g. volatiles:50"
+    ),
+) -> None:
+    """Set up a standing supply route between two of your colonies.
+
+    It runs forever: load, fly, unload, return, repeat. This is how an outpost
+    on a world that cannot feed itself stays alive while you are offline.
+    """
+    manifest: dict[str, float] = {}
+    for item in carry:
+        resource, _, amount = item.partition(":")
+        if not amount:
+            console.print(f"[red]Bad cargo spec {item!r}.[/red] Use resource:amount.")
+            raise typer.Exit(1)
+        manifest[resource.strip()] = float(amount)
+
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        try:
+            intents.supply_route(session, civ, fleet_id, origin, destination, manifest)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from None
+
+        cargo = ", ".join(f"{v:,.0f} {k}" for k, v in sorted(manifest.items()))
+        console.print(f"[green]Route established:[/green] {cargo} per run.")
 
 
 @app.command()

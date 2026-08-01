@@ -70,7 +70,7 @@ def _produce(ctx: TickContext, civ: Civ) -> None:
     research_gain = 0.0
 
     for colony in colonies:
-        effects = colony_effects(colony)
+        effects = effects_for(ctx, colony)
         allocation = normalize(colony.labor)
 
         _run_life_support(ctx, colony, allocation, effects)
@@ -85,6 +85,16 @@ def _produce(ctx: TickContext, civ: Civ) -> None:
     # everywhere the moment it is made.
     civ.research_points += research_gain
     _charge_fleet_upkeep(ctx, civ)
+
+
+def effects_for(ctx: TickContext, colony: Colony) -> "ColonyEffects":
+    """Memoized :func:`colony_effects` for the duration of one tick.
+
+    Three resolvers ask for this per colony per tick and it is pure over the
+    colony's finished buildings, so recomputing it each time is wasted work.
+    Construction invalidates the entry when a building completes.
+    """
+    return ctx.cached_effects(colony.id, lambda: colony_effects(colony))
 
 
 def colony_effects(colony: Colony) -> "ColonyEffects":
@@ -331,7 +341,7 @@ def industry_output(ctx: TickContext, colony: Colony) -> float:
         ctx.rates.industry_per_worker_per_hour
         * workers
         * colony.infrastructure
-        * colony_effects(colony).sector(INDUSTRY)
+        * effects_for(ctx, colony).sector(INDUSTRY)
     )
 
 
@@ -468,7 +478,7 @@ def _start_fleets(ctx: TickContext) -> None:
             _fail(ctx, intent, "strength must be positive", "Build order")
             continue
 
-        if FLEET_CONSTRUCTION not in colony_effects(colony).grants:
+        if FLEET_CONSTRUCTION not in effects_for(ctx, colony).grants:
             _fail(
                 ctx,
                 intent,
@@ -529,6 +539,8 @@ def _advance_construction(ctx: TickContext) -> None:
                 building.work_remaining = max(0.0, building.work_remaining - share)
                 if building.is_complete:
                     building.completed_tick = ctx.tick
+                    # A finished building changes what the colony derives.
+                    ctx.invalidate_colony(colony.id)
                     spec = building_type(building.kind)
                     ctx.log(
                         "construction_completed",

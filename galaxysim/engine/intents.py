@@ -134,6 +134,23 @@ def set_labor(session: Session, colony: Colony, allocation: dict[str, float]) ->
     read as relative weights.
     """
     colony.labor = normalize(allocation)
+    # Setting labor by hand is an implicit statement that you want to run this
+    # colony: leaving it governed would have the governor overwrite the
+    # assignment on the very next tick.
+    colony.management_mode = "manual"
+
+
+def set_management(
+    session: Session, colony: Colony, *, governed: bool, policy: str | None = None
+) -> None:
+    """Hand a colony to a governor, or take it back.
+
+    Applies immediately, like :func:`set_labor` -- deciding who runs your own
+    colony is not an action the tick needs to arbitrate.
+    """
+    colony.management_mode = "governor" if governed else "manual"
+    if policy is not None:
+        colony.governor_policy = policy
 
 
 def transfer_cargo(

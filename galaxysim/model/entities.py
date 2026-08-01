@@ -268,6 +268,18 @@ class Colony(Base):
     #: sum to 1. See :mod:`galaxysim.colony.labor`.
     labor: Mapped[dict] = mapped_column(JSONDict, default=dict)
 
+    #: ``manual`` or ``governor``. Colony depth is opt-in: a governed colony
+    #: runs itself to a policy, so a large empire does not require managing
+    #: every world by hand. New colonies default to governed.
+    management_mode: Mapped[str] = mapped_column(String(20), default="governor")
+    #: Which policy a governed colony follows. See
+    #: :mod:`galaxysim.engine.resolvers.governor`.
+    governor_policy: Mapped[str] = mapped_column(String(20), default="balanced")
+
+    @property
+    def is_governed(self) -> bool:
+        return self.management_mode == "governor"
+
     world: Mapped[World] = relationship(back_populates="colony")
     civ: Mapped[Civ] = relationship(back_populates="colonies")
     buildings: Mapped[list["Building"]] = relationship(

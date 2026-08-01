@@ -3,10 +3,19 @@
 from galaxysim.engine.resolvers import (
     colonization,
     combat,
+    governor,
     logistics,
     movement,
     production,
     research,
 )
 
-__all__ = ["movement", "logistics", "combat", "production", "research", "colonization"]
+__all__ = [
+    "movement",
+    "logistics",
+    "combat",
+    "governor",
+    "production",
+    "research",
+    "colonization",
+]

@@ -25,7 +25,7 @@ from galaxysim.model.entities import (
     StarSystem,
     Universe,
 )
-from tests.conftest import civ_by_name, held, new_universe
+from tests.conftest import civ_by_name, held, new_universe, take_manual_control
 
 
 @pytest.fixture
@@ -52,7 +52,11 @@ def test_offline_civ_still_produces(game):
     engine, universe_id = game
 
     with open_session(engine) as session:
-        before = held(session, civ_by_name(session, universe_id, "Terrans"), METAL)
+        civ = civ_by_name(session, universe_id, "Terrans")
+        # No governor spending the stockpile: this test is about production
+        # continuing for an absent player, not about what a governor buys.
+        take_manual_control(session, civ)
+        before = held(session, civ, METAL)
 
     run_ticks(engine, universe_id, 24)
 
@@ -231,6 +235,7 @@ def test_build_order_charges_up_front_and_delivers(game):
 
     with open_session(engine) as session:
         vex = civ_by_name(session, universe_id, "Vex")
+        take_manual_control(session, vex)
         colony = session.scalar(select(Colony).where(Colony.civ_id == vex.id).order_by(Colony.id))
         metal_before = colony.stockpile[METAL]
         fleets_before = len(session.scalars(select(Fleet).where(Fleet.civ_id == vex.id)).all())

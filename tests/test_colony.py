@@ -26,7 +26,7 @@ from galaxysim.engine import intents
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Building, Colony, Event, Fleet, IntentStatus, World
-from tests.conftest import civ_by_name, home_colony, new_universe
+from tests.conftest import civ_by_name, home_colony, new_universe, take_manual_control
 
 
 def _outpost(session, civ, *, habitability: float, stockpile: dict, world_type: str = "barren"):
@@ -49,6 +49,9 @@ def _outpost(session, civ, *, habitability: float, stockpile: dict, world_type: 
         stockpile=dict(stockpile),
         labor=balanced_allocation(),
     )
+    # Manual: these tests drive the colony themselves, and a governor would
+    # reassign labor and spend the stockpile underneath them.
+    colony.management_mode = "manual"
     session.add(colony)
     session.flush()
     return colony
@@ -540,3 +543,162 @@ def test_an_expedition_with_no_stores_dies_on_a_dead_world():
         assert session.scalars(
             select(Event).where(Event.kind == "life_support_failing")
         ).all()
+
+
+# ---------------------------------------------------------------- governors
+
+
+def test_new_colonies_are_governed_by_default():
+    """Depth is opt-in. A large empire must not require managing every world."""
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=820, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        colony = home_colony(session, civ_by_name(session, universe_id, "Terrans"))
+        assert colony.is_governed
+        assert colony.governor_policy == "balanced"
+
+
+def test_setting_labor_by_hand_takes_the_colony_off_the_governor():
+    """Otherwise the governor would overwrite the order on the next tick."""
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=821, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        colony = home_colony(session, civ_by_name(session, universe_id, "Terrans"))
+        intents.set_labor(session, colony, {RESEARCH: 1.0})
+        colony_id = colony.id
+        assert not colony.is_governed
+
+    run_ticks(engine, universe_id, 10)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert colony.labor[RESEARCH] == pytest.approx(1.0), "the order must stick"
+
+
+def test_a_governor_keeps_a_hostile_colony_breathing():
+    """A governed colony on a bad world reserves labor for life support.
+
+    And it does so regardless of the policy it was handed: told to chase
+    research on a rock that cannot breathe, it stays alive first.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=822, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = _outpost(session, civ, habitability=0.0, stockpile={VOLATILES: 5000.0})
+        intents.set_management(session, colony, governed=True, policy="research")
+        colony_id = colony.id
+
+    run_ticks(engine, universe_id, 48)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert colony.labor[LIFE_SUPPORT] > 0.1, "a governor must fund life support"
+        assert colony.population > 0
+
+
+def test_a_governed_garden_world_spends_nothing_on_life_support():
+    """The converse: no bill, no reserve, everyone works."""
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=823, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = _outpost(session, civ, habitability=1.0, stockpile={})
+        intents.set_management(session, colony, governed=True, policy="extraction")
+        colony_id = colony.id
+
+    run_ticks(engine, universe_id, 5)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert colony.labor[LIFE_SUPPORT] == pytest.approx(0.0)
+        assert colony.labor[EXTRACTION] > 0.5
+
+
+def test_a_governor_gets_no_hidden_bonus():
+    """Delegation is convenience, never advantage.
+
+    Two identical colonies, one governed and one set by hand to the exact
+    allocation the governor chose, must produce the same. A player who
+    micromanages well should never be losing to the autopilot.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=824, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        governed = _outpost(session, civ, habitability=0.8, stockpile={})
+        intents.set_management(session, governed, governed=True, policy="extraction")
+        governed_id = governed.id
+
+    # One tick to let the governor choose, then copy its allocation onto a twin.
+    run_ticks(engine, universe_id, 1)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        governed = session.get(Colony, governed_id)
+        chosen = dict(governed.labor)
+        # It mined during the tick that let the governor choose; start both from
+        # nothing so the comparison is of output, not of a head start.
+        governed.stockpile = {}
+
+        twin = _outpost(session, civ, habitability=0.8, stockpile={})
+        twin.name = "Twin"
+        twin.world.resource_yield = dict(governed.world.resource_yield)
+        twin.world.habitability = governed.world.habitability
+        twin.population = governed.population
+        twin.infrastructure = governed.infrastructure
+        intents.set_labor(session, twin, chosen)
+        twin_id = twin.id
+
+    run_ticks(engine, universe_id, 24)
+
+    with open_session(engine) as session:
+        a = session.get(Colony, governed_id).stockpile.get(METAL, 0.0)
+        b = session.get(Colony, twin_id).stockpile.get(METAL, 0.0)
+        assert a == pytest.approx(b, rel=0.02)
+
+
+def test_a_governor_develops_a_colony_over_time():
+    """Left alone, a governed colony should build something useful."""
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=825, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = _outpost(session, civ, habitability=0.9, stockpile={})
+        colony.world.slots = 6
+        colony.world.resource_yield = {METAL: 2.0, "energy": 1.5, VOLATILES: 1.0}
+        intents.set_management(session, colony, governed=True, policy="extraction")
+        colony_id = colony.id
+        buildings_before = len(colony.buildings)
+
+    run_ticks(engine, universe_id, 500)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert len(colony.buildings) > buildings_before
+        assert any(b.is_complete for b in colony.buildings), "and finish at least one"
+
+
+def test_a_governor_respects_slot_limits():
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=826, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = _outpost(session, civ, habitability=0.9, stockpile={})
+        colony.world.slots = 2
+        colony.world.resource_yield = {METAL: 3.0, "energy": 3.0, VOLATILES: 3.0}
+        intents.set_management(session, colony, governed=True, policy="extraction")
+        colony_id = colony.id
+
+    run_ticks(engine, universe_id, 800)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert len(colony.buildings) <= colony.world.slots
