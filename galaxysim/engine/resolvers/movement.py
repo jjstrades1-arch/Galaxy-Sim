@@ -13,7 +13,7 @@ from __future__ import annotations
 from galaxysim.core.space import Vec3, travel_time_hours
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
-from galaxysim.worldgen.materialize import materialize_at
+from galaxysim.worldgen.materialize import materialize_at, nearest_unvisited
 from galaxysim.model.entities import Fleet, IntentKind, IntentStatus
 
 
@@ -102,8 +102,14 @@ def _arrive(ctx: TickContext, fleet: Fleet, destination: Vec3) -> None:
     fleet.departed_tick = None
     fleet.arrival_tick = None
 
+    # Asked *before* materializing, because "was this system already a row" is
+    # the only reliable way to know whether this fleet is the first here. The
+    # version that compared ``discovered_tick`` to ``ctx.tick`` never once fired:
+    # a system is stamped with ``universe.tick_number``, and the tick being
+    # resolved is that plus one, so every discovery in the game went unlogged.
+    unvisited = nearest_unvisited(ctx.session, ctx.universe, destination)
     system = materialize_at(ctx.session, ctx.universe, destination)
-    if system is not None and system.discovered_tick == ctx.tick:
+    if system is not None and unvisited:
         ctx.log(
             "system_discovered",
             f"{fleet.name} is the first to reach {system.name} "

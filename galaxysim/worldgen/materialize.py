@@ -135,6 +135,19 @@ def materialize_around(
     ]
 
 
+def nearest_unvisited(session: Session, universe: Universe, position: Vec3) -> bool:
+    """Whether there is a system here that nobody has been to yet.
+
+    Asked before :func:`materialize_at`, by callers that want to say something
+    about *arriving first*. Afterwards there is no way to tell: the row exists
+    either way and nothing on it records which tick made it, since a system's
+    ``discovered_tick`` is the universe's counter rather than the tick being
+    resolved.
+    """
+    nearby = systems_near(universe.seed, position, ARRIVAL_TOLERANCE_LY, limit=1)
+    return bool(nearby) and existing_system(session, universe, nearby[0]) is None
+
+
 def materialize_at(
     session: Session, universe: Universe, position: Vec3
 ) -> StarSystem | None:

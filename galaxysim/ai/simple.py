@@ -22,10 +22,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from galaxysim.colony.expedition import Loadout
+from galaxysim.colony.labor import INDUSTRY, normalize
 from galaxysim.colony.population import capacity
 from galaxysim.materials import (
     FERTILISER,
     FLEET_COST_PER_STRENGTH,
+    FLEET_UPKEEP_PER_STRENGTH,
     FOOD,
     FREIGHTER_COST_PER_CAPACITY,
     WATER,
@@ -36,8 +38,14 @@ from galaxysim.core.space import distance
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION
 from galaxysim.engine import intents
 from galaxysim.engine.resolvers import governor, queries
-from galaxysim.engine.resolvers.production import colony_effects
-from galaxysim.worldgen.serialize import has_surface_water
+from galaxysim.engine.rates import DEFAULT_RATES
+from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY, colony_effects
+from galaxysim.engine.resolvers.terraform import unmet_requirements
+from galaxysim.terraform.plan import next_project
+from galaxysim.terraform.projects import project
+from galaxysim.worldgen.galaxy import systems_near
+from galaxysim.worldgen.materialize import existing_system
+from galaxysim.worldgen.serialize import has_surface_water, survey_from_json
 from galaxysim.model.entities import (
     Civ,
     Colony,
@@ -79,37 +87,64 @@ MIGRATION_BATCH = 500_000.0
 MIGRATION_RESERVE = 1e8
 TONNES_PER_SETTLER = 0.5
 
-#: Fleet strength the AI supports per *billion* people it governs. Fleets cost
-#: upkeep every hour, so an unbounded navy bankrupts its own economy and then
-#: deserts -- and a fixed cap per colony stopped meaning anything once a colony
-#: held billions rather than a handful. Tying it to population keeps the AI's
-#: military proportional to the economy paying for it at any scale.
-MAX_STRENGTH_PER_BILLION_POP = 4.0
-
-#: Warship strength the AI garrisons per colony it holds. Deliberately modest:
-#: this is the *reason* to build a warship, where
-#: :data:`MAX_STRENGTH_PER_BILLION_POP` is only the ceiling on what the economy
-#: can pay upkeep for. Wanting a navy and being able to afford one are different
-#: questions and the AI used to conflate them, with the result that it bought
-#: hulls until it could not afford to expand.
+#: Warship strength the AI garrisons per colony it holds.
+#:
+#: **There is no longer a cap above this.** There used to be: a ceiling on total
+#: fleet strength per billion people, which existed because upkeep was priced at
+#: two hundred-thousandths of a percent of a civilization's output and therefore
+#: bounded nothing at all. It was the only brake in the game, it was pinned to a
+#: population that by design does not grow, and it was the entire reason AI
+#: empires stopped expanding on day two and never started again.
+#:
+#: With ships priced as ships, "can I buy this and keep it flying" is a real
+#: question with a real answer, and the AI is allowed to answer it. What stops
+#: it now is what should: the yard's construction time, the materials, the
+#: standing upkeep bill against what its colonies actually produce, and how far
+#: from home it can supply.
 DEFENSIVE_STRENGTH_PER_COLONY = 2.0
 
-#: The most of the affordable ceiling the AI will let *newly built* warships
-#: occupy, leaving the rest as headroom for settlers and freighters.
+#: Hours of standing upkeep the AI keeps banked before it will buy another hull.
 #:
-#: This does not stop the empire settling into a steady state, and it is worth
-#: being clear about why, because the reason is the design rather than a bug.
-#: Settling dead worlds adds almost no *people* -- a civ can go from six
-#: colonies to thirty and its population barely moves, because an outpost holds
-#: tens of thousands against a homeworld's eighteen billion. So the upkeep
-#: budget, which scales with population, is very nearly a constant, and an
-#: expanding civilization eventually spends all of it. Where it stops is
-#: therefore set by how many people it has, and the only thing in the game that
-#: changes that is terraforming a world into somewhere billions can live.
+#: The honest question, and the one an earlier version of this got wrong by
+#: asking about industry output instead. Upkeep is paid in specific materials --
+#: overwhelmingly *fuel*, which is synthesised from water ice and carbon and is
+#: the scarcest refined good a young empire has. A civilization can be drowning
+#: in steel and alloys, as the AI was with a hundred and fifteen million tonnes
+#: banked, and still be unable to keep a single ship flying.
 #:
-#: What this constant does is stop *deliberate* warship purchases from eating
-#: the expansion budget first.
-NAVY_SHARE_OF_UPKEEP_BUDGET = 0.55
+#: So the test is against the fuel bunker rather than the smelters: hold a
+#: fortnight of what the whole fleet burns, including the ship being considered,
+#: or do not build it. That makes the size of a navy a consequence of fuel
+#: production without anything having to say so, and -- more importantly -- it
+#: stops the AI buying ships it will then watch desert, which is what turned a
+#: constraint into a death spiral.
+UPKEEP_RESERVE_HOURS = 24.0 * 14.0
+
+#: How far the AI will send a scout, and how many candidate systems it weighs.
+#:
+#: The galaxy is a pure function and unvisited space costs nothing, but a system
+#: only becomes somewhere you can *settle* once a ship has been there -- so an
+#: empire that never scouts has a frontier exactly as large as whatever it was
+#: charted at the start, which is how the AI's system count sat at seventy-two
+#: for an entire twenty-eight day soak.
+#:
+#: Kept inside supply range on purpose, and that is not caution. Upkeep is
+#: charged from the warehouses nearest a fleet and there is nothing to draw on
+#: past :data:`SUPPLY_RANGE_LY`, so a scout sent further deserts before it
+#: arrives -- exploration that consumes the explorer. Holding it inside the line
+#: produces something better than a longer leash: the charted frontier grows
+#: only as fast as the settled one, so scouting and settling leapfrog each
+#: other outward and neither runs away from the other.
+SCOUT_RANGE_LY = SUPPLY_RANGE_LY * 0.8
+SCOUT_CANDIDATES = 40
+
+#: Habitability at or below which a settled world is a terraforming candidate,
+#: and the least construction a neighbourhood must be able to muster before the
+#: AI commits to a campaign there. A project on a world with nothing around it
+#: is a decade of work; the same project beside three developed colonies is
+#: days, and the AI should be able to tell those apart.
+TERRAFORM_CANDIDATE_HABITABILITY = 0.25
+TERRAFORM_MINIMUM_NEIGHBOURHOOD_WORK = 5.0e5
 
 
 def take_all_turns(session: Session, universe: Universe) -> int:
@@ -142,6 +177,8 @@ def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
     _maybe_expand(session, universe, civ, pending)
     _maybe_supply(session, universe, civ, pending)
     _maybe_migrate(session, universe, civ, pending)
+    _maybe_terraform(session, universe, civ, pending)
+    _maybe_scout(session, universe, civ, pending)
     _maybe_build(session, universe, civ, pending, rng)
 
 
@@ -441,6 +478,128 @@ def _nearest_settleable_world(
     return (best[1], best[2]) if best else None
 
 
+def _can_carry_more_upkeep(colonies, fleets, extra_strength: float) -> bool:
+    """Whether this civ could still pay its bills with another hull flying.
+
+    The only limit left on a navy's size, and it is an economic one rather than
+    a rule. Grow the economy and the fleet it can carry grows with it, which is
+    what makes a navy a consequence of prosperity rather than a permission.
+
+    Asked against the **upkeep materials specifically**, not against output in
+    general. That distinction is the whole point: upkeep is mostly fuel, fuel is
+    synthesised from water ice and carbon, and an empire can hold a hundred
+    million tonnes of steel while holding no fuel at all -- which is exactly
+    what happened, and why a navy of ninety points of strength deserted down to
+    five over the back half of a soak while its warehouses looked healthy.
+    """
+    strength = sum(f.strength for f in fleets) + extra_strength
+    if strength <= 0:
+        return True
+
+    banked: dict[str, float] = {}
+    for colony in colonies:
+        for material in FLEET_UPKEEP_PER_STRENGTH:
+            banked[material] = banked.get(material, 0.0) + colony.stockpile.get(material, 0.0)
+
+    return all(
+        banked.get(material, 0.0) >= per_strength * strength * UPKEEP_RESERVE_HOURS
+        for material, per_strength in FLEET_UPKEEP_PER_STRENGTH.items()
+    )
+
+
+def _maybe_terraform(
+    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
+) -> None:
+    """Start reshaping a dead world the empire is actually placed to reshape.
+
+    The single most valuable thing a mature civilization can do, and until now
+    the AI did not know it existed. It matters more than any other order it
+    issues: settling rocks adds almost no *people*, so an empire of thirty
+    outposts has barely more population than one of six -- and population is
+    what every other ceiling in the game is measured against. Terraforming is
+    the only mechanism that moves it, by four orders of magnitude, and an AI
+    that never terraforms is one that plateaus by construction.
+
+    Two judgements, and both are about place rather than about the project.
+    Pick a world worth converting, and only commit where the *neighbourhood* can
+    do the work -- a project pools construction from every colony within supply
+    range, so the same campaign is three weeks beside a developed cluster and a
+    decade alone in the dark.
+    """
+    if pending.get(IntentKind.TERRAFORM.value):
+        return  # one planet at a time; they are enormous
+
+    colonies = queries.colonies_of(session, civ.id)
+    for colony in colonies:
+        if colony.world.habitability > TERRAFORM_CANDIDATE_HABITABILITY:
+            continue
+
+        neighbourhood = queries.sorted_by_distance(
+            colonies, colony.world.system.position, within_ly=SUPPLY_RANGE_LY
+        )
+        muscle = sum(
+            helper.population
+            * normalize(helper.labor).get(INDUSTRY, 0.0)
+            * DEFAULT_RATES.industry_per_worker_per_hour
+            for helper in neighbourhood
+        )
+        if muscle < TERRAFORM_MINIMUM_NEIGHBOURHOOD_WORK:
+            continue
+
+        survey = survey_from_json(colony.world.survey)
+        step = next_project(survey)
+        if step is None:
+            continue
+
+        spec = project(step)
+        if unmet_requirements(survey, spec):
+            continue
+        if not can_afford(colony.stockpile, spec.cost):
+            continue
+
+        intents.terraform(session, civ, colony.id, step)
+        return
+
+
+def _maybe_scout(
+    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
+) -> None:
+    """Send a ship somewhere nobody has been.
+
+    The galaxy is a pure function and a system exists as soon as the maths says
+    it does -- but it only becomes somewhere you can *settle* once a ship has
+    arrived and turned it into rows. So a civilization that never scouts has a
+    frontier exactly as large as whatever it was charted at the start, and in a
+    twenty-eight day soak the AI's system count never moved off seventy-two.
+
+    This is what makes the frontier unbounded in practice rather than only in
+    principle: pick the nearest star nobody has visited and go and look at it.
+    """
+    idle = [
+        fleet
+        for fleet in session.scalars(
+            select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
+        )
+        if not fleet.in_transit and fleet.colony_pods <= 0 and fleet.cargo_capacity <= 100.0
+    ]
+    if not idle:
+        return  # warships only; freighters and settlers have jobs
+
+    moving = {i.payload.get("fleet_id") for i in pending.get(IntentKind.MOVE_FLEET.value, [])}
+    scout = next((f for f in idle if f.id not in moving), None)
+    if scout is None:
+        return
+
+    for stub in systems_near(
+        universe.seed, scout.position, SCOUT_RANGE_LY, limit=SCOUT_CANDIDATES
+    ):
+        if existing_system(session, universe, stub) is None:
+            intents.move_fleet(
+            session, civ, scout.id, stub.position.x, stub.position.y, stub.position.z
+        )
+            return
+
+
 def _maybe_build(
     session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]], rng
 ) -> None:
@@ -488,12 +647,10 @@ def _maybe_build(
     fleets = session.scalars(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)).all()
 
     # Affording the purchase is not the same as affording the standing bill.
-    # Upkeep is charged per strength every hour, so this is the ceiling on what
-    # the economy can carry rather than a rule about how big a navy may be.
-    people = sum(c.population for c in colonies)
-    budget = (people / 1e9) * MAX_STRENGTH_PER_BILLION_POP
-    strength = sum(f.strength for f in fleets)
-    if strength + BUILD_STRENGTH > budget:
+    # This is the only limit left on how large a navy may get, and it is a real
+    # one now that a ship costs a real fraction of what a colony makes: keep
+    # adding hulls and the hourly upkeep eats the output that was building them.
+    if not _can_carry_more_upkeep(colonies, fleets, BUILD_STRENGTH):
         return
 
     # A settler if there is somewhere to send one and nothing to send.
@@ -512,14 +669,9 @@ def _maybe_build(
         return
 
     # Otherwise a warship, and only up to what this many colonies is worth
-    # garrisoning *and* what leaves room to keep expanding. Hulls with nothing
-    # to do still cost upkeep every hour.
-    wanted = min(
-        len(colonies) * DEFENSIVE_STRENGTH_PER_COLONY,
-        budget * NAVY_SHARE_OF_UPKEEP_BUDGET,
-    )
+    # garrisoning. Hulls with nothing to do still cost upkeep every hour.
     warships = sum(f.strength for f in fleets if f.colony_pods <= 0 and f.cargo_capacity <= 100.0)
-    if warships + BUILD_STRENGTH > wanted:
+    if warships + BUILD_STRENGTH > len(colonies) * DEFENSIVE_STRENGTH_PER_COLONY:
         return
 
     intents.build_fleet(

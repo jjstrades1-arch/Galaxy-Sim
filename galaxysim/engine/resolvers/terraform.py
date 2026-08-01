@@ -23,7 +23,7 @@ one on the planet. See :func:`_advance` for why that is not a convenience.
 
 from __future__ import annotations
 
-from galaxysim.materials import can_afford, spend
+from galaxysim.materials import can_afford
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
 from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY, construction_output
@@ -100,20 +100,72 @@ def _start(ctx: TickContext) -> None:
             )
             continue
 
-        if not can_afford(colony.stockpile, project.cost):
-            intent.result = f"insufficient resources at {colony.name}"
+        suppliers = _neighbourhood(ctx, colony)
+        if not _draw_from(suppliers, project.cost):
+            intent.result = (
+                f"insufficient resources within {SUPPLY_RANGE_LY:.0f} ly of "
+                f"{colony.name}"
+            )
             continue
 
-        spend(colony.stockpile, project.cost)
         intent.status = IntentStatus.IN_PROGRESS.value
         intent.payload["work_remaining"] = project.work
         intent.result = ""
         ctx.log(
             "terraform_started",
-            f"{colony.name} began {project.name} on {colony.world.name}",
+            f"{colony.name} began {project.name} on {colony.world.name}, "
+            f"supplied by {len(suppliers)} colonies",
             civ_id=colony.civ_id,
             payload={"colony_id": colony.id, "project": project.key},
         )
+
+
+def _neighbourhood(ctx: TickContext, colony: Colony) -> list[Colony]:
+    """This colony and every other of the same civ within supply range.
+
+    Nearest first, so a project draws on what is closest before reaching further
+    back down the line -- the same rule fleet upkeep uses, for the same reason.
+    """
+    colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id).get(colony.civ_id, [])
+    return queries.sorted_by_distance(
+        colonies, colony.world.system.position, within_ly=SUPPLY_RANGE_LY
+    )
+
+
+def _draw_from(suppliers: list[Colony], cost: dict[str, float]) -> bool:
+    """Take ``cost`` out of a neighbourhood's warehouses, or take nothing.
+
+    **The materials pool exactly as the work does, and for the same reason.** A
+    project on a dead world is charged to the colony standing on it, and a dead
+    world is an outpost of fifty thousand people holding two tonnes of steel
+    against a bill of four hundred million. Charging it there meant the AI could
+    never start a project anywhere, ever -- which is precisely the circularity
+    the work half already had: the only way to afford terraforming a world was
+    to have already terraformed it.
+
+    All or nothing, so a half-paid project cannot leave a neighbourhood stripped
+    with nothing to show for it.
+    """
+    available: dict[str, float] = {}
+    for colony in suppliers:
+        for material, amount in colony.stockpile.items():
+            available[material] = available.get(material, 0.0) + amount
+    if not can_afford(available, cost):
+        return False
+
+    for material, wanted in sorted(cost.items()):
+        outstanding = wanted
+        for colony in suppliers:
+            if outstanding <= 1e-9:
+                break
+            held = colony.stockpile.get(material, 0.0)
+            paid = min(outstanding, held)
+            if paid > 0:
+                stock = dict(colony.stockpile)
+                stock[material] = held - paid
+                colony.stockpile = stock
+                outstanding -= paid
+    return True
 
 
 def _advance(ctx: TickContext) -> None:

@@ -22,8 +22,8 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/galaxysim status                     # your civ
 .venv/bin/galaxysim systems                    # what you have charted
 .venv/bin/galaxysim chart --radius 60          # ...and what is out there
-.venv/bin/galaxysim planet 12                  # full planetary survey
-.venv/bin/galaxysim colony 1                   # one colony in detail
+.venv/bin/galaxysim planet 12                  # full survey, incl. what powers it
+.venv/bin/galaxysim colony 1                   # one colony in detail, incl. its grid
 .venv/bin/galaxysim labor 1 --extraction 3 --industry 2 --life-support 1
 .venv/bin/galaxysim structure                  # list buildings
 .venv/bin/galaxysim structure 1 laboratory     # build one
@@ -184,10 +184,82 @@ run them — natural growth carries a habitable colony to maturity in three to
 four weeks — but a garden world with room and nobody on it, next to a capital
 that is full, is a situation only shipping fixes.
 
-**Nothing artificial slows a wide empire.** `Rates.colony_overhead` is deleted.
-Twelve colonies produce what twelve colonies produce. What slows a large empire
-is real: distance, supply lines that have to be defended, worlds that cost more
-to hold than they yield.
+**Nothing artificial slows a wide empire.** `Rates.colony_overhead` is deleted,
+and so is the fleet cap that replaced it in the AI. Twelve colonies produce what
+twelve colonies produce. What slows a large empire is real: distance, supply
+lines that have to be defended, worlds that cost more to hold than they yield,
+and the hourly upkeep of everything you built.
+
+## Everything costs what it weighs
+
+For two phases it did not. When the economy went to real tonnes, terraforming
+and research came with it and **buildings, ships, expeditions and fleet upkeep
+were left behind** — so a civilization producing eighty-six million tonnes an
+hour bought a warship for thirty-eight tonnes and kept an entire navy flying for
+seventeen tonnes an hour, two hundred-thousandths of one percent of its output.
+Nothing real bound anything, which is why the AI needed an artificial cap: it
+was the only brake in the game.
+
+Prices are now measured rather than picked. `tests/test_prices.py` generates a
+capital and a landing party — 1,401,102 and 0.24 units of construction an hour, a
+factor of six million — and asserts the whole ladder against what they actually
+produce, so the next time a rate moves this fails instead of quietly going slack:
+
+| | cost | on a developed capital |
+|---|---|---|
+| Industry, level 1 | 55,000 t | minutes (a fortnight for a landing party) |
+| Industry, level 200 | 2.2 Bt | ~2.5 weeks |
+| Industry, level 320 | 5.6 Bt | ~10 weeks |
+| Warship, strength 2 | 400,000 t | ~8 hours |
+| Terraforming, one project | 470 Mt | ~1.5 days |
+| Terraforming, full transformation | ~8 Gt | ~3 weeks |
+
+**Work scales as the cube of the level while materials stay quadratic.** Effort
+and tonnage do not rise together in real industry — the hard part of a bigger
+plant is siting, power and integration rather than fabrication — and it is also
+the only curve that spans the economies it has to. One exponent cannot make
+level 1 affordable to fifty thousand colonists *and* level 320 a season's work
+for a capital producing a million times as much.
+
+Fleet upkeep keeps its documented 1.5%-of-build-cost ratio and moves with the
+base. A hundred points of strength now costs **10.7% of a capital's hourly
+industry** — the "about a tenth of refined output" its docstring had claimed
+since it was written, and which was false by four orders of magnitude because
+nobody had checked it.
+
+## Power is a flow
+
+The one quantity here that is a rate compared against a rate. Generation this
+hour against what industry, mining and life support want this hour, with the
+ratio scaling output — a colony short of power is not dead, it is *throttled*,
+and it recovers the hour somebody delivers fuel. There is a floor well above
+zero, because a colony that could reach no power could never mine the fuel to
+restart and a constraint you cannot escape is a trap rather than a constraint.
+
+**Demand scales with industrial output, not headcount.** That distinction is the
+whole mechanic: scaled to people it would grow at exactly the rate the free
+baseline does and never bind on anyone at any size. Scaled to output, a colony
+that deepens its industries outgrows its grid — which is when it should have to
+think about one. A landing party never does.
+
+Four routes, each gated on something the generator already rolled:
+
+- **Solar** on stellar flux `L/a²`. Three quarters of stars are red dwarfs and
+  their worlds are dark.
+- **Geothermal** on tectonic activity — which is also what concentrates ore into
+  seams, so the best mining worlds can power their own mines and the dead ones
+  that are cheap to live on must import their fuel. Nobody wrote that down.
+- **Fission** on fissiles, and **fusion** on deuterium and helium-3 — which is
+  what finally makes a barren regolith world worth crossing a frontier for.
+
+Generation is linear in level where everything else is a square root: ten
+reactors make ten reactors' power. The diminishing return lives in the quadratic
+materials bill instead, so the economics still discourage stacking one plant
+without the physics having to pretend.
+
+This is also the sink extraction never had. `recipes.py` has carried a comment
+pointing at "the energy model" since the refining chains were written, while
+deuterium and helium-3 sat in the catalogue consumed by nothing.
 
 ## Terraforming: what the surplus is for
 
@@ -362,6 +434,8 @@ Several brakes keep growth compounding-resistant:
 | Brake | Where | What it stops |
 |---|---|---|
 | Research cost by depth (superlinear) | `Rates.research_cost` | A lineage running away |
+| Construction time, cubic in level | `colony/industry.py` | Buying a developed world in an afternoon |
+| Power demand rising with output | `colony/energy.py` | Industry outgrowing what runs it |
 | Fleet upkeep, billed where the fleet is | `FLEET_UPKEEP_PER_STRENGTH` | Hoarding a free navy |
 | Life-support and food bills | `Rates.life_support_*`, agriculture | Holding hostile worlds cheaply |
 | Local stockpiles | `Colony.stockpile` | Funding expansion from one pooled purse |
@@ -443,7 +517,7 @@ galaxysim/
   materials/   catalogue, refining chains, extraction, prices
   model/       SQLAlchemy entities (SQLite for solo, Postgres for shared)
   worldgen/    the galaxy function, stars, planetary physics, geology, life
-  colony/      labour sectors, industries, population, agriculture, expeditions
+  colony/      labour sectors, industries, population, agriculture, energy
   terraform/   project catalogue, and applying one back into a planet
   engine/      rates, intent queue, tick pipeline, resolvers
   ai/          AI civs, driving the same intent API a player uses
@@ -490,20 +564,15 @@ Named explicitly so nobody mistakes scaffolding for design:
   pool, so construction runs at half the rate it did. That is the intended
   shape — ore has to become steel before it can become a hull — but the split is
   a first-pass number that wants a play session, not a spreadsheet.
-- **Raw materials still outrun their sinks.** Research consuming refined goods
-  is a real sink, levelled industries are a larger one and terraforming is the
-  largest, but a developed colony still accumulates ore faster than it processes
-  it. Energy-as-a-flow — generation mixes burning deuterium, helium-3 and
-  fissiles, all of which are mined today and consumed by nothing — is the
-  outstanding one.
-- **The AI does not terraform.** It expands, supplies and migrates, but the
-  biggest thing a mature civilization can do with its surplus is not in its
-  repertoire, so an AI empire plateaus where a player's would not. This is now
-  the *first* thing to fix, because it is what the plateau above is waiting on.
 - **A fleet cannot be decommissioned.** Upkeep is a one-way ratchet: a colony
   ship that has landed its pod is a hull with no purpose and a permanent bill,
-  and there is no way to scrap it or recover its materials. The AI ends a soak
-  with two dozen of them.
+  and there is no way to scrap it or recover its materials. That mattered less
+  when a ship cost nineteen tonnes; now that upkeep is a real fraction of
+  output, a fleet of spent settlers is a real drag.
+- **The AI terraforms one planet at a time and never re-plans.** It picks a dead
+  world with a developed neighbourhood and works the sequence, which is the
+  right shape, but it will not abandon a bad target or run two campaigns at
+  once even when it could afford both.
 - **Nobody has played a core start for long.** Neighbours 1.4 ly apart is a very
   different game from neighbours 10 ly apart, and the difference is currently a
   claim backed by density arithmetic rather than a session.

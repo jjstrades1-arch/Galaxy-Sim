@@ -26,6 +26,7 @@ from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Colony, Event, Intent, IntentStatus, World
 from galaxysim.terraform.apply import apply_project
+from galaxysim.terraform.plan import next_project
 from galaxysim.terraform.projects import (
     NEEDS_ATMOSPHERE,
     NEEDS_LIQUID_WATER,
@@ -69,57 +70,10 @@ def _cold_rock(session) -> World:
     return best[0]
 
 
-#: The surface temperature a terraformer is actually aiming at -- warm enough to
-#: grow food in, cool enough to stand in.
-GROWING_BAND_K = (283.0, 303.0)
-
-#: Enough air to breathe and to hold heat, below which nothing else is worth
-#: doing. Roughly Earth's, which is the only figure anyone has ever tested.
-WORKING_PRESSURE_BAR = 0.7
-
-
-def _next_project(survey) -> str | None:
-    """The project this world needs next, chosen from what it currently is.
-
-    Terraforming has to be driven by feedback rather than a recipe, because the
-    projects interact. Greenhouse forcing scales with pressure, so thickening
-    the air warms the world *as well as* pressurising it; scrubbing sulphur back
-    out thins the air again and may put pressure below working. A fixed sequence
-    that is right for one planet cooks the next one.
-
-    So this reads the survey and picks, the way a player looking at the readout
-    would -- and the loops that use it are therefore a statement about the
-    physics converging, not about a list of eleven project names being correct.
-    """
-    air, climate, water, life = (
-        survey.atmosphere,
-        survey.climate,
-        survey.hydrosphere,
-        survey.biosphere,
-    )
-    if not survey.body.is_shielded:
-        return "magnetic_shield"  # nothing you release stays without one
-    if air.pressure_bar < WORKING_PRESSURE_BAR:
-        return "atmosphere_processor"
-    if climate.surface_temp_k < GROWING_BAND_K[0]:
-        return "greenhouse_seeding"
-    if climate.surface_temp_k > GROWING_BAND_K[1]:
-        return "orbital_shade"  # overshot; reflect some of it back
-    if not water.liquid_water:
-        return "cometary_redirection"
-    if life.stage in ("sterile", "prebiotic", "microbial"):
-        return "ecosystem_seeding"
-    if air.toxins():
-        return "atmospheric_scrubbing"  # thick and poisonous is worse than thin
-    if not air.is_breathable:
-        return "oxygenation"
-    return None
-
-
 def _terraform(survey, limit: int = 40):
     """Run projects against a world until it is finished or stops converging."""
     for _ in range(limit):
-        key = _next_project(survey)
+        key = next_project(survey)
         if key is None:
             return survey
         spec = project(key)

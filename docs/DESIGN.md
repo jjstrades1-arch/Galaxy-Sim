@@ -259,9 +259,25 @@ Reordered from spec §6 because solo mode moves the playable milestone earlier.
 - `galaxysim solo --ai 5` for hands-on play; `--ai 99 --auto-tick 500` as a
   headless soak run to surface runaway-civ and performance problems.
 - **Pacing soak**: 100 AI civs over a simulated month, charting size and power
-  over time. Target curve is slow and compounding-resistant — if a civ reads as
-  "big" within a few simulated days, the cost curves need steepening. Same run
-  records per-tick wall time against the low-seconds budget.
+  over time. Same run records per-tick wall time against the low-seconds budget.
+
+  The target curve has been **inverted since this was written**, and the reason
+  is worth recording. "Slow and compounding-resistant" produced exactly what it
+  asked for: AI empires that reached six colonies on day two and never moved
+  again. Growth is supposed to compound — more colonies means more industry
+  means more ships means more colonies — and what should stop a civilization is
+  the cost of what it has built rather than a rule about how large it may get.
+  So the check is now **the shape of the curve**: colony count still rising at
+  day 28, with the brakes being upkeep, construction time, supply range and
+  distance. A flat line is the failure, not the target.
+
+- **Prices are measured, not chosen** (`tests/test_prices.py`). Every cost in
+  the game is asserted against what a generated capital and a generated landing
+  party actually produce, because the alternative failed silently for two
+  phases: the economy was rescaled to real tonnes and buildings, ships and fleet
+  upkeep were left behind, so a civilization producing 86 Mt an hour bought a
+  warship for 38 t. Nothing bound, and the only brake left was an artificial cap
+  in the AI.
 
 ---
 
