@@ -36,6 +36,22 @@ def game():
     return engine, universe_id
 
 
+@pytest.fixture
+def hourly_game():
+    """The same opening on an hourly clock.
+
+    For tests that measure days rather than minutes. Cadence cannot change what
+    they assert -- ``test_growth_is_equivalent_across_cadences`` is the proof --
+    so running them at five-minute resolution is twelve times the work for
+    identical results.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(
+        engine, seed=2024, civs=("Terrans", "Vex"), seconds_per_tick=3600
+    )
+    return engine, universe_id
+
+
 def test_tick_advances_the_clock(game):
     engine, universe_id = game
     results = run_ticks(engine, universe_id, 3)
@@ -148,16 +164,16 @@ def test_colonize_waits_for_the_fleet_then_settles(game):
         assert session.get(Fleet, fleet_id).colony_pods == 0
 
 
-def test_research_is_a_standing_order(game):
+def test_research_is_a_standing_order(hourly_game):
     """A research programme keeps buying steps without further input."""
-    engine, universe_id = game
+    engine, universe_id = hourly_game
 
     with open_session(engine) as session:
         intents.research(session, civ_by_name(session, universe_id, "Terrans"))
 
     # Two days of simulated time. Deliberately slow: a starting civ is expected
     # to be a step or two in after two days, not a dozen.
-    run_ticks(engine, universe_id, 576)
+    run_ticks(engine, universe_id, 48)
 
     with open_session(engine) as session:
         terrans = civ_by_name(session, universe_id, "Terrans")

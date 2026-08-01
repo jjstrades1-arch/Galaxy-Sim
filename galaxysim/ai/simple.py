@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from galaxysim.colony.expedition import Loadout
+from galaxysim.colony.population import capacity
 from galaxysim.materials import (
     FERTILISER,
     FLEET_COST_PER_STRENGTH,
@@ -72,6 +73,12 @@ FREIGHTER_STRENGTH = 0.5
 #: destination drinking the delivery faster than the round trip.
 FREIGHTER_TRIPS_OF_SLACK = 2.0
 
+#: Settlers the AI moves in one convoy, and the people it will not draw its
+#: capital below. The capital is a reservoir, not a resource to be emptied.
+MIGRATION_BATCH = 500_000.0
+MIGRATION_RESERVE = 1e8
+TONNES_PER_SETTLER = 0.5
+
 #: Fleet strength the AI supports per *billion* people it governs. Fleets cost
 #: upkeep every hour, so an unbounded navy bankrupts its own economy and then
 #: deserts -- and a fixed cap per colony stopped meaning anything once a colony
@@ -109,6 +116,7 @@ def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
     _set_policies(session, civ)
     _maybe_expand(session, universe, civ, pending)
     _maybe_supply(session, universe, civ, pending)
+    _maybe_migrate(session, universe, civ, pending)
     _maybe_build(session, civ, pending, rng)
 
 
@@ -264,6 +272,57 @@ def _order_freighter(
     )
 
 
+def _maybe_migrate(
+    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
+) -> None:
+    """Move settlers from a full world to one with room.
+
+    The capital opens near capacity and barely grows, so its people are a
+    *reservoir* rather than a surplus that keeps accumulating. A young colony
+    with headroom is where they are worth more, and shipping them there is the
+    difference between a colony that matures in weeks and one that takes months
+    compounding from a landing party.
+
+    Only one convoy at a time, and only where there is real room to fill --
+    dumping people faster than a colony can build for them just spreads its
+    industry thinner.
+    """
+    if pending.get(IntentKind.MIGRATE.value):
+        return
+    if any(
+        intent.kind == IntentKind.MIGRATE.value
+        for intent in queries.active_intents(session, universe.id, IntentKind.MIGRATE.value)
+        if intent.civ_id == civ.id
+    ):
+        return
+
+    colonies = queries.colonies_of(session, civ.id)
+    if len(colonies) < 2:
+        return
+
+    source = max(colonies, key=lambda c: c.population)
+    if source.population < MIGRATION_RESERVE:
+        return
+
+    # The colony with the most unused room, as a fraction of what it could hold.
+    def headroom(colony: Colony) -> float:
+        ceiling = capacity(colony.world, colony.infrastructure, colony.world.habitability)
+        return max(0.0, ceiling - colony.population)
+
+    target = max((c for c in colonies if c.id != source.id), key=headroom, default=None)
+    if target is None or headroom(target) < MIGRATION_BATCH:
+        return
+
+    fleet = _idle_freighter(session, civ, hold=MIGRATION_BATCH * TONNES_PER_SETTLER)
+    if fleet is None:
+        return
+
+    people = min(MIGRATION_BATCH, headroom(target), source.population - MIGRATION_RESERVE)
+    if people <= 0:
+        return
+    intents.migrate(session, civ, fleet.id, source.id, target.id, people)
+
+
 def _all_routes(session: Session, universe: Universe, civ: Civ) -> list[Intent]:
     return [
         intent
@@ -274,7 +333,7 @@ def _all_routes(session: Session, universe: Universe, civ: Civ) -> list[Intent]:
     ]
 
 
-def _idle_freighter(session: Session, civ: Civ) -> Fleet | None:
+def _idle_freighter(session: Session, civ: Civ, hold: float | None = None) -> Fleet | None:
     """A ship with a *useful* hold and nothing better to do.
 
     "Has any hold at all" is not the test: every warship carries forty tonnes
@@ -294,7 +353,7 @@ def _idle_freighter(session: Session, civ: Civ) -> Fleet | None:
             )
         )
     }
-    wanted = sum(ROUTE_MANIFEST.values())
+    wanted = sum(ROUTE_MANIFEST.values()) if hold is None else hold
     for fleet in session.scalars(
         select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
     ):

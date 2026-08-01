@@ -122,8 +122,11 @@ def test_a_homeworld_is_already_full():
     ever loosens, the capital becomes a thing you develop instead of a thing you
     launch from, and the game stops being about expansion.
     """
+    # Hourly ticks: this measures four *weeks*, and at five-minute resolution
+    # that would be eight thousand ticks to say something the cadence cannot
+    # affect. Pace-invariance is proven above, so the coarse clock is free.
     engine = create_engine_for("sqlite://")
-    universe_id = new_universe(engine, seed=7788, civs=("Terrans",))
+    universe_id = new_universe(engine, seed=7788, civs=("Terrans",), seconds_per_tick=3600)
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
@@ -135,7 +138,7 @@ def test_a_homeworld_is_already_full():
         colony_id = colony.id
 
     # Four weeks. A frontier colony would multiply many thousandfold in this.
-    run_ticks(engine, universe_id, 672)
+    run_ticks(engine, universe_id, 672)  # hourly
 
     with open_session(engine) as session:
         grown = session.get(Colony, colony_id).population
@@ -173,7 +176,7 @@ def test_nothing_artificial_slows_a_wide_empire():
     )
 
     engine = create_engine_for("sqlite://")
-    universe_id = new_universe(engine, seed=7789, civs=("Terrans",))
+    universe_id = new_universe(engine, seed=7789, civs=("Terrans",), seconds_per_tick=3600)
 
     with open_session(engine) as session:
         civ = civ_by_name(session, universe_id, "Terrans")
@@ -182,7 +185,7 @@ def test_nothing_artificial_slows_a_wide_empire():
         twins = [_twin_of(session, civ, home) for _ in range(3)]
         ids = (home.id, [t.id for t in twins])
 
-    run_ticks(engine, universe_id, 24)
+    run_ticks(engine, universe_id, 24)  # hourly
 
     with open_session(engine) as session:
         home_id, twin_ids = ids

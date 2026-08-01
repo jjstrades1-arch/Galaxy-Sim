@@ -8,6 +8,7 @@ from galaxysim.engine.resolvers import (
     movement,
     production,
     research,
+    terraform,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "production",
     "research",
     "colonization",
+    "terraform",
 ]

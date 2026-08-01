@@ -76,11 +76,30 @@ def total_stockpile(session: Session, civ_id: int) -> dict[str, float]:
 def nearest_colony(session: Session, civ_id: int, position: Vec3) -> Colony | None:
     """The civ's colony closest to ``position``, or None if it holds none.
 
-    Used to decide which stockpile pays for a fleet in the field. Ties break on
-    colony id so two equidistant colonies always resolve the same way -- an
-    arbitrary-but-fixed rule, which is what determinism needs.
+    Ties break on colony id so two equidistant colonies always resolve the same
+    way -- an arbitrary-but-fixed rule, which is what determinism needs.
     """
     colonies = colonies_of(session, civ_id)
     if not colonies:
         return None
     return min(colonies, key=lambda c: (distance(position, c.world.system.position), c.id))
+
+
+def colonies_by_distance(
+    session: Session, civ_id: int, position: Vec3, within_ly: float | None = None
+) -> list[Colony]:
+    """The civ's colonies, nearest first, optionally inside a radius.
+
+    Used to decide which stockpiles supply a fleet in the field. Nearest *that
+    can actually pay* is the right rule rather than nearest outright: a fleet
+    parked over a two-week-old outpost is not unsupplied because that outpost
+    has no fuel, it is supplied from the world one jump behind it, which is how
+    logistics works.
+    """
+    colonies = sorted(
+        colonies_of(session, civ_id),
+        key=lambda c: (distance(position, c.world.system.position), c.id),
+    )
+    if within_ly is None:
+        return colonies
+    return [c for c in colonies if distance(position, c.world.system.position) <= within_ly]

@@ -63,6 +63,7 @@ class IntentKind(str, enum.Enum):
     TRANSFER_CARGO = "transfer_cargo"
     SUPPLY_ROUTE = "supply_route"
     MIGRATE = "migrate"
+    TERRAFORM = "terraform"
     ATTACK = "attack"
     RESEARCH = "research"
 

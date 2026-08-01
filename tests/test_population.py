@@ -402,3 +402,131 @@ def test_magnitudes_are_readable():
     assert format_count(6_150_000) == "6.15M"
     assert format_count(50_000) == "50.0k"
     assert format_count(27) == "27"
+
+
+# --- what the AI does with all this ------------------------------------------
+
+
+def test_the_ai_ships_settlers_when_there_is_somewhere_to_put_them(engine):
+    """The AI uses the same orders a player does, including convoys.
+
+    Worth stating what this does *not* prove: that the AI migrates in an
+    ordinary game. It mostly cannot, because every world it can reach caps at
+    its habitat ceiling and fills to it on its own — there is nowhere for
+    settlers to go until terraforming raises a ceiling. This checks the AI
+    reaches for the order when the room exists, so that terraforming turns it on
+    rather than requiring new AI code.
+    """
+    from galaxysim.ai import simple
+
+    universe_id = new_universe(engine, seed=4141, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        civ.is_ai = True
+        home = home_colony(session, civ)
+
+        # A second world with genuine room: habitable, and nearly empty.
+        world = next(
+            w for w in session.scalars(select(World).order_by(World.id)) if w.colony is None
+        )
+        world.habitability = 0.8
+        world.carrying_capacity = 5.0e9
+        make_farmable(world)
+        give_deposits(world, iron=0.02, water_ice=0.02)
+        roomy = Colony(
+            world_id=world.id,
+            civ_id=civ.id,
+            name="Roomy",
+            population=100_000.0,
+            infrastructure=1.0,
+            founded_tick=0,
+            stockpile=rich_stockpile(),
+            labor=balanced_allocation(),
+        )
+        session.add(roomy)
+        session.flush()
+        feed(roomy)
+
+        # And a hull big enough to carry a convoy.
+        session.add(
+            Fleet(
+                universe_id=home.civ.universe_id,
+                civ_id=civ.id,
+                name="Hauler",
+                strength=0.5,
+                speed_ly_per_hour=1.0,
+                cargo={},
+                cargo_capacity=simple.MIGRATION_BATCH * simple.TONNES_PER_SETTLER,
+                x=home.world.system.x,
+                y=home.world.system.y,
+                z=home.world.system.z,
+            )
+        )
+        session.flush()
+        universe = home.civ.universe
+        simple.take_turn(session, universe, civ)
+
+        order = session.scalar(
+            select(intents.Intent).where(intents.Intent.kind == "migrate")
+        )
+        assert order is not None, "the AI should reach for a convoy when there is room"
+        assert order.payload["dest_colony_id"] == roomy.id
+        assert order.payload["people"] > 0
+
+
+def test_a_fleet_draws_on_whatever_its_civ_has_nearby(engine):
+    """Upkeep is a question about the neighbourhood, not the nearest rock.
+
+    A fleet parked over a two-week-old outpost is not unsupplied because that
+    outpost has no fuel — it is supplied from the developed world one jump
+    behind it. Billing only the closest colony meant a frontier fleet bled
+    continuously with a full warehouse four light-years away.
+    """
+    from galaxysim.materials import FUEL
+
+    universe_id = new_universe(engine, seed=4242, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        home = home_colony(session, civ)
+        home.management_mode = "manual"
+
+        # An empty outpost, closer to the fleet than the capital is.
+        world = next(
+            w for w in session.scalars(select(World).order_by(World.id)) if w.colony is None
+        )
+        give_deposits(world)
+        broke = Colony(
+            world_id=world.id,
+            civ_id=civ.id,
+            name="Broke",
+            population=50_000.0,
+            infrastructure=1.0,
+            founded_tick=0,
+            stockpile={},
+            labor=balanced_allocation(),
+        )
+        broke.management_mode = "manual"
+        session.add(broke)
+        session.flush()
+        feed(broke)
+
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        fleet.x, fleet.y, fleet.z = (
+            world.system.x,
+            world.system.y,
+            world.system.z,
+        )
+        fleet_id, strength_before = fleet.id, fleet.strength
+        home.stockpile[FUEL] = 1e9
+
+    run_ticks(engine, universe_id, 48)
+
+    with open_session(engine) as session:
+        assert session.get(Fleet, fleet_id).strength == pytest.approx(strength_before), (
+            "the capital's fuel should have covered it"
+        )
+        assert not session.scalars(
+            select(Event).where(Event.kind == "upkeep_shortfall")
+        ).all(), "and nothing should have been logged as short"

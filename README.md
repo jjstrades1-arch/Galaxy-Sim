@@ -186,6 +186,51 @@ Twelve colonies produce what twelve colonies produce. What slows a large empire
 is real: distance, supply lines that have to be defended, worlds that cost more
 to hold than they yield.
 
+## Terraforming: what the surplus is for
+
+Everything the economy produces eventually piles up. A developed world mines
+faster than it refines, refines faster than it builds, and once its industries
+are deep the next level costs more than it returns. Terraforming is the sink at
+the end of that chain, and the only one that pays back in something other than
+more of the same.
+
+**A project changes the planet's real numbers.** Magnetic shields, atmosphere
+processors, greenhouse seeding, orbital shades, cometary redirection, scrubbing,
+ecosystem seeding, oxygenation — each rewrites the stored survey, and then
+habitability, breathability, capacity and agricultural quality are re-derived by
+exactly the functions that derived them at generation. There is no
+terraforming-specific habitability path, so a half-terraformed world reads like
+a world that is naturally halfway there.
+
+**The order falls out of physics, not a tech tree.** Each project states the
+physical fact it needs — a field to hold air down, air to work on, liquid water
+to seed life into — and the failure tells you which is missing. Consequences
+nobody wrote down come free: thickening the air of a hot world makes it *hotter*,
+because greenhouse forcing has always scaled with pressure.
+
+Running the sequence on a cold rock:
+
+```
+Qiomdri V           hab 0.000  0.35 bar   221 K            capacity 0
+  Magnetic Shield   hab 0.000  0.35 bar   221 K            capacity 0
+  Atmosphere x3     hab 0.000  1.10 bar   243 K            capacity 0
+  Greenhouse x3     hab 0.094  1.10 bar   297 K            capacity 1.07B
+  Cometary          hab 0.189  1.10 bar   297 K  liquid    capacity 2.61B
+  Ecosystem         hab 0.295  1.10 bar   297 K  complex   capacity 4.30B
+  Oxygenation x2    hab 1.000  1.26 bar   297 K  BREATHABLE capacity 16.15B
+```
+
+That is the outpost-to-world transition: a dead rock capped at what its habitats
+hold becomes a world of sixteen billion. It is the only thing in the game that
+produces a four-order-of-magnitude change, and it is why reshaping a planet is
+worth a civilization's entire surplus.
+
+**It requires trade.** Costs are hundreds of megatonnes, and in practice the
+binding constraint is not ore but *electronics* — the one refining chain with a
+single route, needing copper, rare earths and silicon together. A single-colony
+civ six weeks in has billions of tonnes of ceramics and zero electronics. That
+is the materials economy doing what it was built to do.
+
 ## The colony
 
 A colony is a place you run, not a number that goes up.
@@ -319,6 +364,7 @@ galaxysim/
   model/       SQLAlchemy entities (SQLite for solo, Postgres for shared)
   worldgen/    stars, planetary physics, geology, biospheres, surveys
   colony/      labour sectors, industries, population, agriculture, expeditions
+  terraform/   project catalogue, and applying one back into a planet
   engine/      rates, intent queue, tick pipeline, resolvers
   ai/          AI civs, driving the same intent API a player uses
   flavor/      name generation

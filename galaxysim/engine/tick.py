@@ -41,6 +41,7 @@ from galaxysim.engine.resolvers import (
     movement,
     production,
     research,
+    terraform,
 )
 from galaxysim.model.base import open_session
 from galaxysim.model.entities import Universe
@@ -53,6 +54,10 @@ PIPELINE = (
     ("governor", governor.resolve),
     ("production", production.resolve),
     ("research", research.resolve),
+    # After production, so a project draws on the industry produced this tick;
+    # before colonization, so a world finished this tick is settled as the world
+    # it has become rather than the one it was.
+    ("terraform", terraform.resolve),
     ("colonization", colonization.resolve),
 )
 

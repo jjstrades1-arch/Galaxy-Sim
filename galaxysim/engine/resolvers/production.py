@@ -90,6 +90,13 @@ from galaxysim.worldgen.serialize import (
 )
 
 
+#: How far a colony's warehouses can sustain a fleet, in light-years. Inside
+#: this a fleet draws on whatever its civ has nearby; outside it there is
+#: nothing to draw on and ships start deserting. This is the number that prices
+#: force projection -- deep strikes cost, and they cost because of *distance*.
+SUPPLY_RANGE_LY = 25.0
+
+
 def resolve(ctx: TickContext) -> None:
     for civ in queries.civs(ctx.session, ctx.universe.id):
         _produce(ctx, civ)
@@ -640,17 +647,24 @@ def industry_output(ctx: TickContext, colony: Colony) -> float:
 
 
 def _charge_fleet_upkeep(ctx: TickContext, civ: Civ) -> None:
-    """Bill each fleet to the nearest colony that could plausibly supply it.
+    """Bill each fleet to the colonies near enough to supply it.
 
     A fleet you cannot pay for does not simply persist for free: unpaid ships
-    desert, scaled to how badly short the supplying colony is. That is what makes
-    fleet size a standing economic commitment rather than a one-time purchase.
+    desert, scaled to how badly short its supply was. That is what makes fleet
+    size a standing economic commitment rather than a one-time purchase.
 
-    Billing the *nearest* colony rather than a civ-wide pot is what gives this
-    teeth now that matter is local. A fleet parked over a rich core world is
-    cheap to keep; the same fleet at the far end of the frontier draws on
-    whatever that outpost happens to have, so projecting force far from home
-    means feeding it out there.
+    Billing *local* stockpiles rather than a civ-wide pot is what gives this
+    teeth now that matter is local. But local means "the worlds within reach",
+    not "the single closest world": a fleet parked over a two-week-old outpost
+    is not unsupplied because that outpost has no fuel, it is supplied from the
+    developed world one jump behind it. Charging only the nearest colony meant a
+    frontier fleet bled continuously while a full warehouse sat four light-years
+    away, and filled the log with shortfalls that meant nothing.
+
+    So the bill walks outward from the fleet, taking what each colony has until
+    it is paid. Past :data:`SUPPLY_RANGE_LY` there is nothing to draw on, and
+    *that* is what makes projecting force far from home expensive -- distance,
+    rather than an accident of which rock the fleet happens to be sitting over.
     """
     fleets = [f for f in queries.fleets(ctx.session, ctx.universe.id) if f.civ_id == civ.id]
     if not fleets:
@@ -660,20 +674,26 @@ def _charge_fleet_upkeep(ctx: TickContext, civ: Civ) -> None:
         if fleet.strength <= 0:
             continue
 
-        supplier = queries.nearest_colony(ctx.session, civ.id, fleet.position)
-        if supplier is None:
-            shortfall = 1.0  # no colonies at all: nothing can sustain it
-        else:
-            shortfall = 0.0
-            for resource, per_strength in sorted(FLEET_UPKEEP_PER_STRENGTH.items()):
-                owed = ctx.per_tick(per_strength * fleet.strength)
+        suppliers = queries.colonies_by_distance(
+            ctx.session, civ.id, fleet.position, within_ly=SUPPLY_RANGE_LY
+        )
+        shortfall = 0.0
+        for resource, per_strength in sorted(FLEET_UPKEEP_PER_STRENGTH.items()):
+            owed = ctx.per_tick(per_strength * fleet.strength)
+            if owed <= 0:
+                continue
+            outstanding = owed
+            for supplier in suppliers:
+                if outstanding <= 1e-12:
+                    break
                 available = supplier.stockpile.get(resource, 0.0)
-                paid = min(owed, available)
-                supplier.stockpile[resource] = available - paid
-                if owed > 0:
-                    shortfall = max(shortfall, (owed - paid) / owed)
+                paid = min(outstanding, available)
+                if paid > 0:
+                    supplier.stockpile[resource] = available - paid
+                    outstanding -= paid
+            shortfall = max(shortfall, outstanding / owed)
 
-        if shortfall <= 0:
+        if shortfall <= 1e-9:
             continue
 
         attrition = shortfall * ctx.per_tick(ctx.rates.unpaid_fleet_attrition_per_hour)
@@ -682,7 +702,11 @@ def _charge_fleet_upkeep(ctx: TickContext, civ: Civ) -> None:
         ctx.log(
             "upkeep_shortfall",
             f"{fleet.name} went {shortfall * 100:.0f}% unsupplied"
-            + (f" from {supplier.name}" if supplier else " (no colony in range)")
+            + (
+                f" from {len(suppliers)} colonies in range"
+                if suppliers
+                else f" (nothing within {SUPPLY_RANGE_LY:.0f} ly)"
+            )
             + "; ships are deserting",
             civ_id=civ.id,
             payload={"fleet_id": fleet.id, "shortfall": round(shortfall, 4)},

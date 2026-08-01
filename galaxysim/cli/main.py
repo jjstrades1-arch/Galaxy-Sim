@@ -44,11 +44,16 @@ from galaxysim.materials import (
     MATERIALS,
     RECIPES,
     WATER,
+    can_afford,
     extraction_rates,
     material,
     missing_inputs,
 )
-from galaxysim.materials.refining import DEFAULT_PLAN, plan_for
+from galaxysim.materials.refining import DEFAULT_PLAN, plan_for, shortfalls
+from galaxysim.terraform.apply import apply_project
+from galaxysim.terraform.projects import PROJECTS
+from galaxysim.terraform.projects import project as project_spec
+from galaxysim.engine.resolvers.terraform import unmet_requirements
 from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
 from galaxysim.engine.rates import DEFAULT_RATES, Cadence
@@ -635,6 +640,90 @@ def migrate(
         console.print(
             f"[dim]{target.name} holds {format_count(target.population)} of "
             f"{format_count(headroom)}.[/dim]"
+        )
+
+
+@app.command()
+def terraform(
+    colony_id: int = typer.Argument(..., help="Colony whose world to reshape."),
+    project: str = typer.Argument(None, help="Project to run. Omit to list what is possible."),
+) -> None:
+    """Reshape the planet a colony sits on.
+
+    The only order that changes a world rather than what is on it, and the only
+    sink big enough for a mature civilization's surplus. A dead world caps at
+    whatever its habitats hold; lift habitability past the liveable line and the
+    ceiling becomes the real land-and-density figure instead. That is four
+    orders of magnitude, and it is what all the ore is ultimately for.
+    """
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        colony = session.get(Colony, colony_id)
+        if colony is None or colony.civ_id != civ.id:
+            console.print("[red]No such colony.[/red]")
+            raise typer.Exit(1)
+
+        survey = survey_from_json(colony.world.survey)
+
+        if project is None:
+            console.print(
+                f"[bold]{colony.world.name}[/bold] - habitability "
+                f"{survey.habitability:.2f}, capacity "
+                f"{format_count(colony.world.carrying_capacity)}\n"
+            )
+            table = Table("project", "state", "cost", "work")
+            for spec in PROJECTS.values():
+                unmet = unmet_requirements(survey, spec)
+                if unmet:
+                    state = f"[yellow]needs {unmet[0]}[/]"
+                elif not can_afford(colony.stockpile, spec.cost):
+                    short = ", ".join(
+                        MATERIALS[k].name for k in sorted(shortfalls(colony.stockpile, spec.cost))
+                    )
+                    state = f"[yellow]short of {short}[/]"
+                else:
+                    state = "[green]ready[/green]"
+                table.add_row(
+                    f"{spec.name}\n[dim]{spec.key}[/dim]",
+                    state,
+                    "\n".join(
+                        f"{format_count(v)}t {MATERIALS[k].name}"
+                        for k, v in sorted(spec.cost.items())
+                    ),
+                    format_count(spec.work),
+                )
+            console.print(table)
+            console.print(
+                "[dim]Order matters, and it is physics rather than a tech tree: "
+                "there is no point releasing an atmosphere a world cannot hold "
+                "down, or seeding life on one with no liquid water.[/dim]"
+            )
+            return
+
+        try:
+            spec = project_spec(project)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from None
+
+        unmet = unmet_requirements(survey, spec)
+        if unmet:
+            console.print(
+                f"[red]{colony.world.name} has no {unmet[0]}.[/red] "
+                "That has to be true before this project can start."
+            )
+            raise typer.Exit(1)
+
+        intents.terraform(session, civ, colony_id, project)
+        preview = apply_project(survey, spec)
+        console.print(f"[green]Ordered[/green] {spec.name} on {colony.world.name}.")
+        console.print(
+            f"[dim]When it finishes: habitability {survey.habitability:.2f} -> "
+            f"{preview.habitability:.2f}, capacity "
+            f"{format_count(colony.world.carrying_capacity)} -> "
+            f"{format_count(preview.carrying_capacity)}.[/dim]"
         )
 
 

@@ -250,6 +250,29 @@ def migrate(
     )
 
 
+def terraform(session: Session, civ: Civ, colony_id: int, project: str) -> Intent:
+    """Begin reshaping the planet a colony sits on.
+
+    The only order that changes a *world* rather than what is on it, and the
+    only sink big enough to absorb a mature civilization's surplus. What it buys
+    is the outpost-to-world transition: a dead rock caps at what its habitats
+    hold, and lifting habitability past the liveable line makes the ceiling the
+    real ``land x density x habitability`` figure instead -- four orders of
+    magnitude, from a sequence of projects.
+
+    See :mod:`galaxysim.terraform.projects`.
+    """
+    from galaxysim.terraform.projects import project as lookup
+
+    lookup(project)  # raises helpfully on a typo, before anything is queued
+    return _queue(
+        session,
+        civ,
+        IntentKind.TERRAFORM,
+        {"colony_id": int(colony_id), "project": str(project)},
+    )
+
+
 def attack(session: Session, civ: Civ, target_civ_id: int) -> Intent:
     """Declare standing hostility toward another civilization.
 
