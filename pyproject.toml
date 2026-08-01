@@ -1,0 +1,27 @@
+[project]
+name = "galaxysim"
+version = "0.1.0"
+description = "Async, persistent, text-based multiplayer civilization/universe simulation"
+requires-python = ">=3.11"
+dependencies = [
+    "SQLAlchemy>=2.0",
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+postgres = ["psycopg[binary]>=3.1"]
+
+[project.scripts]
+galaxysim = "galaxysim.cli.main:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["galaxysim*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
