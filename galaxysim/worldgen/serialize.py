@@ -83,6 +83,10 @@ def promoted_fields(survey: Survey) -> dict:
         "surface_water": bool(survey.hydrosphere.liquid_water),
         "farm_quality": quality(survey),
         "needs_fertiliser": regime(survey) != "open farmland",
+        # What this world can generate power from, which is a fact about where
+        # it orbits and what its interior is doing.
+        "stellar_flux": round(survey.star.flux_at(survey.orbit.semi_major_axis_au), 6),
+        "tectonic_activity": round(survey.body.tectonic_activity, 4),
     }
 
 

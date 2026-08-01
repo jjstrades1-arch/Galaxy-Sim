@@ -42,6 +42,7 @@ from galaxysim.engine.resolvers.production import (
     agricultural_quality,
     effective_habitability,
     effects_for,
+    power_satisfaction,
     productivity_of,
 )
 from galaxysim.model.entities import Colony, IntentKind
@@ -89,6 +90,27 @@ _BUILD_ORDER: dict[str, tuple[str, ...]] = {
     SURVIVAL: ("hydroponics", "dome", "granary", "mine", "spaceport"),
 }
 
+#: Generating industries, in the order a governor tries them. Fuelled plants
+#: first because they work anywhere; the free routes only pay off where the star
+#: is close or the interior is live, and the governor finds that out by looking
+#: at what the plant would actually produce rather than by being told.
+_POWER_ORDER: tuple[str, ...] = (
+    "fusion_plant",
+    "fission_plant",
+    "geothermal_plant",
+    "solar_array",
+)
+
+#: Power satisfaction below which a governor stops whatever its policy wanted
+#: and builds a power station instead.
+#:
+#: Not a preference. Power multiplies *everything* -- mining, refining,
+#: construction, shipbuilding, terraforming all come out of pools it scales --
+#: so a colony at seventy percent power is losing thirty percent of every other
+#: thing it does, and no amount of the mine its policy asked for is worth as
+#: much as the reactor that would un-throttle the mine it already has.
+POWER_THRESHOLD = 0.95
+
 #: Below this effective habitability a governor prioritises staying alive
 #: regardless of the policy it was given.
 #:
@@ -110,12 +132,15 @@ def resolve(ctx: TickContext) -> None:
     # meant re-reading the whole intent table and the whole colony table once
     # per civ, which is the same mistake production was making and costs the
     # same thing: a tick that gets slower as the game gets bigger.
-    pending_structures = {
-        intent.payload.get("colony_id")
-        for intent in queries.active_intents(
-            ctx.session, ctx.universe.id, IntentKind.BUILD_STRUCTURE.value
-        )
-    }
+    pending_structures: dict[int, set[str]] = {}
+    for intent in queries.active_intents(
+        ctx.session, ctx.universe.id, IntentKind.BUILD_STRUCTURE.value
+    ):
+        colony_id = intent.payload.get("colony_id")
+        if colony_id is not None:
+            pending_structures.setdefault(colony_id, set()).add(
+                str(intent.payload.get("kind", ""))
+            )
     colonies_by_civ = queries.colonies_by_civ(ctx.session, ctx.universe.id)
 
     for civ in queries.civs(ctx.session, ctx.universe.id):
@@ -123,8 +148,7 @@ def resolve(ctx: TickContext) -> None:
             if not colony.is_governed or colony.population <= 0:
                 continue
             colony.labor = _labor_for(ctx, colony)
-            if colony.id not in pending_structures:
-                _maybe_build(ctx, civ, colony)
+            _maybe_build(ctx, civ, colony, pending_structures.get(colony.id, set()))
 
 
 def _labor_for(ctx: TickContext, colony: Colony) -> dict[str, float]:
@@ -185,7 +209,29 @@ def _labor_for(ctx: TickContext, colony: Colony) -> dict[str, float]:
     return normalize(allocation)
 
 
-def _maybe_build(ctx: TickContext, civ, colony: Colony) -> None:
+def _worthwhile_power(colony: Colony) -> tuple[str, ...]:
+    """Power stations that would actually generate something on this world.
+
+    A solar array on a rock in the outer system of a red dwarf is a very large
+    and very expensive nothing, and a geothermal tap on a dead world is a hole.
+    Rather than encode which worlds get which, ask what the plant would produce
+    here and drop the ones whose answer is approximately zero -- so the choice
+    falls out of the planet, and a governor on a volcanic world reaches for the
+    ground heat without anyone telling it that volcanic worlds are hot.
+    """
+    usable = []
+    for kind in _POWER_ORDER:
+        if kind == "solar_array" and colony.world.stellar_flux < 0.15:
+            continue
+        if kind == "geothermal_plant" and colony.world.tectonic_activity < 0.15:
+            continue
+        usable.append(kind)
+    return tuple(usable)
+
+
+def _maybe_build(
+    ctx: TickContext, civ, colony: Colony, pending_kinds: set[str]
+) -> None:
     """Queue the next thing this colony's policy wants, if it can pay.
 
     Industries are deepened as readily as they are started: a governor walks its
@@ -197,6 +243,14 @@ def _maybe_build(ctx: TickContext, civ, colony: Colony) -> None:
     One at a time: industry capacity is split across active projects, so queueing
     everything at once would leave a colony with five half-built things and no
     finished ones.
+
+    **Power is the one exception**, and it has to be. A developed capital's next
+    mine is months of work, and while that order stands the colony can queue
+    nothing else -- so a governor that hit a brownout mid-project would sit at
+    half output until the project it was already throttled on finished. Since
+    power multiplies the very thing it is waiting for, a shortfall gets a
+    concurrent slot. One slot: two reactors at once would split the industry
+    that is short in the first place.
     """
     if levels_in_use(colony.buildings) >= max_total_levels(
         colony.population, colony.world.land_area_km2
@@ -207,11 +261,23 @@ def _maybe_build(ctx: TickContext, civ, colony: Colony) -> None:
 
     policy = colony.governor_policy if colony.governor_policy in POLICIES else BALANCED
     existing = {building.kind: building.level for building in colony.buildings}
+    browning_out = power_satisfaction(ctx, colony) < POWER_THRESHOLD
 
-    # A hostile world builds its way out first, whatever policy it was given.
-    order = _BUILD_ORDER[policy]
-    if effective_habitability(colony, effects_for(ctx, colony)) < HOSTILE_THRESHOLD:
-        order = _BUILD_ORDER[SURVIVAL] + order
+    if browning_out and not any(
+        BUILDING_TYPES_BY_KIND[kind].generation
+        for kind in pending_kinds
+        if kind in BUILDING_TYPES_BY_KIND
+    ):
+        # Nothing else this colony could queue is worth as much as ending the
+        # brownout, so this jumps the queue rather than joining it.
+        order = _worthwhile_power(colony)
+    elif pending_kinds:
+        return  # already building something, and the lights are on
+    else:
+        # A hostile world builds its way out first, whatever policy it was given.
+        order = _BUILD_ORDER[policy]
+        if effective_habitability(colony, effects_for(ctx, colony)) < HOSTILE_THRESHOLD:
+            order = _BUILD_ORDER[SURVIVAL] + order
 
     for kind in order:
         spec = BUILDING_TYPES_BY_KIND[kind]

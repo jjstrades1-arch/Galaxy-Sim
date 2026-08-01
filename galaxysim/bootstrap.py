@@ -60,6 +60,14 @@ STARTING_FLEET_STRENGTH = 3.0
 #: Industries the capital opens with, already finished. A homeworld is a place
 #: with history, not a fresh landing -- and the shipyard in particular is
 #: load-bearing, since without one a civ could never build its first ship.
+#:
+#: The two power stations are load-bearing in the same way. A species with
+#: lightspeed travel has a grid, and without one here every capital in the game
+#: would open throttled to a third of its output by
+#: :mod:`galaxysim.colony.energy` -- which would be an accidental tax on the
+#: entire opening rather than a mechanic. Both routes, because which one a world
+#: can actually use depends on its star and its interior, and a capital should
+#: not be gambling its industrial base on where it happened to be generated.
 STARTING_BUILDINGS: tuple[str, ...] = (
     "shipyard",
     "spaceport",
@@ -68,11 +76,13 @@ STARTING_BUILDINGS: tuple[str, ...] = (
     "laboratory",
     "refinery",
     "granary",
+    "fission_plant",
+    "solar_array",
 )
 
 #: How much of what the homeworld could support is already built. A
 #: civilization of billions has been industrialising for a long time; opening it
-#: with seven level-one buildings would describe a mining camp, not a capital.
+#: with nine level-one buildings would describe a mining camp, not a capital.
 #: Short of full on purpose, so there is still somewhere to put a surplus.
 STARTING_DEVELOPMENT = 0.55
 

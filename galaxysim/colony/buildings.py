@@ -89,6 +89,12 @@ class BuildingType:
     grants: tuple[str, ...] = ()
     #: Cargo tonnes per hour this colony can load or unload.
     cargo_throughput: float = 0.0
+    #: Which power route this industry generates on, if any -- one of
+    #: ``solar``, ``fission``, ``fusion`` or ``geothermal``. Each is scaled by a
+    #: different fact about the world, so what a colony can power itself with is
+    #: decided by where it is rather than by what it can afford. See
+    #: :mod:`galaxysim.colony.energy`.
+    generation: str = ""
 
 
 BUILDING_TYPES: tuple[BuildingType, ...] = (
@@ -175,6 +181,47 @@ BUILDING_TYPES: tuple[BuildingType, ...] = (
         work=114,
         grants=(CARGO_HANDLING,),
         cargo_throughput=120.0,
+    ),
+    BuildingType(
+        kind="solar_array",
+        name="Solar Array",
+        description="Square kilometres of collectors. Free to run and worth "
+        "nothing where the sun is a bright star among many -- three quarters of "
+        "the galaxy's stars are red dwarfs, and their worlds are dark.",
+        cost={SILICON: 60_000, STEEL: 20_000, ELECTRONICS: 18_000},
+        work=66,
+        generation="solar",
+    ),
+    BuildingType(
+        kind="fission_plant",
+        name="Fission Plant",
+        description="Pressurised reactors. Burns fissiles, which most crusts "
+        "can supply something toward, so this is the plant a colony builds when "
+        "it has no sun and no fusion fuel.",
+        cost={STEEL: 55_000, CERAMICS: 30_000, ELECTRONICS: 25_000},
+        work=97,
+        generation="fission",
+    ),
+    BuildingType(
+        kind="fusion_plant",
+        name="Fusion Plant",
+        description="Magnetic confinement, running on deuterium or helium-3. "
+        "Enormous output for almost no fuel mass, which is what makes a barren "
+        "regolith world with helium-3 in it worth crossing a frontier for.",
+        cost={ALLOYS: 70_000, ELECTRONICS: 55_000, CERAMICS: 35_000},
+        work=140,
+        generation="fusion",
+    ),
+    BuildingType(
+        kind="geothermal_plant",
+        name="Geothermal Tap",
+        description="Boreholes into a living interior. Costs nothing to run and "
+        "works only where the world is still hot -- which is also where the ore "
+        "is richest, so a volcanic world powers the mine that makes it worth "
+        "having.",
+        cost={STEEL: 45_000, CONSTRUCTION: 40_000, ALLOYS: 12_000},
+        work=88,
+        generation="geothermal",
     ),
     BuildingType(
         kind="granary",

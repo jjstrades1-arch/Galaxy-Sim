@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import math
 
+from galaxysim.colony import energy
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION, building_type
 from galaxysim.colony.industry import (
     cost_of_level,
@@ -75,7 +76,6 @@ from galaxysim.materials import (
     can_afford,
     deposit,
     draw,
-    extraction_rates,
     refine,
     spend,
 )
@@ -136,6 +136,10 @@ def _produce(
             colony.stockpile = stock
             continue
 
+        # Power before work, because power is what work runs on. Everything
+        # below reads the satisfaction this publishes.
+        _run_power(ctx, colony, stock, allocation, effects)
+
         # Farm, then eat. A colony's standard of living is how much of what its
         # people need it actually met this hour, and that is what decides
         # whether the population grows, stalls or falls.
@@ -174,6 +178,7 @@ def colony_effects(colony: Colony) -> "ColonyEffects":
     recycling = 0.0
     grants: set[str] = set()
     throughput = 0.0
+    generation: dict[str, float] = {}
 
     # Sorted by id: bonuses are additive so order does not change the sum, but
     # keeping iteration deterministic is a standing rule here.
@@ -194,6 +199,19 @@ def colony_effects(colony: Colony) -> "ColonyEffects":
         recycling += spec.life_support_recycling * scale
         grants.update(spec.grants)
         throughput += spec.cargo_throughput * scale
+        if spec.generation:
+            # **Linear in level, unlike everything else here.** The square-root
+            # curve above is right for a multiplier -- a level-100 mine is worth
+            # ten level-1 mines because it is raising a rate. Power is not a
+            # rate being raised, it is a quantity being produced, and ten
+            # reactors make ten reactors' worth of it.
+            #
+            # Diminishing returns still apply, because the *materials* for the
+            # next level stay quadratic. So a deep plant costs progressively
+            # more per unit of power without the physics having to pretend.
+            generation[spec.generation] = generation.get(spec.generation, 0.0) + max(
+                1, building.level
+            )
 
     return ColonyEffects(
         sector_bonus=sector_bonus,
@@ -205,6 +223,7 @@ def colony_effects(colony: Colony) -> "ColonyEffects":
         life_support_recycling=min(0.9, recycling),
         grants=frozenset(grants),
         cargo_throughput=throughput,
+        generation=generation,
     )
 
 
@@ -219,6 +238,7 @@ class ColonyEffects:
         "life_support_recycling",
         "grants",
         "cargo_throughput",
+        "generation",
     )
 
     def __init__(
@@ -230,6 +250,7 @@ class ColonyEffects:
         life_support_recycling: float,
         grants: frozenset[str],
         cargo_throughput: float,
+        generation: dict[str, float],
     ) -> None:
         self.sector_bonus = sector_bonus
         self.resource_bonus = resource_bonus
@@ -238,6 +259,7 @@ class ColonyEffects:
         self.life_support_recycling = life_support_recycling
         self.grants = grants
         self.cargo_throughput = cargo_throughput
+        self.generation = generation
 
     def sector(self, name: str) -> float:
         """Multiplier for a labor sector, 1.0 with no buildings."""
@@ -255,6 +277,91 @@ def effective_habitability(colony: Colony, effects: ColonyEffects) -> float:
     world from permanently expensive into merely awkward.
     """
     return min(1.0, colony.world.habitability + effects.habitability_offset)
+
+
+#: Cache key under which a colony's power satisfaction is published for the
+#: rest of the tick to read.
+def _power_key(colony_id: int) -> tuple[str, int]:
+    return ("power", colony_id)
+
+
+def power_satisfaction(ctx: TickContext, colony: Colony) -> float:
+    """How much of the power this colony wanted it actually had, 0.15 to 1.
+
+    Falls back to the stored column when this tick has not computed it yet,
+    which is the honest answer for the two callers that ask early: the governor
+    resolves before production, so what it can react to is last tick's brownout.
+    Once :func:`_run_power` has run, everything downstream reads the fresh
+    figure it published.
+    """
+    return ctx.cached_effects(
+        _power_key(colony.id), lambda: float(colony.power_satisfaction or 1.0)
+    )
+
+
+def _run_power(
+    ctx: TickContext,
+    colony: Colony,
+    stock: dict[str, float],
+    allocation: dict[str, float],
+    effects: ColonyEffects,
+) -> float:
+    """Generate, burn the fuel it took, and publish what the colony got.
+
+    The one quantity in the game that is a rate against a rate. A colony short
+    of power is throttled rather than killed: smelters run slow, mines run slow,
+    and it recovers the hour somebody delivers fuel. That is both what actually
+    happens and the only version that is not a trap, since a colony with no
+    power cannot mine the fuel to restart.
+
+    Free routes first -- sunlight and ground heat cost nothing and are burned
+    whether you like it or not -- then fuel is bought only for the shortfall. So
+    a world with good sun runs its fusion plants at idle and keeps its helium-3,
+    which is the right incentive and nobody had to write it.
+    """
+    hours = ctx.cadence.hours_per_tick
+    wanted = energy.demand(
+        industry_capacity(ctx, colony),
+        _extraction_capacity(ctx, colony, allocation, effects),
+        colony.population,
+        effective_habitability(colony, effects),
+    )
+    if wanted <= 0:
+        colony.power_satisfaction = 1.0
+        return ctx.remember(_power_key(colony.id), 1.0)
+
+    free = (
+        energy.baseline_output(colony.population) * hours
+        + energy.solar_output(
+            effects.generation.get("solar", 0.0), colony.world.stellar_flux
+        )
+        + energy.geothermal_output(
+            effects.generation.get("geothermal", 0.0), colony.world.tectonic_activity
+        )
+    )
+
+    shortfall = max(0.0, wanted - free)
+    fuelled = min(
+        shortfall,
+        energy.fuelled_capacity(
+            effects.generation.get("fission", 0.0), effects.generation.get("fusion", 0.0)
+        ),
+        energy.power_from_fuel_available(stock, hours),
+    )
+    for material, tonnes in energy.fuel_draw(fuelled, hours, stock).items():
+        stock[material] = max(0.0, stock.get(material, 0.0) - tonnes)
+
+    met = energy.satisfaction(free + fuelled, wanted)
+    colony.power_satisfaction = round(met, 4)
+    if met < 0.999:
+        ctx.log(
+            "power_shortfall",
+            f"{colony.name} is running at {met * 100:.0f}% power; "
+            "industry and extraction are throttled",
+            civ_id=colony.civ_id,
+            payload={"colony_id": colony.id, "satisfaction": round(met, 4)},
+        )
+    return ctx.remember(_power_key(colony.id), met)
 
 
 def _run_life_support(
@@ -490,11 +597,10 @@ def _extract(
         # settle it only for where it is rather than what it holds.
         return
 
-    worker_hours = ctx.per_tick(
-        ctx.rates.extraction_per_worker_per_hour
-        * workers
-        * productivity_of(ctx, colony)
-        * effects.sector(EXTRACTION)
+    # Draglines and ore processing run on electricity. A colony that cannot
+    # power them digs slower rather than not at all.
+    worker_hours = _extraction_worker_hours(ctx, colony, allocation, effects) * (
+        power_satisfaction(ctx, colony)
     )
 
     deposit(
@@ -504,6 +610,38 @@ def _extract(
             for material, rate in rates.items()
         },
     )
+
+
+def _extraction_worker_hours(
+    ctx: TickContext,
+    colony: Colony,
+    allocation: dict[str, float],
+    effects: ColonyEffects,
+) -> float:
+    """Effective worker-hours of mining this tick, before power is considered."""
+    workers = workers_in(colony.population, allocation, EXTRACTION)
+    if workers <= 0:
+        return 0.0
+    return ctx.per_tick(
+        ctx.rates.extraction_per_worker_per_hour
+        * workers
+        * productivity_of(ctx, colony)
+        * effects.sector(EXTRACTION)
+    )
+
+
+def _extraction_capacity(
+    ctx: TickContext,
+    colony: Colony,
+    allocation: dict[str, float],
+    effects: ColonyEffects,
+) -> float:
+    """Tonnes this colony could pull at full power. Drives its power demand."""
+    rates = mining_rates(ctx, colony)
+    if not rates:
+        return 0.0
+    hours = _extraction_worker_hours(ctx, colony, allocation, effects)
+    return sum(rate * hours * effects.resource(m) for m, rate in rates.items())
 
 
 def mining_rates(ctx: TickContext, colony: Colony) -> dict[str, float]:
@@ -650,12 +788,14 @@ def construction_output(ctx: TickContext, colony: Colony) -> float:
     return industry_output(ctx, colony) * (1.0 - ctx.rates.refining_share_of_industry)
 
 
-def industry_output(ctx: TickContext, colony: Colony) -> float:
-    """Total industry-work this colony produces this tick.
+def industry_capacity(ctx: TickContext, colony: Colony) -> float:
+    """Industry-work this colony could produce this tick with all the power it
+    wanted.
 
-    The currency of everything industrial: refining, buildings and ships are all
-    paid for out of it, so a colony with nobody in industry neither processes
-    nor finishes anything regardless of how rich the ground under it is.
+    Kept separate from :func:`industry_output` because power demand is computed
+    from it. Demand read off the *throttled* figure would fall as the brownout
+    deepened, and a shortage would quietly cure itself by shrinking the load
+    that caused it.
     """
     allocation = normalize(colony.labor)
     workers = workers_in(colony.population, allocation, INDUSTRY)
@@ -667,6 +807,21 @@ def industry_output(ctx: TickContext, colony: Colony) -> float:
         * productivity_of(ctx, colony)
         * effects_for(ctx, colony).sector(INDUSTRY)
     )
+
+
+def industry_output(ctx: TickContext, colony: Colony) -> float:
+    """Total industry-work this colony produces this tick.
+
+    The currency of everything industrial: refining, buildings and ships are all
+    paid for out of it, so a colony with nobody in industry neither processes
+    nor finishes anything regardless of how rich the ground under it is.
+
+    Smelting is where an industrial economy's energy actually goes, so a
+    brownout shows up here first and hardest -- and since refining,
+    construction, shipbuilding and terraforming are all paid out of this pool,
+    throttling it throttles all four at once.
+    """
+    return industry_capacity(ctx, colony) * power_satisfaction(ctx, colony)
 
 
 # ------------------------------------------------------------------- upkeep

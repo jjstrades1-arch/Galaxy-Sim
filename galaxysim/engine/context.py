@@ -47,6 +47,18 @@ class TickContext:
             self._colony_cache[key] = cached
         return cached
 
+    def remember(self, key, value):
+        """Record derived state that was computed as a side effect of doing it.
+
+        :meth:`cached_effects` is for state that can be recomputed on demand.
+        This is for state that cannot -- a colony's power satisfaction is worked
+        out while its generators are actually burning fuel, so it has to be
+        published once and read afterwards rather than recalculated by whoever
+        asks next.
+        """
+        self._colony_cache[key] = value
+        return value
+
     def invalidate_colony(self, colony_id: int) -> None:
         """Drop a colony's memo, after something changed what it derives from."""
         self._colony_cache.pop(colony_id, None)

@@ -22,6 +22,7 @@ from sqlalchemy import Engine, select
 
 from galaxysim.ai import take_all_turns
 from galaxysim.bootstrap import add_civ, create_universe
+from galaxysim.colony import energy
 from galaxysim.colony.buildings import BUILDING_TYPES, building_type
 from galaxysim.colony.industry import binding_limit, levels_in_use, max_total_levels
 from galaxysim.colony.population import capacity
@@ -554,6 +555,8 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
                 + (f" - about {hours / 24:.1f} days of air left" if hours is not None else "")
                 + "[/]"
             )
+
+        _print_power(colony, effects)
 
         allocation = normalize(colony.labor)
         table = Table("sector", "share", "workers", title="Labor")
@@ -1151,6 +1154,46 @@ def log(
 ) -> None:
     """Show what happened while you were away."""
     _print_log(_engine(), since=since, limit=limit)
+
+
+def _print_power(colony, effects) -> None:
+    """The grid: what this colony makes, from what, and whether it is enough.
+
+    Worth its own block rather than a number in the header, because a shortfall
+    is the single most consequential thing that can be wrong with a colony --
+    it multiplies mining, refining, construction, shipbuilding and terraforming
+    all at once -- and because *which* route a world can use is a fact about the
+    planet that a player should be able to see at a glance.
+    """
+    world = colony.world
+    routes = {
+        "solar": energy.solar_output(effects.generation.get("solar", 0.0), world.stellar_flux),
+        "geothermal": energy.geothermal_output(
+            effects.generation.get("geothermal", 0.0), world.tectonic_activity
+        ),
+    }
+    fuelled = energy.fuelled_capacity(
+        effects.generation.get("fission", 0.0), effects.generation.get("fusion", 0.0)
+    )
+
+    met = float(colony.power_satisfaction or 1.0)
+    colour = "green" if met > 0.95 else ("yellow" if met > 0.6 else "red")
+    parts = [f"{name} {format_count(output)}" for name, output in routes.items() if output > 0]
+    if fuelled > 0:
+        parts.append(f"fuelled capacity {format_count(fuelled)}")
+    if not parts:
+        parts.append("no generating plant")
+
+    console.print(
+        f"[{colour}]Power: {met:.0%} of demand met[/] - "
+        + ", ".join(parts)
+        + f" - baseline {format_count(energy.baseline_output(colony.population))}"
+    )
+    if met <= 0.95:
+        console.print(
+            "[dim]Industry and extraction are throttled by this. Build generating "
+            "plant, or ship in fuel for the plant you have.[/dim]"
+        )
 
 
 def _print_log(engine: Engine, *, since: int = 0, limit: int = 30) -> None:

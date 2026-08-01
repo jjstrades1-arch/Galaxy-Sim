@@ -62,6 +62,7 @@ def render(console: Console, survey: Survey, name: str, discovered_tick: int | N
     console.print(_climate_and_water(survey))
     console.print(_geology(survey))
     console.print(_biosphere(survey))
+    console.print(_power(survey))
     console.print(_satellites(survey))
     console.print(_conclusion(survey))
 
@@ -259,6 +260,45 @@ def _satellites(survey: Survey) -> Group:
     if survey.has_rings:
         parts.append("ring system")
     return _row("SATELLITES", Text(", ".join(parts) if parts else "none", style="dim"))
+
+
+def _power(survey: Survey) -> Group:
+    """What a colony here could keep its lights on with.
+
+    Two of the four routes are free and neither works everywhere: sunlight falls
+    off as the square of the distance, and ground heat only exists on a world
+    that is still alive. Where both fail, a colony runs on shipped fuel -- which
+    is worth knowing *before* you settle the place rather than after, since it
+    turns an industrial world into a permanent supply liability.
+    """
+    from galaxysim.colony import energy
+
+    flux = survey.star.flux_at(survey.orbit.semi_major_axis_au)
+    tectonics = survey.body.tectonic_activity
+
+    parts: list[str] = []
+    if flux >= energy.SOLAR_REFERENCE_FLUX:
+        parts.append(f"solar excellent ({flux:.1f}x Earth)")
+    elif flux >= 0.15:
+        parts.append(f"solar workable ({flux:.2f}x Earth)")
+    else:
+        parts.append(f"solar negligible ({flux:.3f}x Earth)")
+
+    if tectonics >= 0.5:
+        parts.append(f"geothermal strong (activity {tectonics:.2f})")
+    elif tectonics >= 0.15:
+        parts.append(f"geothermal weak (activity {tectonics:.2f})")
+    else:
+        parts.append("geothermally dead")
+
+    fuels = [
+        name
+        for key, name in (("uranium", "uranium"), ("deuterium", "deuterium"), ("helium3", "helium-3"))
+        if key in survey.deposits
+    ]
+    parts.append("fuel on site: " + (", ".join(fuels) if fuels else "none — must be shipped in"))
+
+    return _row("POWER", Text(" · ".join(parts), style="dim"))
 
 
 def _conclusion(survey: Survey) -> Panel:

@@ -256,6 +256,13 @@ class World(Base):
     farm_quality: Mapped[float] = mapped_column(Float, default=0.0)
     #: True where no native ecology does the soil chemistry for free.
     needs_fertiliser: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: Sunlight reaching this orbit, relative to Earth's. ``L / a**2``, so a
+    #: world close to a bright star bakes and one far from an M dwarf sees
+    #: almost nothing. Decides what solar collectors are worth here.
+    stellar_flux: Mapped[float] = mapped_column(Float, default=0.0)
+    #: 0.0-1.0. Heat still coming out of the interior, which is what a
+    #: geothermal plant taps. A dead cold world has none.
+    tectonic_activity: Mapped[float] = mapped_column(Float, default=0.0)
 
     #: Usable surface in square kilometres, from radius and land fraction.
     #: Real area, so a superearth genuinely holds more than a moon.
@@ -320,6 +327,17 @@ class Colony(Base):
     #: production resolver every tick; stored so a player can see *why* a colony
     #: is shrinking rather than only that it is.
     standard_of_living: Mapped[float] = mapped_column(Float, default=1.0)
+
+    #: 0.15-1: how much of the power this colony wanted it had last tick.
+    #: Multiplies industry and extraction, so it multiplies refining,
+    #: construction, shipbuilding and terraforming with them.
+    #:
+    #: Stored rather than derived on demand for two reasons. It is worked out
+    #: while the generators are actually burning fuel, so it cannot be recomputed
+    #: without double-charging; and the governor runs *before* production, so
+    #: what it reacts to is necessarily last tick's brownout -- which is also how
+    #: it works in life.
+    power_satisfaction: Mapped[float] = mapped_column(Float, default=1.0)
 
     #: Recipe key -> relative weight: which refining chains this colony's
     #: industry runs, and in what proportion. Empty means "work through
