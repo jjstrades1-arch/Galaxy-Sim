@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from galaxysim.colony.labor import RESEARCH
+from galaxysim.colony.labor import LIFE_SUPPORT, RESEARCH
 from galaxysim.materials import IRON, STEEL
 from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
@@ -327,7 +327,14 @@ def test_build_order_charges_up_front_and_delivers(game):
         assert len(fleets) == fleets_before + 1
         assert any(f.name == "Vex Second Fleet" for f in fleets)
 
-    # And the other half of "charged up front": an empty yard cannot start one.
+    # And the other half: a yard with nothing coming in never starts one.
+    #
+    # It *gathers* rather than refusing outright -- a yard takes delivery of
+    # what it can each hour and holds it against the order, because an
+    # all-or-nothing bill is a bill nobody can save for. A capital's governor
+    # spends steel the hour it is refined, so a large purchase would be
+    # unbuyable at any income if it had to be met in one instant. What still
+    # must not happen is work beginning on an unpaid hull.
     with open_session(engine) as session:
         vex = civ_by_name(session, universe_id, "Vex")
         colony = session.get(Colony, colony_id)
@@ -341,7 +348,75 @@ def test_build_order_charges_up_front_and_delivers(game):
             select(Intent).where(Intent.kind == "build_fleet", Intent.payload.contains("Third"))
         )
         assert order.status == IntentStatus.QUEUED.value
-        assert "insufficient" in order.result
+        assert "gathering materials" in order.result
+        assert "short" in order.result
+
+
+def test_a_yard_can_save_up_for_something_it_cannot_buy_outright(game):
+    """A big purchase must be slow, not impossible.
+
+    This is the difference between a price and a wall, and the game had a wall.
+    A colony pod costs more steel than a capital ever holds at one instant --
+    its governor spends steel on industry the hour it is refined -- so an
+    all-or-nothing bill meant eight AI civilizations stopped dead at thirty-odd
+    colonies for sixty simulated days, each with somewhere to settle, a ship
+    ready to settle it, and zero tonnes in the bank. They could afford it over a
+    week and could not afford it in an hour, and only the second was being
+    asked.
+    """
+    engine, universe_id = game
+
+    from galaxysim.materials import ALLOYS, ELECTRONICS, STEEL
+
+    with open_session(engine) as session:
+        vex = civ_by_name(session, universe_id, "Vex")
+        take_manual_control(session, vex)
+        colony = session.scalar(select(Colony).where(Colony.civ_id == vex.id).order_by(Colony.id))
+        # Everyone onto life support, so the yard mines nothing, refines
+        # nothing and researches nothing: the only materials it ever sees are
+        # the ones delivered below. (Not research -- that consumes electronics,
+        # and the laboratories would quietly outbid the shipyard for them.)
+        intents.set_labor(session, colony, {LIFE_SUPPORT: 1.0})
+        colony.stockpile = {}
+        intents.build_fleet(session, vex, colony.id, 2.0, name="Vex Patient Fleet")
+        colony_id = colony.id
+
+    # One tick with nothing: it must be waiting, not building.
+    run_ticks(engine, universe_id, 1)
+    with open_session(engine) as session:
+        order = session.scalar(
+            select(Intent).where(Intent.kind == "build_fleet", Intent.payload.contains("Patient"))
+        )
+        assert order.status == IntentStatus.QUEUED.value
+        assert "gathering" in order.result
+
+    # Now drip-feed it: never the whole bill at once, plenty of it over time.
+    # A strength-2 hull wants 210,000 steel, 126,000 alloys, 64,000 electronics.
+    for _ in range(12):
+        with open_session(engine) as session:
+            colony = session.get(Colony, colony_id)
+            for resource, amount in (
+                (STEEL, 20_000.0),
+                (ALLOYS, 12_000.0),
+                (ELECTRONICS, 6_000.0),
+            ):
+                colony.stockpile[resource] = colony.stockpile.get(resource, 0.0) + amount
+        run_ticks(engine, universe_id, 1)
+
+    with open_session(engine) as session:
+        order = session.scalar(
+            select(Intent).where(Intent.kind == "build_fleet", Intent.payload.contains("Patient"))
+        )
+        assert order.status != IntentStatus.QUEUED.value, (
+            "twelve deliveries cover the bill; the yard should have laid it "
+            f"down by now, but it says {order.result!r}"
+        )
+        # And the deliveries went into the hull rather than sitting in the
+        # warehouse: twelve loads of 20,000 is 240,000 tonnes of steel against a
+        # bill of 210,000, so what is left should be the surplus and nothing
+        # more. The yard took each delivery as it arrived.
+        colony = session.get(Colony, colony_id)
+        assert colony.stockpile.get(STEEL, 0.0) == pytest.approx(30_000.0, abs=1_000.0)
 
 
 def test_impossible_orders_fail_with_a_reason(game):

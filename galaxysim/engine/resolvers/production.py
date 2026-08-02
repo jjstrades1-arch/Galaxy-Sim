@@ -1048,13 +1048,55 @@ def _start_fleets(ctx: TickContext) -> None:
         for resource, amount in sorted(COLONY_POD_COST.items()):
             cost[resource] = cost.get(resource, 0.0) + amount * pods
 
-        # Built here, paid for here. A yard can only use what has been shipped
-        # to it.
-        if not can_afford(colony.stockpile, cost):
-            intent.result = f"insufficient resources at {colony.name}"
-            continue
+        # Built here, paid for here -- but paid for *over time*.
+        #
+        # An all-or-nothing bill cannot be saved for. A capital's governor
+        # spends steel on its own industry the hour it is refined, so the
+        # warehouse never holds a large sum at any one instant, and a colony pod
+        # priced at more than one hour's surplus was unbuyable at any income:
+        # eight civilizations sat on a hard wall at thirty-odd colonies for
+        # sixty days, each with somewhere to settle, a ship to settle it, and
+        # zero tonnes of steel. Not "too expensive" -- unsaveable-for.
+        #
+        # A yard now procures the way a real one does: it takes delivery of what
+        # it can each hour and holds it against the order until the bill is met.
+        # That makes an expensive thing *slow* rather than impossible, which is
+        # the difference between a price and a wall.
+        banked = dict(intent.payload.get("paid") or {})
+        outstanding = {
+            resource: amount - banked.get(resource, 0.0)
+            for resource, amount in sorted(cost.items())
+            if amount - banked.get(resource, 0.0) > 1e-9
+        }
+        if outstanding:
+            taken = {
+                resource: min(wanted, colony.stockpile.get(resource, 0.0))
+                for resource, wanted in outstanding.items()
+                if colony.stockpile.get(resource, 0.0) > 0.0
+            }
+            if taken:
+                spend(colony.stockpile, taken)
+                for resource, amount in taken.items():
+                    banked[resource] = banked.get(resource, 0.0) + amount
+                intent.payload["paid"] = banked
 
-        spend(colony.stockpile, cost)
+            still_short = {
+                resource: amount - banked.get(resource, 0.0)
+                for resource, amount in sorted(cost.items())
+                if amount - banked.get(resource, 0.0) > 1e-9
+            }
+            if still_short:
+                intent.result = (
+                    f"gathering materials at {colony.name} ("
+                    + ", ".join(
+                        f"{amount:,.0f} {resource} short"
+                        for resource, amount in sorted(still_short.items())
+                    )
+                    + ")"
+                )
+                continue
+
+        intent.payload.pop("paid", None)
         intent.status = IntentStatus.IN_PROGRESS.value
         intent.result = ""
         intent.payload["work_remaining"] = (
