@@ -7,11 +7,13 @@ Resolution order is fixed and meaningful:
    reach a starving colony before life support is computed against them.
 3. **Combat** -- a fleet that arrived this tick is immediately at risk, and one
    that left is out of reach.
-4. **Governor** -- governed colonies decide their labor and building orders
+4. **Siege** -- what is left in orbit after the shooting decides whose supply
+   lines run, and whether a colony changes hands.
+5. **Governor** -- governed colonies decide their labor and building orders
    before production reads them, so a decision applies on the tick it is made.
-5. **Production** -- survivors produce; casualties do not.
-6. **Research** -- spends what production just banked.
-7. **Colonization** -- last, so a world contested this tick is resolved before
+6. **Production** -- survivors produce; casualties do not.
+7. **Research** -- spends what production just banked.
+8. **Colonization** -- last, so a world contested this tick is resolved before
    anyone settles it.
 
 Everything random descends from ``tick_seed(universe_seed, tick_number)``, and
@@ -41,6 +43,7 @@ from galaxysim.engine.resolvers import (
     movement,
     production,
     research,
+    siege,
     terraform,
 )
 from galaxysim.model.base import new_session, transaction
@@ -51,6 +54,11 @@ PIPELINE = (
     ("movement", movement.resolve),
     ("logistics", logistics.resolve),
     ("combat", combat.resolve),
+    # After combat, so a blockade is judged on who is still standing once the
+    # shooting stops rather than on who turned up. Before logistics would be
+    # wrong: a colony must get one tick's warning in the log before its supply
+    # lines are cut.
+    ("siege", siege.resolve),
     ("governor", governor.resolve),
     ("production", production.resolve),
     ("research", research.resolve),

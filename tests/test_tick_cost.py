@@ -126,6 +126,21 @@ def _route_everything(engine, universe_id: int) -> None:
                 )
 
 
+def _declare_war(engine, universe_id: int) -> None:
+    """Put every civ at war with the next one, in a ring.
+
+    Which switches on the whole of :mod:`galaxysim.engine.resolvers.siege`:
+    blockades are recomputed from who is standing where, and combat's fleet
+    matching starts running too. Both are questions about *every colony against
+    every fleet*, which is exactly the shape that turns into a query per colony
+    if it is written the obvious way.
+    """
+    with open_session(engine) as session:
+        civs = session.scalars(select(Civ).where(Civ.universe_id == universe_id).order_by(Civ.id)).all()
+        for index, civ in enumerate(civs):
+            intents.attack(session, civ, civs[(index + 1) % len(civs)].id)
+
+
 def _advance(engine, universe_id: int, ticks: int, *, with_ai: bool) -> None:
     """Resolve ticks, optionally letting the AI take its turn first.
 
@@ -145,7 +160,12 @@ def _advance(engine, universe_id: int, ticks: int, *, with_ai: bool) -> None:
 
 
 def _statements_per_tick(
-    civs: int, colonies_each: int, *, with_ai: bool = False, routes: bool = True
+    civs: int,
+    colonies_each: int,
+    *,
+    with_ai: bool = False,
+    routes: bool = True,
+    war: bool = False,
 ) -> float:
     engine = create_engine_for("sqlite://")
     universe_id = new_universe(
@@ -159,6 +179,8 @@ def _statements_per_tick(
     _populate(engine, universe_id, civs, colonies_each)
     if routes:
         _route_everything(engine, universe_id)
+    if war:
+        _declare_war(engine, universe_id)
     _advance(engine, universe_id, 2, with_ai=with_ai)  # settle
 
     counted = 0
@@ -234,6 +256,24 @@ def test_supply_routes_do_not_cost_a_query_each():
     assert with_routes < without * 1.5, (
         f"adding a route to every colony took a tick from {without:.0f} queries "
         f"to {with_routes:.0f}. Routes are being resolved one lookup at a time."
+    )
+
+
+def test_a_war_does_not_cost_a_query_per_colony():
+    """Conflict is the newest thing that has to obey this file.
+
+    A blockade is "does any hostile fleet hold this system", which is a question
+    about every colony and every fleet at once. Asking it colony by colony would
+    read perfectly and would mean the tick got more expensive precisely when the
+    universe got interesting -- so it is two universe-wide reads, memoized on
+    the context, and this is what says so.
+    """
+    peace = _statements_per_tick(civs=4, colonies_each=20)
+    war = _statements_per_tick(civs=4, colonies_each=20, war=True)
+
+    assert war < peace * 1.3, (
+        f"declaring war took a tick from {peace:.0f} queries to {war:.0f}. "
+        "The siege resolver is asking the database something per colony."
     )
 
 

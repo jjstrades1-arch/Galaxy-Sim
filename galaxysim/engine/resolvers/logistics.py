@@ -2,7 +2,11 @@
 
 Stockpiles are local, so this is the only thing that connects them. A colony at
 the end of a cut supply line is genuinely alone, which is what gives blockades
-and remote outposts their weight.
+and remote outposts their weight -- and since
+:mod:`galaxysim.engine.resolvers.siege` exists, that weight is real: nothing
+loads or unloads at a colony a hostile fleet is sitting on. The blockade adds no
+penalty of its own; it simply switches this module off at one end, and the
+colony's own life support does the rest.
 
 Two orders, and the difference between them is the whole reason manual logistics
 is survivable in an async game:
@@ -33,6 +37,7 @@ from galaxysim.core.units import format_count as format_people
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
 from galaxysim.engine.resolvers.production import DOCKING_TOLERANCE_LY, colony_effects
+from galaxysim.engine.resolvers import siege
 from galaxysim.model.entities import Colony, Fleet, IntentKind, IntentStatus
 
 #: Tonnes per hour a colony can handle with no spaceport. Deliberately nonzero:
@@ -109,6 +114,11 @@ def _resolve_transfers(ctx: TickContext) -> None:
             # Wait rather than fail: the fleet is probably still on its way
             # under a move order queued at the same time.
             intent.result = "awaiting fleet arrival"
+            continue
+
+        halted = _halted(ctx, colony)
+        if halted:
+            intent.result = halted
             continue
 
         manifest = dict(intent.payload.get("manifest") or {})
@@ -200,6 +210,11 @@ def _run_outbound_leg(
 ) -> None:
     """At the origin: drop the backhaul, then load. Elsewhere: fly."""
     if _docked(fleet, origin):
+        halted = _halted(ctx, origin)
+        if halted:
+            intent.result = halted
+            return
+
         # Whatever ore came home goes into the warehouse of the world that can
         # actually refine it. This is the delivery that makes the whole round
         # trip worth more than the outbound half.
@@ -263,6 +278,11 @@ def _run_outbound_leg(
         return
 
     if _docked(fleet, destination):
+        halted = _halted(ctx, destination)
+        if halted:
+            intent.result = halted
+            return
+
         # Arrived at the drop.
         if fleet.cargo_tonnage > 0:
             delivered = _unload(
@@ -293,6 +313,11 @@ def _run_delivery_leg(
     if not _docked(fleet, destination):
         _send(ctx, fleet, destination)
         intent.result = f"carrying {_describe(fleet.cargo)} to {destination.name}"
+        return
+
+    halted = _halted(ctx, destination)
+    if halted:
+        intent.result = halted
         return
 
     backhaul = intent.payload.get("backhaul")
@@ -473,6 +498,14 @@ def _run_boarding_leg(
         intent.result = f"repositioning to {origin.name}"
         return
 
+    # A besieged world cannot be evacuated either. That is the harsher half of
+    # the same rule, and the right one: if people could be lifted off under a
+    # blockade, taking a world would never cost the attacker anything.
+    halted = _halted(ctx, origin)
+    if halted:
+        intent.result = halted
+        return
+
     wanted = float(intent.payload.get("people", 0.0)) - fleet.passengers
     per_passenger = ctx.rates.tonnes_per_passenger
     room = fleet.cargo_space / per_passenger if per_passenger > 0 else wanted
@@ -507,6 +540,11 @@ def _run_landing_leg(
         intent.result = f"carrying {format_people(fleet.passengers)} to {destination.name}"
         return
 
+    halted = _halted(ctx, destination)
+    if halted:
+        intent.result = halted
+        return
+
     landing = min(fleet.passengers, ctx.per_tick(passengers_per_hour(destination)))
     if landing > 0:
         fleet.passengers -= landing
@@ -535,6 +573,21 @@ def _docked(fleet: Fleet, colony: Colony) -> bool:
     if fleet.in_transit:
         return False
     return distance(fleet.position, colony.world.system.position) <= DOCKING_TOLERANCE_LY
+
+
+def _halted(ctx: TickContext, colony: Colony) -> str | None:
+    """Why cargo cannot move at this colony, or ``None`` if it can.
+
+    Checked at the point of loading rather than folded into :func:`_docked`,
+    because a blockade stops the *work* and not the ships: a freighter caught at
+    a besieged world can still be ordered to leave, and a route with a cut end
+    keeps its order rather than failing, so it resumes by itself the day the
+    siege lifts. That is what makes an offline player's standing orders survive
+    a war they slept through.
+    """
+    if not siege.is_blockaded(ctx, colony):
+        return None
+    return f"blockaded at {colony.name}; nothing is moving on or off"
 
 
 def _send(ctx: TickContext, fleet: Fleet, colony: Colony) -> None:

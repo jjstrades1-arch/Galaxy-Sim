@@ -59,7 +59,7 @@ from galaxysim.engine.resolvers.terraform import unmet_requirements
 from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
 from galaxysim.engine.rates import DEFAULT_RATES, Cadence
-from galaxysim.engine.resolvers import queries
+from galaxysim.engine.resolvers import queries, siege
 from galaxysim.engine.resolvers.governor import POLICIES
 from galaxysim.engine.resolvers.production import colony_effects, effective_habitability
 from galaxysim.cli.survey_view import format_count
@@ -243,6 +243,14 @@ def status() -> None:
                     held or "[dim]empty[/dim]",
                 )
             console.print(table)
+
+        # Loud and above the fleet list, because a blockade is the one thing in
+        # this readout that is actively killing a colony while its owner reads.
+        for besieged in (c for c in colonies if c.blockaded):
+            console.print(
+                f"[red]{besieged.name} is BLOCKADED -- no cargo and no settlers "
+                f"can move there. {_resistance_note(besieged)}[/red]"
+            )
 
         fleets = session.scalars(
             select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
@@ -573,6 +581,7 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
                 + "[/]"
             )
 
+        _print_siege(colony)
         _print_power(colony, effects)
 
         allocation = normalize(colony.labor)
@@ -1203,6 +1212,33 @@ def log(
 ) -> None:
     """Show what happened while you were away."""
     _print_log(_engine(), since=since, limit=limit)
+
+
+def _resistance_note(colony) -> str:
+    """How much of this colony's ability to hold out is left, in plain words.
+
+    A fraction rather than the raw number, because the number is meaningless on
+    its own -- what a player needs is "am I about to lose this place".
+    """
+    if colony.resistance < 0:
+        return "It can still resist in full."
+    standing = siege.standing_resistance(colony)
+    if colony.resistance <= 0:
+        return "It can no longer resist: a colony pod is all they need now."
+    return f"About {colony.resistance / max(standing, 1e-9):.0%} of its resistance is left."
+
+
+def _print_siege(colony) -> None:
+    """Show a war being fought against this colony, if there is one."""
+    if colony.blockaded:
+        console.print(
+            f"[red]BLOCKADED -- supply routes and migration are stopped here. "
+            f"{_resistance_note(colony)}[/red]"
+        )
+    elif colony.resistance >= 0:
+        console.print(
+            f"[yellow]Recovering from a siege. {_resistance_note(colony)}[/yellow]"
+        )
 
 
 def _print_power(colony, effects) -> None:

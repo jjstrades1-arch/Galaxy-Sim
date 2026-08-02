@@ -365,6 +365,31 @@ class Colony(Base):
     #: it works in life.
     power_satisfaction: Mapped[float] = mapped_column(Float, default=1.0)
 
+    #: How much of this colony's capacity to hold out is left, in the same units
+    #: :func:`galaxysim.engine.resolvers.siege.standing_resistance` computes it.
+    #: Worn down by a besieging fleet and recovering when the siege lifts.
+    #:
+    #: Not a stat anybody assigned: it is what is *actually here*, its people and
+    #: what they have built. That one choice does the balancing on its own. A
+    #: fifty-thousand-person outpost falls in hours; a homeworld of eighteen
+    #: billion cannot be taken from orbit in any practical time by any fleet a
+    #: civilization could keep flying. So a war takes a rival's frontier and
+    #: never their heart -- which is emergent rather than a rule, and it is also
+    #: what stops an offline player being decapitated overnight.
+    #:
+    #: ``-1`` means "never besieged", so the first siege reads the colony's full
+    #: standing rather than a stale zero.
+    resistance: Mapped[float] = mapped_column(Float, default=-1.0)
+
+    #: Whether a hostile fleet held this colony's system at the end of last tick.
+    #:
+    #: The blockade itself is recomputed every tick from who is standing where,
+    #: so this stores nothing the map does not already say. What it buys is the
+    #: *edge*: an asynchronous player needs "your supply lines were cut" and
+    #: "they are open again" as two events in the log, not a state they have to
+    #: have been watching to notice.
+    blockaded: Mapped[bool] = mapped_column(Boolean, default=False)
+
     #: Recipe key -> relative weight: which refining chains this colony's
     #: industry runs, and in what proportion. Empty means "work through
     #: everything you can", which keeps an unattended colony alive and is
