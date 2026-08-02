@@ -583,19 +583,31 @@ of room.
 
 ## Known tuning gaps
 
-- **The fleet takes a late knock.** Strength climbs steadily to 164 by day 26
-  and then falls to 86 by day 28. Not the death spiral that was fixed — that ran
-  to zero and stayed there — but something bites at the very end of a 28-day
-  run, most likely ships drifting past supply range as the empire spreads
-  faster than its warehouses. Wants a longer soak to characterise before it is
-  worth changing anything.
-- **A tick costs ~2.4 s with 8 civs and 360 colonies.** The query count is flat
-  in universe size and tested to stay that way, so this is honest per-row cost
-  rather than the quadratic shape fixed two phases ago — but it is the number
-  that now decides how large a shared universe can be, since a five-minute
-  cadence resolves 288 ticks a day. Profiling it is the next performance job,
-  and the likely wins are the per-colony refining loop and the survey-free
-  promoted columns being re-read rather than cached across resolvers.
+- **The fleet's late knock was an empty tank, and the tank is now filling.**
+  Strength used to climb to 164 by day 26 and fall to 86 by day 28. The cause
+  was not supply range and not upkeep pricing — upkeep sits comfortably inside
+  what a capital can make. It was that **nothing ever set `Colony.refining`**, so
+  every colony ran the even default plan; smelting ate the carbon supply (mined
+  at a seventh the rate of iron, and smelting takes one per ten iron) and fuel
+  synthesis, which wants two, got the remainder. An empire held 700 Mt of alloys
+  while making no fuel at all, flew for 26 days on its homeworld's opening bank,
+  and lost a third of its navy in the two days after it emptied. With governors
+  weighting chains toward what a colony is short of, fuel now *rises* every day
+  of a soak instead of falling every day. The 28-day endpoint has not been
+  re-measured since — see the next item for why.
+- **A tick's cost grows with the empire, and that is the ceiling now.** 550 ms
+  at 8 civs and ~240 colonies; the same run averaged 1,179 ms/tick over 28 days
+  and 2,193 ms before the phase-7 batching. The query count is flat in universe
+  size and tested to stay that way, so this is honest per-row cost rather than
+  the quadratic shape fixed two phases ago — but it decides how large a shared
+  universe can be, since a five-minute cadence resolves 288 ticks a day.
+
+  Fixing the fuel economy made this *more* visible rather than less: an empire
+  that no longer collapses on day 26 keeps growing, and the tail of a 28-day
+  soak now runs long enough that it is the practical limit on measuring one.
+  That is a real trade and it is the right way round — a simulation that runs
+  correctly and slowly beats one that runs fast because its economy died — but
+  the next performance pass is no longer optional.
 - **Supply routes over-deliver.** A standing route ships its full manifest every
   trip whether or not the destination needs it, so a well-supplied outpost banks
   months of surplus. A route that tops up to a target level would be better.
