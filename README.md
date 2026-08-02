@@ -18,7 +18,8 @@ reference; the notes below say what is deliberately placeholder.
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 .venv/bin/galaxysim new Frontier --ai 3        # solo game, 3 AI opponents
-.venv/bin/galaxysim new Deep --region core     # ...or start somewhere harder
+.venv/bin/galaxysim new Deep --difficulty driven   # ...or opponents who play
+.venv/bin/galaxysim new Edge --region core     # ...or start somewhere harder
 .venv/bin/galaxysim status                     # your civ
 .venv/bin/galaxysim systems                    # what you have charted
 .venv/bin/galaxysim chart --radius 60          # ...and what is out there
@@ -479,10 +480,17 @@ happened and no reason to trust it.
 
 ### 3. Orders are queued, never applied on submission
 
-`galaxysim/engine/intents.py` is the entire write surface. Players, the CLI, the
-future HTTP layer and the AI all go through it — the AI has no privileged path
-into the simulation, which is what makes solo mode an honest test of the
-multiplayer one, and what lets a hundred AI civs stand in for a hundred players.
+`galaxysim/engine/intents.py` is the entire write surface. Players, the CLI and
+the AI all go through it — the AI has no privileged path into the simulation.
+
+That constraint earns its keep for a narrower reason than it used to claim. This
+is a single-player game, so "solo must match multiplayer" is not the argument.
+The argument is that **the soak is the only instrument for telling whether the
+economy works**: every economic failure this project has found — a fuel famine
+that emptied every fleet on day twenty-six, a colony pod that cost nothing at
+all, a sixty-day wall in front of expansion — surfaced by watching AI civs run
+under exactly the constraints a player faces. Subsidise them and the soak stops
+measuring the game and starts measuring the subsidy.
 
 Orders resolve together on the tick, so being awake when you submit confers no
 advantage. Production, research and defense all run for offline civs.
@@ -571,15 +579,66 @@ meant to compound, and a flat line is the failure rather than the target.
 Median colonies per AI civ, 8 civs over 28 simulated days:
 
 ```
-day     2   4   6   8  10  12  14  16  18  20  22  24  26  28
-      ─────────────────────────────────────────────────────────
-        5  10  15  20  25  30  36  41  47  52  57  62  66  69
+day     4   8  12  16  20  24  28  32  40  48  60
+      ────────────────────────────────────────────
+        2   3   4   4   5   6   6   8   8  10  13
 ```
 
 Still rising at the end, which is the point. Every version of this before the
 prices were real went flat inside a fortnight, and each time the cause was a
 number that had stopped meaning anything rather than a civilization running out
-of room.
+of room — a colony pod, most recently, which was an integer nobody charged for,
+so the pace of the whole game was accidentally the build time of a gunboat.
+
+## How hard the opponents are
+
+Difficulty is made of three things, and each is something a player could also
+have or do. Never free materials, never hidden information — and that is a test
+(`tests/test_ai.py`) rather than a comment.
+
+| | Dormant | **Steady** | Driven | Relentless |
+|---|---|---|---|---|
+| re-plans every | 24 h | **2 h** | 1 h | 1 h |
+| industrial worlds | 1 | **1** | 3 | 6 |
+| settles by | nearest | **nearest** | best | best |
+| hulls in build | 1 | **1** | 2 | 4 |
+| upkeep reserve | 7 d | **3 d** | 2 d | 1 d |
+| seated in | rim | **arm** | arm | core |
+
+```bash
+.venv/bin/galaxysim new Frontier --difficulty relentless
+.venv/bin/galaxysim soak --ai 8 --days 60 --difficulty driven
+```
+
+**Attention** — how often it re-plans — is the truest axis in an asynchronous
+game, because it is exactly what differs between human opponents: how often they
+check in. Authored in *hours*, never ticks; per-tick decisions meant an opponent
+in a five-minute universe thought twelve times as often as one in an hourly
+universe, which was true for most of this project's life.
+
+**Competence** is how well it plays: how many worlds it industrialises, whether
+it settles the nearest rock or the one carrying what its economy is short of, how
+deep a build queue it keeps, how early it commits to terraforming.
+
+**Circumstance** is the galaxy itself. `add_civ` seats civs as far apart as the
+region allows, so the region *is* the rival-proximity dial — the crowded Core
+against the empty Rim. A property of the sky rather than a gift, since the player
+lives under the same one.
+
+Measured over sixty days, same region so this isolates competence:
+
+| | colonies | population | fleet | ms/tick |
+|---|---|---|---|---|
+| Dormant | 10 | 11.372 B | 14 | 57 |
+| Steady | 12 | 11.372 B | 30 | 140 |
+| Driven | 13 | **12.181 B** | 29 | 188 |
+| Relentless | 12 | 12.057 B | 26 | 175 |
+
+The population column is the interesting one: it had been frozen at 11.37 B in
+every run at every setting, and terraforming earlier plus settling for geology
+moved it by 810 million people. That is the compounding loop beginning to turn,
+and it turns on habitability rather than on shipyards — a measurement that
+contradicted the expectation going in, which was that yards would dominate.
 
 ## Known tuning gaps
 
@@ -619,6 +678,13 @@ of room.
   world with a developed neighbourhood and works the sequence, which is the
   right shape, but it will not abandon a bad target or run two campaigns at
   once even when it could afford both.
+- **Almost every colony is a dead rock, and that is the ceiling on everything.**
+  Four AI civs holding thirty-one colonies between them had *four* worlds above
+  0.4 habitability — one each, their homeworlds. So population barely moves, a
+  wider empire is not a stronger one, growth is linear rather than compounding,
+  and the several-shipyards difficulty lever cannot fire because an industrial
+  centre has to be somewhere people can live. Terraforming is the only way out
+  of all four at once, which makes it the most valuable thing to work on next.
 - **Nobody has played a core start for long.** Neighbours 1.4 ly apart is a very
   different game from neighbours 10 ly apart, and the difference is currently a
   claim backed by density arithmetic rather than a session.
