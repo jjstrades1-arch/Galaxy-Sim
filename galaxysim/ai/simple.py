@@ -92,6 +92,12 @@ MIGRATION_BATCH = 500_000.0
 MIGRATION_RESERVE = 1e8
 TONNES_PER_SETTLER = 0.5
 
+#: One colony in this many may be run as an industrial centre, whatever the
+#: doctrine asks for. Yards are fed by mines somewhere, and an empire that
+#: industrialises half of itself has nothing left digging: asking for six
+#: industrial worlds out of twelve measurably finished *behind* asking for three.
+INDUSTRIAL_WORLD_SHARE = 3
+
 # Standards of play -- how often this opponent thinks, how many yards it runs,
 # how far it scouts, how bold it is about terraforming and how thin it lets its
 # reserves run -- all live on its :class:`~galaxysim.ai.doctrine.Doctrine`, which
@@ -291,11 +297,19 @@ def _set_policies(turn: "_Turn") -> None:
     # Chosen by *development* rather than by id, because a yard on a
     # fifty-thousand-person outpost is a yard that can never pay for what it
     # would build. Ties break on id so the choice stays determined.
+    # Bounded by a *share* of the empire as well as by the doctrine, because a
+    # shipyard with nothing mining behind it is worse than no shipyard. Measured:
+    # a doctrine asking for six industrial worlds out of twelve held put half
+    # the empire on an industry policy, starved the other half of extraction,
+    # and finished behind the doctrine asking for three. More aggressive is not
+    # automatically better, and this is where that stops being true.
+    wanted = max(1, turn.doctrine.industrial_worlds)
+    affordable = max(1, len(turn.colonies) // INDUSTRIAL_WORLD_SHARE)
     industrial = {
         colony.id
         for colony in sorted(
             turn.colonies, key=lambda c: (-c.development, c.id)
-        )[: max(1, turn.doctrine.industrial_worlds)]
+        )[: min(wanted, affordable)]
     }
 
     for index, colony in enumerate(turn.colonies):

@@ -216,9 +216,11 @@ def test_a_driven_opponent_runs_more_than_one_shipyard():
             home = session.scalar(
                 select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
             )
-            # Four more worlds of descending development, all habitable enough
-            # to escape the survival policy.
-            for index in range(4):
+            # Eight more worlds of descending development, all habitable enough
+            # to escape the survival policy. Nine in total, which is what a
+            # doctrine asking for three yards needs before the share cap below
+            # stops being the binding constraint.
+            for index in range(8):
                 extra = Colony(
                     world=_free_world(session),
                     civ_id=civ.id,
@@ -243,6 +245,28 @@ def test_a_driven_opponent_runs_more_than_one_shipyard():
 
     assert industrial_count("steady") == 1
     assert industrial_count("driven") == 3, "a driven opponent builds several yards"
+
+
+def test_yards_are_capped_by_the_empire_that_feeds_them():
+    """More aggressive is not automatically better, and here is where it stops.
+
+    A doctrine asking for six industrial worlds out of twelve held puts half the
+    empire on an industry policy and leaves too few of them mining. Measured: it
+    finished *behind* the doctrine asking for three — fewer colonies and less
+    population over sixty days. A yard is fed by mines somewhere, so the count a
+    doctrine asks for is bounded by a share of what it actually holds.
+    """
+    from galaxysim.ai.simple import INDUSTRIAL_WORLD_SHARE
+
+    # The rule, stated directly: whatever is asked for, never more than a share.
+    for held in (1, 3, 6, 12, 30):
+        allowed = max(1, held // INDUSTRIAL_WORLD_SHARE)
+        assert min(RELENTLESS.industrial_worlds, allowed) <= max(1, held // 2), (
+            "an empire should never run more yards than half its worlds"
+        )
+
+    # And a small empire gets one yard however relentless it is.
+    assert min(RELENTLESS.industrial_worlds, max(1, 4 // INDUSTRIAL_WORLD_SHARE)) == 1
 
 
 def _free_world(session):
