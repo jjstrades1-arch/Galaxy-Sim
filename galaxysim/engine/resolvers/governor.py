@@ -35,6 +35,7 @@ from galaxysim.colony.labor import (
     normalize,
 )
 from galaxysim.materials import can_afford
+from galaxysim.materials.recipes import RECIPES
 from galaxysim.engine import intents
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
@@ -148,7 +149,59 @@ def resolve(ctx: TickContext) -> None:
             if not colony.is_governed or colony.population <= 0:
                 continue
             colony.labor = _labor_for(ctx, colony)
+            colony.refining = _refining_for(colony)
             _maybe_build(ctx, civ, colony, pending_structures.get(colony.id, set()))
+
+
+def _refining_for(colony: Colony) -> dict[str, float]:
+    """Weight this colony's chains toward whatever it is short of.
+
+    **Nothing has ever set this**, and the cost of that was invisible until a
+    soak was read properly. ``Colony.refining`` has existed since refining did;
+    with it empty every colony in the game fell back on the deliberately
+    mediocre even plan, spreading its industry across thirteen chains in a fixed
+    ratio and never once noticing a shortage.
+
+    What that produced: an empire holding seven hundred million tonnes of alloys
+    and making *no fuel at all*. Carbon is mined at about a seventh the rate of
+    iron and smelting takes one carbon per ten iron, so smelting quietly
+    consumed nearly the whole carbon supply and fuel synthesis -- which wants two
+    -- ran on the remainder, which was nothing. The fleet then flew for
+    twenty-six days on the fuel its homeworld started with, and when that bank
+    finally emptied a third of the navy deserted inside two days. The collapse
+    looked like an upkeep problem and was a refining problem.
+
+    The rule is the one a competent player uses: **make what you have least of**.
+    Each chain is weighted inversely to how much of its output the colony
+    already holds, measured against its own average holding so the rule is
+    scale-free and needs no constant. A warehouse full of alloys and empty of
+    fuel puts its industry into fuel; when fuel is stocked and steel is short it
+    swings back. Chains it cannot run at all are left out.
+
+    It is still beatable, which is the standing bargain with automation: a player
+    who stockpiles inputs ahead of a build will out-plan a governor that only
+    ever looks at today. It just no longer starves.
+    """
+    stock = colony.stockpile
+    runnable = {
+        key: recipe
+        for key, recipe in sorted(RECIPES.items())
+        if all(stock.get(material, 0.0) > 0.0 for material in recipe.inputs)
+    }
+    if not runnable:
+        return {}
+
+    held = {
+        key: sum(stock.get(material, 0.0) for material in recipe.outputs)
+        for key, recipe in runnable.items()
+    }
+    # The colony's own scale, so "a lot" means a lot *for this colony*: a capital
+    # holding a million tonnes of steel is well stocked, an outpost holding a
+    # thousand may be equally so.
+    typical = sum(held.values()) / len(held)
+    if typical <= 0:
+        return {key: 1.0 for key in runnable}
+    return {key: 1.0 / (1.0 + amount / typical) for key, amount in held.items()}
 
 
 def _labor_for(ctx: TickContext, colony: Colony) -> dict[str, float]:

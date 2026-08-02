@@ -871,6 +871,45 @@ def test_a_governor_develops_a_colony_over_time():
         assert any(b.is_complete for b in colony.buildings), "and finish at least one"
 
 
+def test_a_governor_makes_what_the_colony_is_short_of():
+    """The rule that stopped an empire dying of thirst beside a full warehouse.
+
+    Nothing set ``Colony.refining`` for the whole life of the project, so every
+    colony ran the deliberately mediocre even plan and never once noticed a
+    shortage. An AI empire reached seven hundred million tonnes of alloys while
+    making no fuel at all, flew on its homeworld's opening bank for twenty-six
+    days, and lost a third of its navy in the two days after it emptied.
+    """
+    from galaxysim.engine.resolvers.governor import _refining_for
+    from galaxysim.materials import ALLOYS, CARBON, FUEL, WATER_ICE
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=827, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = _outpost(session, civ, habitability=0.9, stockpile={}, farmable=True)
+        # Drowning in alloys, out of fuel, and holding both fuel inputs.
+        colony.stockpile = {
+            ALLOYS: 700_000_000.0,
+            WATER_ICE: 5_000_000.0,
+            CARBON: 5_000_000.0,
+            FUEL: 0.0,
+        }
+        weights = _refining_for(colony)
+
+        assert "fuel_synthesis" in weights, "it can run the chain and it needs the output"
+        assert weights["fuel_synthesis"] > weights.get("light_alloys", 0.0), (
+            "a colony with no fuel and 700 Mt of alloys should be making fuel"
+        )
+
+        # And it swings back: stock the fuel and the emphasis moves on.
+        colony.stockpile[FUEL] = 700_000_000.0
+        colony.stockpile[ALLOYS] = 0.0
+        after = _refining_for(colony)
+        assert after["fuel_synthesis"] < weights["fuel_synthesis"]
+
+
 def test_a_governor_respects_slot_limits():
     engine = create_engine_for("sqlite://")
     universe_id = new_universe(engine, seed=826, civs=("Terrans",), seconds_per_tick=3600)
