@@ -23,6 +23,9 @@ one on the planet. See :func:`_advance` for why that is not a convenience.
 
 from __future__ import annotations
 
+import math
+
+from galaxysim.core.space import distance
 from galaxysim.materials import can_afford
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
@@ -127,9 +130,33 @@ def _neighbourhood(ctx: TickContext, colony: Colony) -> list[Colony]:
     back down the line -- the same rule fleet upkeep uses, for the same reason.
     """
     colonies = queries.colonies_grouped(ctx).get(colony.civ_id, [])
-    return queries.sorted_by_distance(
-        colonies, colony.world.system.position, within_ly=SUPPLY_RANGE_LY
-    )
+    return queries.sorted_by_distance(colonies, colony.world.system.position)
+
+
+#: How a distant world's contribution to a project attenuates.
+#:
+#: Weight is ``exp(-distance / SUPPLY_RANGE_LY)``: full next door, a third at
+#: twenty-five light-years, two percent at a hundred. **Never zero**, which is
+#: the change -- contribution used to be cut off flat at supply range, so an
+#: empire's size stopped mattering the instant a target sat outside it, and a
+#: civilization with forty developed worlds reshaped a planet no faster than one
+#: with three.
+#:
+#: Why work attenuates at all, when materials do not: what crosses the gap for a
+#: project is specialists and prefabricated plant, and those are made *by* a
+#: workforce that has to stay where it is. Freight can be sent anywhere given
+#: time; an engineering corps a hundred light-years away is not helping you this
+#: hour.
+#:
+#: Exponential rather than the gentler ``1/(1+d)`` tried first, and a test caught
+#: why: under the gentle curve a capital a hundred light-years off still handed
+#: over a fifth of its output, which is more than every nearby outpost combined,
+#: so proximity stopped deciding anything. The property to keep is that **a
+#: project alone in the dark stays slow no matter how large the empire behind
+#: it** -- distance decides, and size decides only once it is close enough to
+#: reach.
+def _reach(distance_ly: float) -> float:
+    return math.exp(-max(0.0, distance_ly) / SUPPLY_RANGE_LY)
 
 
 def _draw_from(suppliers: list[Colony], cost: dict[str, float]) -> bool:
@@ -216,12 +243,19 @@ def _advance(ctx: TickContext) -> None:
             _fail(ctx, intent, "the project has no colony behind it any more")
             continue
 
-        contributors = queries.sorted_by_distance(
-            colonies.get(colony.civ_id, []),
-            colony.world.system.position,
-            within_ly=SUPPLY_RANGE_LY,
+        # The whole civilization contributes, attenuated by how far it has to
+        # reach. A wide empire of outposts still gets very little -- fifty
+        # mining camps make about twelve units of construction an hour between
+        # them -- so what this rewards is *developed* worlds, and a world that
+        # has been terraformed holds billions and becomes the engine that
+        # reshapes its neighbours.
+        target = colony.world.system.position
+        contributors = queries.sorted_by_distance(colonies.get(colony.civ_id, []), target)
+        effort = sum(
+            construction_output(ctx, helper)
+            * _reach(distance(target, helper.world.system.position))
+            for helper in contributors
         )
-        effort = sum(construction_output(ctx, helper) for helper in contributors)
 
         remaining = float(intent.payload.get("work_remaining", 0.0)) - effort
         if remaining > 0:

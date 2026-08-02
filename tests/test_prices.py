@@ -256,6 +256,68 @@ def test_transforming_a_world_is_about_three_weeks_for_a_young_civilization(econ
     assert 0.5 < days < 4.0, f"one project takes {days:.1f} days"
 
 
+def test_a_large_power_reshapes_a_world_in_days_rather_than_weeks(economies):
+    """The other end of the anchor, which was described and never checked.
+
+    The test above pins three weeks for a civilization with one developed world.
+    The docstring beside it has always promised "a day or two for one with
+    twenty" — and nothing asserted it, so for the whole life of the project the
+    large end was a hope. It was also false: contribution was cut off flat at
+    supply range, so an empire's size stopped mattering the moment a target sat
+    outside it.
+
+    Contribution now decays with distance instead of stopping, which is what
+    makes being large worth something. Note *what* is being rewarded: developed
+    worlds, not colonies. Fifty mining camps make about twelve units of
+    construction an hour between them and will not reshape anything — so a wide,
+    hollow empire stays slow until its first world is converted, and then
+    compounds, because a terraformed world holds billions and becomes the engine
+    that converts its neighbours.
+    """
+    from galaxysim.engine.resolvers.terraform import _reach
+
+    average = sum(p.work for p in PROJECTS.values()) / len(PROJECTS)
+    campaign = average * PROJECTS_IN_A_TRANSFORMATION
+    capital = economies["capital_work_per_hour"]
+
+    # Twenty developed worlds spread across a settled neighbourhood: a handful
+    # close in, the rest further out, none of them further than a hundred
+    # light-years. Contribution is the capital's output weighted by reach.
+    spread_ly = [2.0, 4.0, 6.0, 9.0, 12.0] + [18.0, 25.0, 32.0, 40.0] * 3 + [55.0, 70.0, 85.0] + [100.0]
+    pooled = sum(capital * _reach(d) for d in spread_ly)
+
+    days = _hours(campaign, pooled) / HOURS_PER_DAY
+    assert days < 4.0, (
+        f"twenty developed worlds take {days:.1f} days to convert a planet; "
+        "being large is supposed to make this quick"
+    )
+
+    # And the small end still costs weeks, so the gap between them is real.
+    alone = _hours(campaign, capital) / HOURS_PER_DAY
+    assert alone > days * 4.0, (
+        f"one developed world takes {alone:.1f} days against {days:.1f} for "
+        "twenty; scale should be worth a great deal more than that"
+    )
+
+
+def test_distance_still_decides_where_a_project_goes(economies):
+    """Being large must not stop location mattering.
+
+    The first attempt at this used a gentle ``1/(1+d)`` falloff and a test
+    caught the consequence: a capital a hundred light-years away still handed
+    over a fifth of its output, more than every nearby outpost combined, so
+    proximity decided nothing. The property worth keeping is that a project
+    alone in the dark stays slow however large the empire behind it.
+    """
+    from galaxysim.engine.resolvers.terraform import _reach
+    from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY
+
+    assert _reach(0.0) == pytest.approx(1.0)
+    assert _reach(SUPPLY_RANGE_LY) < 0.4, "a world at supply range is a partial help"
+    assert _reach(SUPPLY_RANGE_LY * 4) < 0.03, "four times out it is nearly nothing"
+    assert _reach(SUPPLY_RANGE_LY * 4) > 0.0, "but never quite nothing"
+
+
 def test_a_projects_materials_take_about_as_long_as_its_work(economies):
     """The half of the price nobody was checking, and it ran the show.
 

@@ -64,6 +64,7 @@ PERMITTED_FIELDS = {
     "scout_range_fraction": "threshold",
     "terraform_habitability": "threshold",
     "terraform_minimum_neighbourhood_work": "threshold",
+    "terraform_campaigns": "count",
     "upkeep_reserve_hours": "timing",
     "garrison_per_colony": "threshold",
     # circumstance: what galaxy it is played in
@@ -136,6 +137,7 @@ def test_the_ladder_climbs():
         "scout_candidates",
         "scout_range_fraction",
         "terraform_habitability",
+        "terraform_campaigns",
         "garrison_per_colony",
         "rivals",
     )
@@ -175,6 +177,7 @@ def test_steady_is_the_behaviour_the_economy_was_calibrated_against():
     assert STEADY.scout_range_fraction == 0.8
     assert STEADY.terraform_habitability == 0.25
     assert STEADY.terraform_minimum_neighbourhood_work == 5.0e5
+    assert STEADY.terraform_campaigns == 1
     assert STEADY.upkeep_reserve_hours == 24.0 * 3.0
     assert STEADY.garrison_per_colony == 2.0
 

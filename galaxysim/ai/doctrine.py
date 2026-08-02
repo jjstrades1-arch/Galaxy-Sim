@@ -90,6 +90,13 @@ class Doctrine:
     #: it.
     terraform_habitability: float
     terraform_minimum_neighbourhood_work: float
+    #: Terraforming campaigns a civ will run at once.
+    #:
+    #: One at a time is why a world took four months even after the projects
+    #: themselves were made affordable: a full transformation is fourteen
+    #: projects, and a civilization that runs them strictly in sequence is
+    #: waiting on its own queue rather than on its industry.
+    terraform_campaigns: int
     #: Hours of fleet upkeep banked before another hull is bought.
     #:
     #: Measured against the *upkeep materials* rather than output in general,
@@ -130,6 +137,7 @@ DORMANT = Doctrine(
     scout_range_fraction=0.5,
     terraform_habitability=0.10,
     terraform_minimum_neighbourhood_work=2.0e6,
+    terraform_campaigns=1,
     upkeep_reserve_hours=24.0 * 7.0,
     garrison_per_colony=1.0,
     preferred_region="rim",
@@ -151,6 +159,7 @@ STEADY = Doctrine(
     scout_range_fraction=0.8,
     terraform_habitability=0.25,
     terraform_minimum_neighbourhood_work=5.0e5,
+    terraform_campaigns=1,
     upkeep_reserve_hours=24.0 * 3.0,
     garrison_per_colony=2.0,
     preferred_region="arm",
@@ -172,6 +181,7 @@ DRIVEN = Doctrine(
     scout_range_fraction=0.9,
     terraform_habitability=0.35,
     terraform_minimum_neighbourhood_work=3.0e5,
+    terraform_campaigns=2,
     upkeep_reserve_hours=24.0 * 2.0,
     garrison_per_colony=2.5,
     preferred_region="arm",
@@ -192,6 +202,7 @@ RELENTLESS = Doctrine(
     scout_range_fraction=0.95,
     terraform_habitability=0.45,
     terraform_minimum_neighbourhood_work=2.0e5,
+    terraform_campaigns=4,
     upkeep_reserve_hours=24.0,
     garrison_per_colony=3.0,
     preferred_region="core",

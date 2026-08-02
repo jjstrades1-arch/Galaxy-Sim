@@ -813,11 +813,19 @@ def _maybe_terraform(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     decade alone in the dark.
     """
     session, civ = turn.session, turn.civ
-    if pending.get(IntentKind.TERRAFORM.value):
-        return  # one planet at a time; they are enormous
+    # More than one planet at a time, if the doctrine says so. Strictly one was
+    # why a world took four months even once projects were affordable: a full
+    # transformation is fourteen of them, so a civ running them in sequence
+    # waits on its own queue rather than on its industry.
+    running = pending.get(IntentKind.TERRAFORM.value, [])
+    if len(running) >= max(1, turn.doctrine.terraform_campaigns):
+        return
+    under_way = {intent.payload.get("colony_id") for intent in running}
 
     colonies = turn.colonies
     for colony in colonies:
+        if colony.id in under_way:
+            continue  # already being reshaped
         if colony.world.habitability > turn.doctrine.terraform_habitability:
             continue
 
