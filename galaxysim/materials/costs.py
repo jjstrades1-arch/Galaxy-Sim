@@ -123,7 +123,7 @@ COLONY_POD_COST: dict[str, float] = {
 }
 
 #: Industry-work to assemble one pod. The brake on how fast anyone expands.
-COLONY_POD_WORK = 225_000_000.0
+COLONY_POD_WORK = 450_000_000.0
 
 #: Fraction of a hull's build cost recovered when it is broken up at a colony.
 #:
