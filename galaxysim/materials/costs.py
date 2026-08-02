@@ -90,6 +90,15 @@ FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {
     ALLOYS: 1_900.0,
 }
 
+#: Fraction of a hull's build cost recovered when it is broken up at a colony.
+#:
+#: Not all of it, because a ship is not a pile of its inputs -- the shaping, the
+#: electronics and the labour do not come back. Not none of it either: a hull is
+#: mostly structural metal and that metal is still there. A third is enough to
+#: make scrapping a real decision (it returns materials *and* stops the bill)
+#: without making a fleet a savings account you can cash out at will.
+SALVAGE_FRACTION = 1.0 / 3.0
+
 # --- expeditions -------------------------------------------------------------
 
 #: Per colonist -- and a colonist is now one person, so these are tonnes per

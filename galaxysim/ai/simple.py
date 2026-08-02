@@ -39,7 +39,11 @@ from galaxysim.colony.buildings import FLEET_CONSTRUCTION
 from galaxysim.engine import intents
 from galaxysim.engine.resolvers import governor, queries
 from galaxysim.engine.rates import DEFAULT_RATES
-from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY, colony_effects
+from galaxysim.engine.resolvers.production import (
+    DOCKING_TOLERANCE_LY,
+    SUPPLY_RANGE_LY,
+    colony_effects,
+)
 from galaxysim.worldgen.galaxy import systems_near
 from galaxysim.model.entities import (
     Civ,
@@ -263,6 +267,7 @@ def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
     _maybe_migrate(turn, pending)
     _maybe_terraform(turn, pending)
     _maybe_scout(turn, pending)
+    _maybe_scrap(turn, pending)
     _maybe_build(turn, pending, rng)
 
 
@@ -393,6 +398,7 @@ def _maybe_supply(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             # supply fleet quietly grew until the ships keeping the outposts
             # alive were themselves deserting.
             if not _can_carry_more_upkeep(
+                civ,
                 colonies,
                 turn.fleets,
                 FREIGHTER_STRENGTH,
@@ -497,6 +503,68 @@ def _all_routes(session: Session, universe: Universe, civ: Civ) -> list[Intent]:
     ]
 
 
+def _maybe_scrap(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
+    """Break up a hull the empire no longer has a use for, or cannot pay for.
+
+    Half of the late-run fleet knock, and the half that is a *decision* rather
+    than an accident. An expedition ship that has landed its pod is a warship
+    with nothing to fight, and a soak used to end with two dozen of them: hulls
+    with no purpose, drawing upkeep every hour, in a civilization that was by
+    then missing payments and watching crews desert.
+
+    Desertion and scrapping both end with fewer ships. The difference is that
+    desertion returns nothing and happens to you, while scrapping returns a
+    third of the materials and is something you chose -- and choosing it while
+    still solvent is what stops the shortfall spreading to the ships that *are*
+    doing something.
+    """
+    if pending.get(IntentKind.DECOMMISSION.value):
+        return
+
+    session, civ = turn.session, turn.civ
+    colonies = turn.colonies
+    if not colonies:
+        return
+
+    warships = [
+        fleet
+        for fleet in turn.fleets
+        if fleet.colony_pods <= 0 and fleet.cargo_capacity <= 100.0
+    ]
+    if not warships:
+        return
+
+    # Freighters are never candidates: an outpost dies without its route, so a
+    # civ short of fuel must not balance its books by cutting the supply line.
+    over = sum(f.strength for f in warships) - len(colonies) * DEFENSIVE_STRENGTH_PER_COLONY
+    if over <= 0 and civ.upkeep_paid >= 1.0 - 1e-9:
+        return
+
+    # Out of the orders already in hand rather than a fresh query: a decision
+    # this cheap should not cost the tick a round trip.
+    busy = {
+        intent.payload.get("fleet_id") for group in pending.values() for intent in group
+    }
+    docked = [
+        fleet
+        for fleet in warships
+        if not fleet.in_transit and fleet.id not in busy and _at_a_colony(fleet, colonies)
+    ]
+    if not docked:
+        return
+
+    # The smallest hull that is surplus to requirements, so the empire sheds the
+    # least capability it can while still shedding the bill.
+    intents.decommission_fleet(session, civ, min(docked, key=lambda f: (f.strength, f.id)).id)
+
+
+def _at_a_colony(fleet: Fleet, colonies: list[Colony]) -> bool:
+    nearest = queries.nearest_of(colonies, fleet.position)
+    if nearest is None:
+        return False
+    return distance(fleet.position, nearest.world.system.position) <= DOCKING_TOLERANCE_LY
+
+
 def _idle_freighter(turn: "_Turn", hold: float | None = None) -> Fleet | None:
     """A ship with a *useful* hold and nothing better to do.
 
@@ -561,7 +629,7 @@ def _nearest_settleable_world(
     return (best[1], best[2]) if best else None
 
 
-def _can_carry_more_upkeep(colonies, fleets, extra_strength: float) -> bool:
+def _can_carry_more_upkeep(civ: Civ, colonies, fleets, extra_strength: float) -> bool:
     """Whether this civ could still pay its bills with another hull flying.
 
     The only limit left on a navy's size, and it is an economic one rather than
@@ -574,7 +642,18 @@ def _can_carry_more_upkeep(colonies, fleets, extra_strength: float) -> bool:
     million tonnes of steel while holding no fuel at all -- which is exactly
     what happened, and why a navy of ninety points of strength deserted down to
     five over the back half of a soak while its warehouses looked healthy.
+
+    Two questions, and they are not the same question. **Is it keeping up?** --
+    :attr:`Civ.upkeep_paid`, last tick's bill against what was actually paid.
+    **Has it got a cushion?** -- the reserve below. A civ that is already
+    missing payments has its answer regardless of what is banked, and that is
+    the case the stock check alone walked straight past: three days of fuel in
+    hand while draining is three days of fuel in hand, and the balance looks
+    fine right up until the ships start deserting.
     """
+    if civ.upkeep_paid < 1.0 - 1e-9:
+        return False
+
     strength = sum(f.strength for f in fleets) + extra_strength
     if strength <= 0:
         return True
@@ -745,7 +824,7 @@ def _maybe_build(turn: "_Turn", pending: dict[str, list[Intent]], rng) -> None:
     # This is the only limit left on how large a navy may get, and it is a real
     # one now that a ship costs a real fraction of what a colony makes: keep
     # adding hulls and the hourly upkeep eats the output that was building them.
-    if not _can_carry_more_upkeep(colonies, fleets, BUILD_STRENGTH):
+    if not _can_carry_more_upkeep(civ, colonies, fleets, BUILD_STRENGTH):
         return
 
     # A settler if there is somewhere to send one and nothing to send.

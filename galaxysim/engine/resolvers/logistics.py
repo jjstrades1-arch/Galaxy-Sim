@@ -32,11 +32,8 @@ from galaxysim.core.space import distance
 from galaxysim.core.units import format_count as format_people
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
-from galaxysim.engine.resolvers.production import colony_effects
+from galaxysim.engine.resolvers.production import DOCKING_TOLERANCE_LY, colony_effects
 from galaxysim.model.entities import Colony, Fleet, IntentKind, IntentStatus
-
-#: How close a fleet must be to a colony's system to exchange cargo.
-DOCKING_TOLERANCE_LY = 0.01
 
 #: Tonnes per hour a colony can handle with no spaceport. Deliberately nonzero:
 #: a new outpost has no buildings and must be able to receive the supplies it

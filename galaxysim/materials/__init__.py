@@ -66,6 +66,7 @@ from galaxysim.materials.costs import (
     FREIGHTER_COST_PER_CAPACITY,
     RESEARCH_ACCELERANTS,
     RESEARCH_COST_PER_PROGRESS,
+    SALVAGE_FRACTION,
     STORES_COST,
     accelerant_multiplier,
 )
@@ -130,6 +131,7 @@ __all__ = [
     "STORES_COST",
     "RESEARCH_COST_PER_PROGRESS",
     "RESEARCH_ACCELERANTS",
+    "SALVAGE_FRACTION",
     "accelerant_multiplier",
     # extraction
     "extractable",

@@ -59,6 +59,7 @@ class IntentKind(str, enum.Enum):
     MOVE_FLEET = "move_fleet"
     COLONIZE = "colonize"
     BUILD_FLEET = "build_fleet"
+    DECOMMISSION = "decommission"
     BUILD_STRUCTURE = "build_structure"
     TRANSFER_CARGO = "transfer_cargo"
     SUPPLY_ROUTE = "supply_route"
@@ -146,6 +147,20 @@ class Civ(Base):
     #: counter, which is enough to exercise the superlinear cost curve and the
     #: research half of the tick loop.
     techs_known: Mapped[int] = mapped_column(Integer, default=0)
+
+    #: Fraction of last tick's fleet upkeep bill this civ actually paid.
+    #:
+    #: A *flow*, deliberately, and it exists because asking about the stock was
+    #: not enough. A civ can hold three days of fuel, be draining steadily, keep
+    #: buying hulls on the strength of the balance, and find out it overreached
+    #: when ships start deserting. What it holds says nothing about whether it is
+    #: keeping up; this says exactly that.
+    #:
+    #: Written by the upkeep charge and read by whoever is deciding what to build
+    #: next tick -- the same one-tick lag as :attr:`Colony.power_satisfaction`,
+    #: for the same reason: the decision runs before the resolver that would
+    #: answer the question.
+    upkeep_paid: Mapped[float] = mapped_column(Float, default=1.0)
 
     universe: Mapped[Universe] = relationship(back_populates="civs")
     colonies: Mapped[list["Colony"]] = relationship(

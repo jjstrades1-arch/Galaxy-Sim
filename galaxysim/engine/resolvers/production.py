@@ -71,6 +71,7 @@ from galaxysim.materials import (
     FOOD,
     FREIGHTER_COST_PER_CAPACITY,
     RESEARCH_COST_PER_PROGRESS,
+    SALVAGE_FRACTION,
     WATER,
     accelerant_multiplier,
     can_afford,
@@ -79,6 +80,7 @@ from galaxysim.materials import (
     refine,
     spend,
 )
+from galaxysim.core.space import distance
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
 from galaxysim.model.entities import Building, Civ, Colony, Fleet, IntentKind, IntentStatus
@@ -89,6 +91,12 @@ from galaxysim.model.entities import Building, Civ, Colony, Fleet, IntentKind, I
 #: nothing to draw on and ships start deserting. This is the number that prices
 #: force projection -- deep strikes cost, and they cost because of *distance*.
 SUPPLY_RANGE_LY = 25.0
+
+#: How close a fleet must be to a colony's system to be *at* it -- to exchange
+#: cargo, or to be broken up in its yards. Lives here rather than in
+#: :mod:`~galaxysim.engine.resolvers.logistics` only because logistics already
+#: imports this module and the reverse would be a cycle.
+DOCKING_TOLERANCE_LY = 0.01
 
 
 def resolve(ctx: TickContext) -> None:
@@ -103,6 +111,7 @@ def resolve(ctx: TickContext) -> None:
         _produce(ctx, civ, colonies.get(civ.id, []), fleets.get(civ.id, []))
     _start_structures(ctx)
     _start_fleets(ctx)
+    _decommission_fleets(ctx)
     _advance_construction(ctx, colonies)
 
 
@@ -849,8 +858,12 @@ def _charge_fleet_upkeep(
     *that* is what makes projecting force far from home expensive -- distance,
     rather than an accident of which rock the fleet happens to be sitting over.
     """
+    civ.upkeep_paid = 1.0
     if not fleets:
         return
+
+    billed = 0.0
+    settled = 0.0
 
     for fleet in fleets:
         if fleet.strength <= 0:
@@ -874,6 +887,8 @@ def _charge_fleet_upkeep(
                     supplier.stockpile[resource] = available - paid
                     outstanding -= paid
             shortfall = max(shortfall, outstanding / owed)
+            billed += owed
+            settled += owed - outstanding
 
         if shortfall <= 1e-9:
             continue
@@ -893,6 +908,11 @@ def _charge_fleet_upkeep(
             civ_id=civ.id,
             payload={"fleet_id": fleet.id, "shortfall": round(shortfall, 4)},
         )
+
+    # The whole bill, in tonnes, against what the warehouses could cover. Read
+    # next tick by anyone deciding whether this civ can carry another hull.
+    if billed > 0:
+        civ.upkeep_paid = min(1.0, settled / billed)
 
 
 # -------------------------------------------------------------- construction
@@ -1025,6 +1045,81 @@ def _start_fleets(ctx: TickContext) -> None:
             civ_id=colony.civ_id,
             payload={"colony_id": colony.id, "strength": strength},
         )
+
+
+def _decommission_fleets(ctx: TickContext) -> None:
+    """Break up ships, returning part of their materials to the colony below.
+
+    The inverse of :func:`_start_fleets`, and the reason it exists is that
+    without it upkeep is a one-way ratchet. A fleet is a standing bill; a colony
+    ship that has landed its pod is a hull with no remaining purpose still
+    drawing that bill every hour, and the only way to stop paying was to let the
+    crew desert -- which is to say, to fail. Ending a commitment has to be
+    something a civilization can *decide*.
+
+    Salvage lands where the ship is, like everything else made of matter.
+    """
+    orders = queries.active_intents(
+        ctx.session, ctx.universe.id, IntentKind.DECOMMISSION.value
+    )
+    if not orders:
+        return
+
+    all_fleets = queries.fleets_by_id(ctx)
+    colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id)
+
+    for intent in orders:
+        fleet = all_fleets.get(intent.payload.get("fleet_id", -1))
+        if fleet is None or fleet.civ_id != intent.civ_id:
+            _fail(ctx, intent, "no such fleet", "Decommission order")
+            continue
+
+        if fleet.in_transit:
+            # Not a failure: a ship under way will arrive.
+            intent.status = IntentStatus.IN_PROGRESS.value
+            intent.result = "awaiting arrival"
+            continue
+
+        yard = queries.nearest_of(colonies.get(intent.civ_id, []), fleet.position)
+        if yard is None or distance(fleet.position, yard.world.system.position) > DOCKING_TOLERANCE_LY:
+            _fail(
+                ctx,
+                intent,
+                "a fleet can only be broken up at one of your colonies",
+                "Decommission order",
+            )
+            continue
+
+        salvage = {
+            resource: amount * fleet.strength * SALVAGE_FRACTION
+            for resource, amount in sorted(FLEET_COST_PER_STRENGTH.items())
+        }
+        extra_hold = max(
+            0.0, fleet.cargo_capacity - fleet.strength * ctx.rates.cargo_capacity_per_strength
+        )
+        for resource, per_tonne in sorted(FREIGHTER_COST_PER_CAPACITY.items()):
+            salvage[resource] = salvage.get(resource, 0.0) + per_tonne * extra_hold * SALVAGE_FRACTION
+
+        # Whatever was in the hold comes off first. It was never part of the
+        # ship, and losing a freighter's last load to the scrappers would be a
+        # nasty piece of hidden arithmetic.
+        deposit(yard.stockpile, dict(fleet.cargo))
+        deposit(yard.stockpile, salvage)
+        if fleet.passengers > 0:
+            yard.population += fleet.passengers
+
+        ctx.log(
+            "fleet_decommissioned",
+            f"{fleet.name} was broken up at {yard.name}, recovering "
+            + ", ".join(f"{amount:,.0f} {resource}" for resource, amount in sorted(salvage.items())),
+            civ_id=intent.civ_id,
+            payload={"colony_id": yard.id, "strength": fleet.strength},
+        )
+        ctx.session.delete(fleet)
+        all_fleets.pop(fleet.id, None)
+
+        intent.status = IntentStatus.COMPLETED.value
+        intent.resolved_tick = ctx.tick
 
 
 def _advance_construction(ctx: TickContext, colonies_by_civ: dict) -> None:

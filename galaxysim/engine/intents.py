@@ -112,6 +112,22 @@ def build_fleet(
     return _queue(session, civ, IntentKind.BUILD_FLEET, payload)
 
 
+def decommission_fleet(session: Session, civ: Civ, fleet_id: int) -> Intent:
+    """Break up a fleet, returning part of its materials to the colony it is at.
+
+    The counterpart to :func:`build_fleet`, and until it existed upkeep was a
+    one-way ratchet: a colony ship that had landed its pod was a hull with no
+    remaining purpose and a permanent hourly bill, and the only way to stop
+    paying was to let its crew desert. A fleet is a standing commitment, so
+    ending it has to be something you can *decide*.
+
+    The fleet must be parked at one of your own colonies -- scrapping is
+    industrial work, not something a crew does in deep space -- and what comes
+    back lands in that colony's warehouses, like everything else.
+    """
+    return _queue(session, civ, IntentKind.DECOMMISSION, {"fleet_id": int(fleet_id)})
+
+
 def build_structure(session: Session, civ: Civ, colony_id: int, kind: str) -> Intent:
     """Construct a building at a colony.
 

@@ -242,6 +242,120 @@ def test_solvent_civ_keeps_its_fleet():
         assert session.get(Fleet, fleet_id).strength == pytest.approx(strength_before)
 
 
+def test_a_missed_payment_is_recorded_as_a_flow():
+    """Not "what is banked" -- "did it keep up".
+
+    A civ can hold three days of fuel, be draining steadily, keep buying hulls
+    on the strength of the balance, and find out it overreached when ships start
+    deserting. The stock says nothing about whether the bill is being met.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=5152, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        fleet.strength = 500.0
+        home_colony(session, civ).stockpile = {}
+        civ_id = civ.id
+
+    run_ticks(engine, universe_id, 1)
+    with open_session(engine) as session:
+        assert session.get(Civ, civ_id).upkeep_paid < 1.0
+
+    # Pay it, and the flag clears on the next tick it is charged.
+    with open_session(engine) as session:
+        civ = session.get(Civ, civ_id)
+        home_colony(session, civ).stockpile = {key: 1e12 for key in MATERIALS}
+
+    run_ticks(engine, universe_id, 1)
+    with open_session(engine) as session:
+        assert session.get(Civ, civ_id).upkeep_paid == pytest.approx(1.0)
+
+
+def test_a_civ_that_missed_a_payment_does_not_buy_another_hull():
+    """The AI's brake, asked as a flow question rather than a stock one."""
+    from galaxysim.ai.simple import _can_carry_more_upkeep
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=5153, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colonies = [home_colony(session, civ)]
+        colonies[0].stockpile = {key: 1e12 for key in MATERIALS}
+        fleets = list(session.scalars(select(Fleet).where(Fleet.civ_id == civ.id)))
+
+        # Warehouses overflowing: the stock question says yes.
+        civ.upkeep_paid = 1.0
+        assert _can_carry_more_upkeep(civ, colonies, fleets, 2.0)
+
+        # Same warehouses, but last tick's bill went unpaid. Something is wrong
+        # with where the materials are rather than how many there are -- upkeep
+        # is charged from the colonies near each fleet -- and buying another
+        # hull cannot be the answer to it.
+        civ.upkeep_paid = 0.8
+        assert not _can_carry_more_upkeep(civ, colonies, fleets, 2.0)
+
+
+def test_decommissioning_returns_materials_and_stops_the_bill():
+    """Upkeep stops being a one-way ratchet.
+
+    Until a hull could be broken up, the only way to stop paying for a ship with
+    no purpose was to let its crew desert -- which returns nothing and is not a
+    decision.
+    """
+    from galaxysim.colony.labor import LIFE_SUPPORT
+    from galaxysim.materials import ELECTRONICS, FLEET_COST_PER_STRENGTH, SALVAGE_FRACTION
+    from tests.conftest import take_manual_control
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=5154, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        take_manual_control(session, civ)
+        home = home_colony(session, civ)
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        # Everyone on life support, so nothing is mined, refined or built while
+        # the scrapping happens and the salvage is the only thing that moves.
+        intents.set_labor(session, home, {LIFE_SUPPORT: 1.0})
+        home.stockpile = {key: 1e9 for key in MATERIALS}
+        home.stockpile[STEEL] = 0.0
+        home.stockpile[ELECTRONICS] = 0.0
+        # The fleet is parked over the homeworld, which is where it was built.
+        fleet.x, fleet.y, fleet.z = (
+            home.world.system.x,
+            home.world.system.y,
+            home.world.system.z,
+        )
+        intents.decommission_fleet(session, civ, fleet.id)
+        fleet_id, home_id, strength = fleet.id, home.id, fleet.strength
+
+    run_ticks(engine, universe_id, 1)
+
+    with open_session(engine) as session:
+        assert session.get(Fleet, fleet_id) is None, "the hull should be gone"
+        home = session.get(Colony, home_id)
+        for resource in (STEEL, ELECTRONICS):
+            expected = FLEET_COST_PER_STRENGTH[resource] * strength * SALVAGE_FRACTION
+            assert home.stockpile[resource] == pytest.approx(expected), (
+                f"{resource} should have come back as salvage"
+            )
+        assert session.scalars(
+            select(Event).where(Event.kind == "fleet_decommissioned")
+        ).all()
+
+    # And with nothing left flying there is no bill to miss.
+    run_ticks(engine, universe_id, 24)
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        assert civ.upkeep_paid == pytest.approx(1.0)
+        assert not session.scalars(
+            select(Event).where(Event.kind == "upkeep_shortfall")
+        ).all()
+
+
 def test_universe_cadence_is_per_universe():
     """A solo game and the shared universe can tick at different resolutions."""
     engine = create_engine_for("sqlite://")

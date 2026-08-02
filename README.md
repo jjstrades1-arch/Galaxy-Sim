@@ -32,6 +32,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/galaxysim colonize 1 60 --preview    # what would settling cost?
 .venv/bin/galaxysim colonize 1 60 --stores 200 # send an expedition
 .venv/bin/galaxysim route 2 --from 1 --to 3 --carry water:50
+.venv/bin/galaxysim scrap 4                    # break up a hull, stop its upkeep
 .venv/bin/galaxysim tick 24                    # advance a day
 .venv/bin/galaxysim log                        # what happened
 ```
@@ -369,6 +370,12 @@ upkeep by the nearest colony to the fleet — so projecting force far from home
 means feeding it out there. Research is the one exception: a discovery is known
 everywhere the moment it is made.
 
+Because upkeep is a standing bill, ending one has to be a decision you can make:
+`scrap` breaks a fleet up at the colony it is parked over and returns a third of
+its build cost to that warehouse. Without it the only way to stop paying for a
+hull with no purpose — a colony ship that has landed its pod, say — was to let
+its crew desert, which returns nothing and is something that happens *to* you.
+
 **Population is assigned to work**, across extraction, industry, research, life
 support and agriculture. The last two are the interesting ones, because they are
 *bills* rather than investments. Life-support load scales with
@@ -403,6 +410,14 @@ large hold, so cargo runs reuse the movement resolver unchanged. A *standing
 supply route* shuttles between two colonies indefinitely — set it up once and it
 keeps feeding an outpost while you are asleep, which is what makes manual
 logistics survivable in an async game.
+
+A route also carries a **backhaul**: on the way home the freighter brings the
+outpost's surplus ore to the world that can refine it. That matters more than it
+sounds, because refining is *local* — enrichment wants uranium and fuel in one
+warehouse, electronics wants copper, rare earths and silicon together — and the
+worlds with the geology are exactly the ones with no industry. It comes home no
+fuller than it went out, so ore never crowds out the supplies the route exists to
+deliver, and the hold is shared between ores in proportion to what is spare.
 
 **Depth is opt-in.** Every colony can be handed to a governor that runs it to a
 policy (`balanced`, `extraction`, `industry`, `research`, `survival`), and new
@@ -588,11 +603,6 @@ of room.
   pool, so construction runs at half the rate it did. That is the intended
   shape — ore has to become steel before it can become a hull — but the split is
   a first-pass number that wants a play session, not a spreadsheet.
-- **A fleet cannot be decommissioned.** Upkeep is a one-way ratchet: a colony
-  ship that has landed its pod is a hull with no purpose and a permanent bill,
-  and there is no way to scrap it or recover its materials. That mattered less
-  when a ship cost nineteen tonnes; now that upkeep is a real fraction of
-  output, a fleet of spent settlers is a real drag.
 - **The AI terraforms one planet at a time and never re-plans.** It picks a dead
   world with a developed neighbourhood and works the sequence, which is the
   right shape, but it will not abandon a bad target or run two campaigns at

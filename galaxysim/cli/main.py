@@ -985,6 +985,27 @@ def build(
 
 
 @app.command()
+def scrap(
+    fleet_id: int = typer.Argument(..., help="Fleet to break up."),
+) -> None:
+    """Break up a fleet at the colony it is parked at, recovering materials.
+
+    Upkeep is charged every hour a hull exists, so a ship you have no use for is
+    a bill with no benefit. Scrapping returns a third of what it cost to the
+    colony below it and stops the bill.
+    """
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+        fleet = session.get(Fleet, fleet_id)
+        if fleet is None or fleet.civ_id != civ.id:
+            console.print("[red]No such fleet.[/red]")
+            raise typer.Exit(1)
+        intents.decommission_fleet(session, civ, fleet_id)
+        console.print(f"[green]Queued:[/green] {fleet.name} will be broken up.")
+
+
+@app.command()
 def research() -> None:
     """Begin a standing research programme; it runs while you are away."""
     with open_session(_engine()) as session:
