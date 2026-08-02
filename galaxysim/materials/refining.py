@@ -85,17 +85,35 @@ def _runnable(recipe: Recipe, allowance: dict[str, float]) -> float:
 
 
 def plan_for(priorities: dict[str, float] | None) -> list[tuple[Recipe, float]]:
-    """The recipes a colony will attempt, with relative weights.
+    """The recipes a colony will attempt, **most important first**.
 
     An empty or unrecognised plan falls back to :data:`DEFAULT_PLAN` at equal
-    weight, so a colony nobody has configured still works.
+    weight, so a colony nobody has configured still works. That fallback is a
+    *tuple* and its order is the priority -- water before fuel before steel --
+    which is why it has always behaved sensibly.
+
+    **Order is not cosmetic here, it is the priority**, and this used to sort by
+    name. :func:`refine` walks the plan spending a shared per-material draw
+    allowance as it goes, so whoever comes first gets the scarce input and a
+    chain further down finds the cupboard bare no matter what weight it carries.
+    With the weights alphabetised, ``polymers`` -- eight carbon a run -- drank
+    the entire carbon supply before ``smelting`` was reached, and a capital
+    sitting on **eight billion tonnes of iron produced no steel at all** while
+    its plan listed smelting as the single highest priority. Expansion across
+    eight civilizations stopped dead for two simulated months on that.
+
+    Ties break on the recipe key so the order is still fully determined, which
+    tick replay requires.
     """
     if priorities:
-        chosen = [
-            (RECIPES[key], float(weight))
-            for key, weight in sorted(priorities.items())
-            if key in RECIPES and float(weight) > 0
-        ]
+        chosen = sorted(
+            (
+                (RECIPES[key], float(weight))
+                for key, weight in priorities.items()
+                if key in RECIPES and float(weight) > 0
+            ),
+            key=lambda pair: (-pair[1], pair[0].key),
+        )
         if chosen:
             return chosen
     return [(RECIPES[key], 1.0) for key in DEFAULT_PLAN]

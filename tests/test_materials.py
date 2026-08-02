@@ -444,3 +444,31 @@ def test_a_wet_world_supplies_its_own_water_and_a_dry_one_does_not():
     assert has_surface_water({"hydrosphere": {"liquid_water": True}})
     assert not has_surface_water({"hydrosphere": {"liquid_water": False}})
     assert not has_surface_water({}), "an unsurveyed rock is dry until proven otherwise"
+
+
+def test_a_plan_runs_its_priorities_first_not_its_alphabet():
+    """Order in a refining plan *is* the priority, and it used to be the alphabet.
+
+    :func:`refine` walks the plan spending a shared per-material draw allowance,
+    so whoever comes first gets the scarce input. Sorted by name, ``polymers``
+    -- eight carbon a run -- emptied the carbon before ``smelting`` was reached,
+    and a capital holding eight billion tonnes of iron made no steel at all
+    while its own plan named smelting the top priority. Eight AI civilizations
+    stopped expanding for two simulated months on that one ``sorted()``.
+    """
+    from galaxysim.materials.refining import plan_for, refine
+
+    priorities = {"polymers": 0.96, "smelting": 1.0, "fuel_synthesis": 0.74}
+    ordered = [recipe.key for recipe, _ in plan_for(priorities)]
+    assert ordered[0] == "smelting", f"highest weight should run first, got {ordered}"
+
+    # And it shows up in what actually comes out: plenty of iron, barely any
+    # carbon, and all three chains competing for that carbon.
+    stock = {
+        "iron": 1e9, "carbon": 300_000.0, "water_ice": 1e8,
+        "copper": 1e6, "rare_earths": 1e6, "silicon": 1e6,
+    }
+    _, made = refine(dict(stock), work=1e7, hours=1.0, priorities=priorities)
+    assert made.get("steel", 0.0) > 0.0, (
+        "the top-priority chain must get a share of the scarce input"
+    )
