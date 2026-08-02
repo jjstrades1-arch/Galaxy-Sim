@@ -5,15 +5,19 @@ submits the same intents through the same :mod:`galaxysim.engine.intents` API a
 human uses, reads only what a human could read, and waits for the same ticks.
 Nothing here reaches into world state directly.
 
-That is a deliberate constraint rather than a stylistic one. An AI with a back
-door makes solo mode a different game from multiplayer, and it also stops the
-AI from being usable as load generation for the real thing -- a hundred of these
-running against a shared universe is the closest thing to a hundred players we
-can get before there are a hundred players.
+That is a deliberate constraint rather than a stylistic one, and the reason is
+narrower than it used to be written: this is a single-player game, so "solo must
+match multiplayer" is not the argument. The argument is that **the soak is the
+only instrument for telling whether the economy works.** Every economic failure
+this project has found surfaced by watching these civilizations run under
+exactly the constraints a player faces; hand them a production multiplier and
+the soak stops measuring the game and starts measuring the multiplier.
 
-Its play is intentionally simple: research always, expand when it can, build
-when it is rich. It is a sparring partner for testing the loop, not an opponent
-worth fearing. Smarter behaviour is a later concern.
+*How well* it plays is not fixed. Every standard of play -- how often it thinks,
+how many worlds it industrialises, whether it settles the nearest rock or the
+best one -- comes from the universe's :class:`~galaxysim.ai.doctrine.Doctrine`,
+so difficulty is composed of attention, competence and circumstance rather than
+of gifts.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from galaxysim.ai.doctrine import doctrine as doctrine_for
 from galaxysim.colony.expedition import Loadout
 from galaxysim.colony.labor import INDUSTRY, normalize
 from galaxysim.colony.population import capacity
@@ -33,6 +38,7 @@ from galaxysim.materials import (
     WATER,
     can_afford,
 )
+from galaxysim.materials.catalogue import RAW_MATERIALS
 from galaxysim.core.seeds import rng_for
 from galaxysim.core.space import distance
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION
@@ -86,74 +92,11 @@ MIGRATION_BATCH = 500_000.0
 MIGRATION_RESERVE = 1e8
 TONNES_PER_SETTLER = 0.5
 
-#: Warship strength the AI garrisons per colony it holds.
-#:
-#: **There is no longer a cap above this.** There used to be: a ceiling on total
-#: fleet strength per billion people, which existed because upkeep was priced at
-#: two hundred-thousandths of a percent of a civilization's output and therefore
-#: bounded nothing at all. It was the only brake in the game, it was pinned to a
-#: population that by design does not grow, and it was the entire reason AI
-#: empires stopped expanding on day two and never started again.
-#:
-#: With ships priced as ships, "can I buy this and keep it flying" is a real
-#: question with a real answer, and the AI is allowed to answer it. What stops
-#: it now is what should: the yard's construction time, the materials, the
-#: standing upkeep bill against what its colonies actually produce, and how far
-#: from home it can supply.
-DEFENSIVE_STRENGTH_PER_COLONY = 2.0
-
-#: Hours of standing upkeep the AI keeps banked before it will buy another hull.
-#:
-#: The honest question, and the one an earlier version of this got wrong by
-#: asking about industry output instead. Upkeep is paid in specific materials --
-#: overwhelmingly *fuel*, which is synthesised from water ice and carbon and is
-#: the scarcest refined good a young empire has. A civilization can be drowning
-#: in steel and alloys, as the AI was with a hundred and fifteen million tonnes
-#: banked, and still be unable to keep a single ship flying.
-#:
-#: So the test is against the fuel bunker rather than the smelters: hold this
-#: many hours of what the whole fleet burns, including the ship being
-#: considered, or do not build it. That makes the size of a navy a consequence
-#: of fuel production without anything having to say so, and -- more importantly
-#: -- it stops the AI buying ships it will then watch desert, which is what
-#: turned a constraint into a death spiral.
-#:
-#: Three days rather than the fortnight this started at, and the difference
-#: mattered more than it looks. A fortnight's reserve on a fleet of a hundred
-#: and ten points wants forty million tonnes of fuel banked against the twelve
-#: million a civ that size actually accumulates -- so the AI stopped expanding
-#: at day twenty, not because it could not pay its bills but because it was
-#: saving for a rainy fortnight. Prudence became the brake, which is exactly the
-#: species of artificial ceiling this whole pass exists to remove. Three days is
-#: enough to keep ships from deserting between deliveries, which is all the
-#: reserve was ever for.
-UPKEEP_RESERVE_HOURS = 24.0 * 3.0
-
-#: How far the AI will send a scout, and how many candidate systems it weighs.
-#:
-#: The galaxy is a pure function and unvisited space costs nothing, but a system
-#: only becomes somewhere you can *settle* once a ship has been there -- so an
-#: empire that never scouts has a frontier exactly as large as whatever it was
-#: charted at the start, which is how the AI's system count sat at seventy-two
-#: for an entire twenty-eight day soak.
-#:
-#: Kept inside supply range on purpose, and that is not caution. Upkeep is
-#: charged from the warehouses nearest a fleet and there is nothing to draw on
-#: past :data:`SUPPLY_RANGE_LY`, so a scout sent further deserts before it
-#: arrives -- exploration that consumes the explorer. Holding it inside the line
-#: produces something better than a longer leash: the charted frontier grows
-#: only as fast as the settled one, so scouting and settling leapfrog each
-#: other outward and neither runs away from the other.
-SCOUT_RANGE_LY = SUPPLY_RANGE_LY * 0.8
-SCOUT_CANDIDATES = 40
-
-#: Habitability at or below which a settled world is a terraforming candidate,
-#: and the least construction a neighbourhood must be able to muster before the
-#: AI commits to a campaign there. A project on a world with nothing around it
-#: is a decade of work; the same project beside three developed colonies is
-#: days, and the AI should be able to tell those apart.
-TERRAFORM_CANDIDATE_HABITABILITY = 0.25
-TERRAFORM_MINIMUM_NEIGHBOURHOOD_WORK = 5.0e5
+# Standards of play -- how often this opponent thinks, how many yards it runs,
+# how far it scouts, how bold it is about terraforming and how thin it lets its
+# reserves run -- all live on its :class:`~galaxysim.ai.doctrine.Doctrine`, which
+# the universe names. They were module constants here, which meant every game
+# had exactly one opponent.
 
 
 class _Turn:
@@ -171,7 +114,9 @@ class _Turn:
     engine, on the tick.
     """
 
-    __slots__ = ("session", "universe", "civ", "_colonies", "_fleets", "_shared")
+    __slots__ = (
+        "session", "universe", "civ", "doctrine", "_colonies", "_fleets", "_shared",
+    )
 
     def __init__(
         self,
@@ -183,6 +128,12 @@ class _Turn:
         self.session = session
         self.universe = universe
         self.civ = civ
+        # How well this opponent plays. Every standard of play the AI has --
+        # how often it thinks, how many yards it runs, whether it settles the
+        # nearest world or the best one -- reads off this rather than off
+        # module constants, so difficulty is one object rather than a scatter
+        # of numbers. See :mod:`galaxysim.ai.doctrine`.
+        self.doctrine = doctrine_for(universe.ai_difficulty)
         self._colonies: list[Colony] | None = None
         self._fleets: list[Fleet] | None = None
         # The star charts and the list of charted systems are facts about the
@@ -244,18 +195,51 @@ class _Turn:
 
 
 def take_all_turns(session: Session, universe: Universe) -> int:
-    """Let every AI civ in ``universe`` queue its orders. Returns how many acted."""
+    """Let every AI civ due a decision queue its orders. Returns how many acted.
+
+    **How often an opponent thinks is the first difficulty dial**, and in an
+    asynchronous game it is the truest one: what actually differs between human
+    opponents is how often they check in. A dormant rival re-plans once a day, a
+    relentless one every hour.
+
+    Expressed in *hours* of simulated time, never in ticks. Left in ticks, an
+    opponent in a five-minute universe would think twelve times as often as one
+    in an hourly universe -- exactly the class of bug
+    :mod:`galaxysim.engine.rates` exists to prevent, and one that was latent
+    here for the whole project: deciding once per tick is what the AI always
+    did, so its rate of play silently depended on the cadence.
+
+    Staggered by civ id so the galaxy's opponents do not all think on the same
+    tick, which spreads the cost instead of paying it in lumps. Deterministic:
+    same ids, same schedule, same game.
+    """
+    from galaxysim.engine.rates import Cadence
+
     ai_civs = session.scalars(
         select(Civ)
         .where(Civ.universe_id == universe.id, Civ.is_ai.is_(True))
         .order_by(Civ.id)
     ).all()
+    if not ai_civs:
+        return 0
+
+    standard = doctrine_for(universe.ai_difficulty)
+    every = max(
+        1,
+        Cadence(universe.seconds_per_tick).ticks_for_hours(
+            standard.decision_interval_hours
+        ),
+    )
 
     # One place for the facts every civ reads identically this tick.
     shared: dict = {}
+    acted = 0
     for civ in ai_civs:
+        if (universe.tick_number + civ.id) % every:
+            continue
         take_turn(session, universe, civ, shared=shared)
-    return len(ai_civs)
+        acted += 1
+    return acted
 
 
 def take_turn(
@@ -294,13 +278,33 @@ def _set_policies(turn: "_Turn") -> None:
     governed colonies behave identically -- which is what makes solo play an
     honest rehearsal for the real thing.
     """
+    # Which worlds are run as industrial centres, and therefore where the
+    # shipyards are.
+    #
+    # **This used to be "colony index 0", full stop** -- and since only the
+    # industry policy's build order contains a shipyard, every AI civilization
+    # in the game had exactly one yard, permanently, however large it grew. All
+    # expansion funnelled through a single world. A competent player turns
+    # several developed worlds into yards and builds in parallel, which is
+    # difficulty earned rather than granted: not one price changes.
+    #
+    # Chosen by *development* rather than by id, because a yard on a
+    # fifty-thousand-person outpost is a yard that can never pay for what it
+    # would build. Ties break on id so the choice stays determined.
+    industrial = {
+        colony.id
+        for colony in sorted(
+            turn.colonies, key=lambda c: (-c.development, c.id)
+        )[: max(1, turn.doctrine.industrial_worlds)]
+    }
+
     for index, colony in enumerate(turn.colonies):
         if not colony.is_governed:
             continue
         if colony.world.habitability < 0.4:
             policy = governor.SURVIVAL
-        elif index == 0:
-            # The capital carries the war effort and the shipyard.
+        elif colony.id in industrial:
+            # Carries the war effort and a shipyard.
             policy = governor.INDUSTRY_POLICY
         elif index % 3 == 2:
             policy = governor.RESEARCH_POLICY
@@ -416,7 +420,7 @@ def _maybe_supply(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             # supply fleet quietly grew until the ships keeping the outposts
             # alive were themselves deserting.
             if not _can_carry_more_upkeep(
-                civ,
+                turn,
                 colonies,
                 turn.fleets,
                 FREIGHTER_STRENGTH,
@@ -554,7 +558,8 @@ def _maybe_scrap(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
 
     # Freighters are never candidates: an outpost dies without its route, so a
     # civ short of fuel must not balance its books by cutting the supply line.
-    over = sum(f.strength for f in warships) - len(colonies) * DEFENSIVE_STRENGTH_PER_COLONY
+    garrison = len(colonies) * turn.doctrine.garrison_per_colony
+    over = sum(f.strength for f in warships) - garrison
     if over <= 0 and civ.upkeep_paid >= 1.0 - 1e-9:
         return
 
@@ -627,6 +632,9 @@ def _nearest_settleable_world(
     the same information a player would have and no more.
     """
     claimed = claimed or set()
+    if turn.doctrine.settles_by_quality:
+        return _best_settleable_world(turn, fleet, claimed)
+
     best: tuple[float, World, StarSystem] | None = None
 
     for system in turn.systems:
@@ -647,7 +655,81 @@ def _nearest_settleable_world(
     return (best[1], best[2]) if best else None
 
 
-def _can_carry_more_upkeep(civ: Civ, colonies, fleets, extra_strength: float) -> bool:
+#: What settling for quality is actually looking for, and why each one.
+#:
+#: Habitability decides how much of the colony's population is occupied merely
+#: staying alive; land decides how many there can ever be. **Geology is the
+#: interesting one.** A capital was once found holding eight billion tonnes of
+#: iron and no steel, because smelting also wants carbon and nobody had settled
+#: anywhere carbon-bearing -- so a competent player facing a shortage goes and
+#: takes a world that ends it. Weighing the crust is how the AI does the same.
+SETTLE_HABITABILITY_WEIGHT = 60.0
+SETTLE_LAND_WEIGHT = 8.0
+SETTLE_GEOLOGY_WEIGHT = 30.0
+SETTLE_DISTANCE_PENALTY = 1.0
+#: Reference land area, so the land term is a ratio rather than a raw km².
+SETTLE_REFERENCE_LAND_KM2 = 1.5e8
+
+
+def _best_settleable_world(
+    turn: "_Turn", fleet: Fleet, claimed: set[int]
+) -> tuple[World, StarSystem] | None:
+    """The world most worth having, rather than the one that is closest.
+
+    Distance still counts -- a rich world outside supply range is a liability,
+    not a prize -- but it is a penalty on a score rather than the whole of it.
+
+    Reads promoted columns only (``habitability``, ``land_area_km2``,
+    ``extraction``), never the survey document: the AI must not pay to decode a
+    planet per candidate, and it must not learn anything a player's charts would
+    not already show.
+    """
+    wanted = _scarce_inputs(turn)
+    best: tuple[float, World, StarSystem] | None = None
+
+    for system in turn.systems:
+        span = distance(fleet.position, system.position)
+        for world in sorted(system.worlds, key=lambda w: w.id):
+            if world.colony is not None or world.id in claimed:
+                continue
+
+            yields = world.extraction or {}
+            geology = sum(yields.get(material, 0.0) for material in wanted)
+            score = (
+                world.habitability * SETTLE_HABITABILITY_WEIGHT
+                + min(1.0, (world.land_area_km2 or 0.0) / SETTLE_REFERENCE_LAND_KM2)
+                * SETTLE_LAND_WEIGHT
+                + geology * SETTLE_GEOLOGY_WEIGHT
+                - span * SETTLE_DISTANCE_PENALTY
+            )
+            # Ties break on world id, so two equally good rocks always resolve
+            # the same way and the turn stays replayable.
+            if best is None or (score, -world.id) > (best[0], -best[1].id):
+                best = (score, world, system)
+
+    return (best[1], best[2]) if best else None
+
+
+def _scarce_inputs(turn: "_Turn") -> tuple[str, ...]:
+    """Raw materials this empire is shortest of, relative to what it holds.
+
+    The same "make what you are short of" rule the governor refines under, asked
+    about the ground instead of the warehouse. Deliberately coarse: it wants to
+    know whether to prefer a carbon world over another iron one, not to rank
+    twenty-nine elements.
+    """
+    held: dict[str, float] = {}
+    for colony in turn.colonies:
+        for material, amount in colony.stockpile.items():
+            if material in RAW_MATERIALS:
+                held[material] = held.get(material, 0.0) + max(0.0, amount)
+    if not held:
+        return RAW_MATERIALS[:6]
+    ordered = sorted(RAW_MATERIALS, key=lambda m: (held.get(m, 0.0), m))
+    return tuple(ordered[:6])
+
+
+def _can_carry_more_upkeep(turn: "_Turn", colonies, fleets, extra_strength: float) -> bool:
     """Whether this civ could still pay its bills with another hull flying.
 
     The only limit left on a navy's size, and it is an economic one rather than
@@ -669,7 +751,7 @@ def _can_carry_more_upkeep(civ: Civ, colonies, fleets, extra_strength: float) ->
     hand while draining is three days of fuel in hand, and the balance looks
     fine right up until the ships start deserting.
     """
-    if civ.upkeep_paid < 1.0 - 1e-9:
+    if turn.civ.upkeep_paid < 1.0 - 1e-9:
         return False
 
     strength = sum(f.strength for f in fleets) + extra_strength
@@ -682,7 +764,8 @@ def _can_carry_more_upkeep(civ: Civ, colonies, fleets, extra_strength: float) ->
             banked[material] = banked.get(material, 0.0) + colony.stockpile.get(material, 0.0)
 
     return all(
-        banked.get(material, 0.0) >= per_strength * strength * UPKEEP_RESERVE_HOURS
+        banked.get(material, 0.0)
+        >= per_strength * strength * turn.doctrine.upkeep_reserve_hours
         for material, per_strength in FLEET_UPKEEP_PER_STRENGTH.items()
     )
 
@@ -710,7 +793,7 @@ def _maybe_terraform(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
 
     colonies = turn.colonies
     for colony in colonies:
-        if colony.world.habitability > TERRAFORM_CANDIDATE_HABITABILITY:
+        if colony.world.habitability > turn.doctrine.terraform_habitability:
             continue
 
         neighbourhood = queries.sorted_by_distance(
@@ -722,7 +805,7 @@ def _maybe_terraform(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             * DEFAULT_RATES.industry_per_worker_per_hour
             for helper in neighbourhood
         )
-        if muscle < TERRAFORM_MINIMUM_NEIGHBOURHOOD_WORK:
+        if muscle < turn.doctrine.terraform_minimum_neighbourhood_work:
             continue
 
         # Read off the promoted column rather than parsing the survey. Working
@@ -780,8 +863,8 @@ def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
         for stub in systems_near(
             universe.seed,
             colony.world.system.position,
-            SCOUT_RANGE_LY,
-            limit=SCOUT_CANDIDATES,
+            SUPPLY_RANGE_LY * turn.doctrine.scout_range_fraction,
+            limit=turn.doctrine.scout_candidates,
         ):
             if stub.key not in charted:
                 intents.move_fleet(
@@ -810,7 +893,12 @@ def _maybe_build(turn: "_Turn", pending: dict[str, list[Intent]], rng) -> None:
     holds would want to defend.
     """
     session, civ = turn.session, turn.civ
-    if pending.get(IntentKind.BUILD_FLEET.value):
+    # How many hulls a civ will have on the slipways at once. One at a time is
+    # a hard throttle now that a colony pod costs a fortnight of a capital's
+    # yard: a finished ship is not replaced until the next decision, and a
+    # competent player keeps the queue fed. The cap that matters stays economic
+    # -- what a yard can pay for and what the fleet's upkeep will bear.
+    if len(pending.get(IntentKind.BUILD_FLEET.value, [])) >= turn.doctrine.build_queue_depth:
         return
 
     cost = {
@@ -842,7 +930,7 @@ def _maybe_build(turn: "_Turn", pending: dict[str, list[Intent]], rng) -> None:
     # This is the only limit left on how large a navy may get, and it is a real
     # one now that a ship costs a real fraction of what a colony makes: keep
     # adding hulls and the hourly upkeep eats the output that was building them.
-    if not _can_carry_more_upkeep(civ, colonies, fleets, BUILD_STRENGTH):
+    if not _can_carry_more_upkeep(turn, colonies, fleets, BUILD_STRENGTH):
         return
 
     # A settler if there is somewhere to send one and nothing to send.
@@ -863,7 +951,7 @@ def _maybe_build(turn: "_Turn", pending: dict[str, list[Intent]], rng) -> None:
     # Otherwise a warship, and only up to what this many colonies is worth
     # garrisoning. Hulls with nothing to do still cost upkeep every hour.
     warships = sum(f.strength for f in fleets if f.colony_pods <= 0 and f.cargo_capacity <= 100.0)
-    if warships + BUILD_STRENGTH > len(colonies) * DEFENSIVE_STRENGTH_PER_COLONY:
+    if warships + BUILD_STRENGTH > len(colonies) * turn.doctrine.garrison_per_colony:
         return
 
     intents.build_fleet(

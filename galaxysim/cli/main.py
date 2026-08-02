@@ -21,6 +21,7 @@ from rich.table import Table
 from sqlalchemy import Engine, select
 
 from galaxysim.ai import take_all_turns
+from galaxysim.ai.doctrine import DEFAULT_DOCTRINE, DOCTRINES, LADDER
 from galaxysim.bootstrap import add_civ, create_universe
 from galaxysim.colony import energy
 from galaxysim.colony.buildings import BUILDING_TYPES, building_type
@@ -63,7 +64,7 @@ from galaxysim.engine.resolvers.governor import POLICIES
 from galaxysim.engine.resolvers.production import colony_effects, effective_habitability
 from galaxysim.cli.survey_view import format_count
 from galaxysim.cli.survey_view import render as render_survey
-from galaxysim.worldgen.galaxy import ARM, REGIONS, metallicity_at, systems_near
+from galaxysim.worldgen.galaxy import REGIONS, metallicity_at, systems_near
 from galaxysim.worldgen.materialize import existing_system
 from galaxysim.worldgen.serialize import has_surface_water, survey_from_json
 from galaxysim.engine.tick import resolve_tick
@@ -128,20 +129,32 @@ def new(
         60, "--minutes-per-tick", help="Tick resolution. Does not change how fast anyone grows."
     ),
     region: str = typer.Option(
-        ARM.key,
+        "",
         "--region",
         help="Where in the galaxy everyone starts: core, arm or rim. "
-        "Core is crowded and metal-rich; rim is empty and poor.",
+        "Core is crowded and metal-rich; rim is empty and poor. "
+        "Defaults to whatever the difficulty implies.",
+    ),
+    difficulty: str = typer.Option(
+        DEFAULT_DOCTRINE.key,
+        "--difficulty",
+        help="How well the AI plays: " + ", ".join(d.key for d in LADDER) + ".",
     ),
     species: str = typer.Option(
         "", "--species", help="Describe your species. Shapes generation in a later build step."
     ),
 ) -> None:
     """Create a new solo universe."""
-    if region not in REGIONS:
+    if region and region not in REGIONS:
         console.print(
             f"[red]Unknown region {region!r}.[/red] Choose one of: "
             + ", ".join(sorted(REGIONS))
+        )
+        raise typer.Exit(1)
+    if difficulty not in DOCTRINES:
+        console.print(
+            f"[red]Unknown difficulty {difficulty!r}.[/red] Choose one of: "
+            + ", ".join(d.key for d in LADDER)
         )
         raise typer.Exit(1)
     path = _db_url()
@@ -159,7 +172,8 @@ def new(
         seed=seed,
         seconds_per_tick=minutes_per_tick * 60,
         mode=UniverseMode.SOLO,
-        region=region,
+        region=region or None,
+        difficulty=difficulty,
     )
 
     with open_session(engine) as session:
@@ -168,8 +182,11 @@ def new(
         for index in range(ai):
             add_civ(session, universe, f"AI-{index + 1}", is_ai=True)
 
-    spec = REGIONS[region]
+    standard = DOCTRINES[difficulty]
+    with open_session(engine) as session:
+        spec = REGIONS[session.get(Universe, universe_id).region]
     console.print(f"[green]Created[/green] [bold]{name}[/bold] with {ai} AI opponents.")
+    console.print(f"Opponents are [bold]{standard.name}[/bold] — {standard.description}")
     console.print(f"Seated in [bold]{spec.name}[/bold] — {spec.description}")
     console.print(
         f"Ticking every {minutes_per_tick} minutes of simulated time. "
@@ -1077,7 +1094,10 @@ def soak(
     days: int = typer.Option(28, "--days", help="Days of simulated time to run."),
     minutes_per_tick: int = typer.Option(60, "--minutes-per-tick", help="Tick resolution."),
     seed: int = typer.Option(1, "--seed", help="Universe seed."),
-    region: str = typer.Option(ARM.key, "--region", help="core, arm or rim."),
+    region: str = typer.Option("", "--region", help="core, arm or rim."),
+    difficulty: str = typer.Option(
+        DEFAULT_DOCTRINE.key, "--difficulty", help="How well the AI plays."
+    ),
 ) -> None:
     """Run a throwaway universe of AI civs and chart how fast they grow.
 
@@ -1098,7 +1118,8 @@ def soak(
         seed=seed,
         seconds_per_tick=minutes_per_tick * 60,
         mode=UniverseMode.SOLO,
-        region=region if region in REGIONS else ARM.key,
+        region=region or None,
+        difficulty=difficulty,
     )
     with open_session(engine) as session:
         universe = session.get(Universe, universe_id)

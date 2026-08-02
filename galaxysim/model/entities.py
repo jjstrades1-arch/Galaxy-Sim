@@ -96,6 +96,11 @@ class Universe(Base):
     #: crowded and how rich everybody's neighbourhood is.
     #: See :mod:`galaxysim.worldgen.galaxy`.
     region: Mapped[str] = mapped_column(String(20), default="arm")
+    #: How well the AI civilizations in this universe play: ``dormant``,
+    #: ``steady``, ``driven`` or ``relentless``. See
+    #: :mod:`galaxysim.ai.doctrine` -- difficulty is made of attention,
+    #: competence and circumstance, and never of free materials.
+    ai_difficulty: Mapped[str] = mapped_column(String(20), default="steady")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     civs: Mapped[list["Civ"]] = relationship(

@@ -275,27 +275,31 @@ def test_a_missed_payment_is_recorded_as_a_flow():
 
 def test_a_civ_that_missed_a_payment_does_not_buy_another_hull():
     """The AI's brake, asked as a flow question rather than a stock one."""
-    from galaxysim.ai.simple import _can_carry_more_upkeep
+    from galaxysim.ai.simple import _Turn, _can_carry_more_upkeep
 
     engine = create_engine_for("sqlite://")
     universe_id = new_universe(engine, seed=5153, civs=("Terrans",))
 
     with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
         civ = civ_by_name(session, universe_id, "Terrans")
         colonies = [home_colony(session, civ)]
         colonies[0].stockpile = {key: 1e12 for key in MATERIALS}
         fleets = list(session.scalars(select(Fleet).where(Fleet.civ_id == civ.id)))
+        # The reserve a civ keeps is part of how well it plays, so the check
+        # reads it off the opponent's doctrine rather than a module constant.
+        turn = _Turn(session, universe, civ)
 
         # Warehouses overflowing: the stock question says yes.
         civ.upkeep_paid = 1.0
-        assert _can_carry_more_upkeep(civ, colonies, fleets, 2.0)
+        assert _can_carry_more_upkeep(turn, colonies, fleets, 2.0)
 
         # Same warehouses, but last tick's bill went unpaid. Something is wrong
         # with where the materials are rather than how many there are -- upkeep
         # is charged from the colonies near each fleet -- and buying another
         # hull cannot be the answer to it.
         civ.upkeep_paid = 0.8
-        assert not _can_carry_more_upkeep(civ, colonies, fleets, 2.0)
+        assert not _can_carry_more_upkeep(turn, colonies, fleets, 2.0)
 
 
 def test_decommissioning_returns_materials_and_stops_the_bill():

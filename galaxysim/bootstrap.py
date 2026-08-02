@@ -24,6 +24,7 @@ from __future__ import annotations
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+from galaxysim.ai.doctrine import DEFAULT_DOCTRINE, doctrine
 from galaxysim.colony.industry import infrastructure_of, max_total_levels
 from galaxysim.colony.labor import SECTORS, balanced_allocation
 from galaxysim.engine.rates import DEFAULT_RATES
@@ -125,14 +126,23 @@ def create_universe(
     seed: int | None = None,
     seconds_per_tick: int = 300,
     mode: UniverseMode = UniverseMode.SOLO,
-    region: str = "arm",
+    region: str | None = None,
+    difficulty: str = DEFAULT_DOCTRINE.key,
 ) -> int:
     """Create an empty universe, returning its id.
 
     Empty is the right word: no systems are generated. The galaxy is a function,
     and rows appear when civilizations are seated and when fleets arrive.
+
+    ``difficulty`` names how well this universe's AI civilizations play (see
+    :mod:`galaxysim.ai.doctrine`). It also supplies the *default* region, since
+    how close your rivals are seated is part of how hard a game is -- but an
+    explicit ``region`` always wins, because which part of the galaxy to play in
+    is a choice in its own right.
     """
     init_db(engine)
+    standard = doctrine(difficulty)
+    seated_in = region if region in REGIONS else standard.preferred_region
 
     with open_session(engine) as session:
         universe = Universe(
@@ -140,7 +150,8 @@ def create_universe(
             seed=seed if seed is not None else derive_seed("universe", name),
             seconds_per_tick=seconds_per_tick,
             mode=mode.value,
-            region=region if region in REGIONS else ARM.key,
+            region=seated_in if seated_in in REGIONS else ARM.key,
+            ai_difficulty=standard.key,
             tick_number=0,
         )
         session.add(universe)
