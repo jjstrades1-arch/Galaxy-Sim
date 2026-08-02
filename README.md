@@ -678,6 +678,18 @@ contradicted the expectation going in, which was that yards would dominate.
   world with a developed neighbourhood and works the sequence, which is the
   right shape, but it will not abandon a bad target or run two campaigns at
   once even when it could afford both.
+- **Terraforming has never once run in an actual game.** Not a mechanism
+  failure — a price one. Six AI civs over forty-five simulated days, fifty-four
+  colonies between them, and *zero* projects started: every order sat for ever
+  reporting insufficient resources. One Orbital Shade wants 125 million tonnes of
+  electronics against a capital's ~64,000 t/hr, so a single project is about
+  three months of an entire capital's electronics output, and a full
+  transformation is fourteen projects. Deliberately checked whether paying for it
+  *over time* was the missing piece: it is not. Letting projects gather made
+  expansion collapse from 54 colonies to 12, because an order that can never
+  complete becomes a permanent sink for the empire's steel. The prices want
+  measuring against real output the way ships and buildings already are
+  (`tests/test_prices.py`), and until they are, the rest of this list has no fix.
 - **Almost every colony is a dead rock, and that is the ceiling on everything.**
   Four AI civs holding thirty-one colonies between them had *four* worlds above
   0.4 habitability — one each, their homeworlds. So population barely moves, a
