@@ -49,6 +49,7 @@ from galaxysim.engine.resolvers.production import (
     DOCKING_TOLERANCE_LY,
     SUPPLY_RANGE_LY,
     colony_effects,
+    effective_habitability,
 )
 from galaxysim.worldgen.galaxy import systems_near
 from galaxysim.model.entities import (
@@ -315,7 +316,17 @@ def _set_policies(turn: "_Turn") -> None:
     for index, colony in enumerate(turn.colonies):
         if not colony.is_governed:
             continue
-        if colony.world.habitability < 0.4:
+        # **Effective** habitability, not the world's raw number: what a colony
+        # experiences is what it was born with *plus the domes it has built*,
+        # which is exactly how the governor decides the same question.
+        #
+        # Judging on the raw figure condemned a world to survival for ever, no
+        # matter how much was built on it -- and since a settled world is nearly
+        # always a barren rock, that meant every colony but the homeworld. Four
+        # civilizations across thirty days held between them a hundred colonies
+        # and *four* industrial worlds: one each, at every difficulty. The whole
+        # several-shipyards lever was inert, and this line was why.
+        if effective_habitability(colony, colony_effects(colony)) < 0.4:
             policy = governor.SURVIVAL
         elif colony.id in industrial:
             # Carries the war effort and a shipyard.
