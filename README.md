@@ -553,8 +553,27 @@ compounding-resistant" produced exactly what it asked for — AI empires that
 reached six colonies on day two and sat there for twenty-six days. Growth is
 meant to compound, and a flat line is the failure rather than the target.
 
+Median colonies per AI civ, 8 civs over 28 simulated days:
+
+```
+day     2   4   6   8  10  12  14  16  18  20  22  24  26  28
+      ─────────────────────────────────────────────────────────
+        5  10  15  20  25  30  36  41  47  52  57  62  66  69
+```
+
+Still rising at the end, which is the point. Every version of this before the
+prices were real went flat inside a fortnight, and each time the cause was a
+number that had stopped meaning anything rather than a civilization running out
+of room.
+
 ## Known tuning gaps
 
+- **The fleet takes a late knock.** Strength climbs steadily to 164 by day 26
+  and then falls to 86 by day 28. Not the death spiral that was fixed — that ran
+  to zero and stayed there — but something bites at the very end of a 28-day
+  run, most likely ships drifting past supply range as the empire spreads
+  faster than its warehouses. Wants a longer soak to characterise before it is
+  worth changing anything.
 - **A tick costs ~2.4 s with 8 civs and 360 colonies.** The query count is flat
   in universe size and tested to stay that way, so this is honest per-row cost
   rather than the quadratic shape fixed two phases ago — but it is the number
