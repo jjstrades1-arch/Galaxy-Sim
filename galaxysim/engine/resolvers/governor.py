@@ -149,8 +149,37 @@ def resolve(ctx: TickContext) -> None:
             if not colony.is_governed or colony.population <= 0:
                 continue
             colony.labor = _labor_for(ctx, colony)
-            colony.refining = _refining_for(colony)
+            if _replans_refining(ctx, colony):
+                colony.refining = _refining_for(colony)
             _maybe_build(ctx, civ, colony, pending_structures.get(colony.id, set()))
+
+
+#: How often a governor revisits which chains its colony should be running.
+#:
+#: In **hours**, never in ticks, so a five-minute universe re-plans exactly as
+#: often in simulated time as an hourly one and pace invariance holds. That is
+#: the same rule every other rate in the game is authored under.
+#:
+#: Why not every tick: rewriting the plan is a *decision*, not simulation.
+#: Nothing about a warehouse changes enough in five minutes to justify
+#: re-deciding, and the write is not free -- ``Colony.refining`` is a JSON column
+#: on a mutable-tracked attribute, so assigning it re-encodes the document and
+#: fires change tracking for every governed colony in the universe. The same
+#: lesson ``Colony.stockpile`` already taught, in the same file that taught it.
+REFINING_REPLAN_HOURS = 6.0
+
+
+def _replans_refining(ctx: TickContext, colony: Colony) -> bool:
+    """Whether this colony revisits its chains on this tick.
+
+    Offset by colony id so the universe's governors do not all re-plan on the
+    same tick -- the cost is spread across the interval rather than spiking.
+    A colony that has never had a plan gets one immediately.
+    """
+    if not colony.refining:
+        return True
+    every = max(1, ctx.cadence.ticks_for_hours(REFINING_REPLAN_HOURS))
+    return (ctx.tick + (colony.id or 0)) % every == 0
 
 
 def _refining_for(colony: Colony) -> dict[str, float]:
