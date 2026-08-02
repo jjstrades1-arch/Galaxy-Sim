@@ -906,7 +906,7 @@ def _start_structures(ctx: TickContext) -> None:
         if intent.status != IntentStatus.QUEUED.value:
             continue
 
-        colony = ctx.session.get(Colony, intent.payload.get("colony_id", -1))
+        colony = queries.colonies_by_id(ctx).get(intent.payload.get("colony_id", -1))
         if colony is None or colony.civ_id != intent.civ_id:
             _fail(ctx, intent, "no such colony", "Construction order")
             continue
@@ -979,7 +979,7 @@ def _start_fleets(ctx: TickContext) -> None:
         if intent.status != IntentStatus.QUEUED.value:
             continue
 
-        colony = ctx.session.get(Colony, intent.payload.get("colony_id", -1))
+        colony = queries.colonies_by_id(ctx).get(intent.payload.get("colony_id", -1))
         if colony is None or colony.civ_id != intent.civ_id:
             _fail(ctx, intent, "no such colony", "Build order")
             continue

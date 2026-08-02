@@ -263,6 +263,12 @@ class World(Base):
     #: 0.0-1.0. Heat still coming out of the interior, which is what a
     #: geothermal plant taps. A dead cold world has none.
     tectonic_activity: Mapped[float] = mapped_column(Float, default=0.0)
+    #: Key of the terraforming project this world needs next, or empty if there
+    #: is nothing left worth doing to it. See
+    #: :func:`galaxysim.terraform.plan.next_project` -- this is that answer,
+    #: cached, because working it out means reading the whole survey and both
+    #: the AI and the interface want to ask it constantly.
+    terraform_next: Mapped[str] = mapped_column(String(40), default="")
 
     #: Usable surface in square kilometres, from radius and land fraction.
     #: Real area, so a superearth genuinely holds more than a moon.

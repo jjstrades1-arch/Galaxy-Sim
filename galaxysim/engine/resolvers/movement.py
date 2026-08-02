@@ -13,7 +13,8 @@ from __future__ import annotations
 from galaxysim.core.space import Vec3, travel_time_hours
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
-from galaxysim.worldgen.materialize import materialize_at, nearest_unvisited
+from galaxysim.worldgen.galaxy import systems_near
+from galaxysim.worldgen.materialize import ARRIVAL_TOLERANCE_LY, materialize
 from galaxysim.model.entities import Fleet, IntentKind, IntentStatus
 
 
@@ -107,8 +108,23 @@ def _arrive(ctx: TickContext, fleet: Fleet, destination: Vec3) -> None:
     # version that compared ``discovered_tick`` to ``ctx.tick`` never once fired:
     # a system is stamped with ``universe.tick_number``, and the tick being
     # resolved is that plus one, so every discovery in the game went unlogged.
-    unvisited = nearest_unvisited(ctx.session, ctx.universe, destination)
-    system = materialize_at(ctx.session, ctx.universe, destination)
+    #
+    # Answered against the tick's charted-key set rather than with a query, so a
+    # hundred freighters docking costs one lookup between them rather than a
+    # hundred.
+    arriving_at = systems_near(ctx.universe.seed, destination, ARRIVAL_TOLERANCE_LY, limit=1)
+    if not arriving_at:
+        system, unvisited = None, False  # empty space, which is most of it
+    else:
+        known = queries.systems_by_key(ctx)
+        system = known.get(arriving_at[0].key)
+        unvisited = system is None
+        if unvisited:
+            # Only a genuinely new place costs a write. Everywhere a freighter
+            # docks twice a day is already in the tick's index.
+            system = materialize(ctx.session, ctx.universe, arriving_at[0])
+            known[arriving_at[0].key] = system
+
     if system is not None and unvisited:
         ctx.log(
             "system_discovered",

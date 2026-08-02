@@ -23,7 +23,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, defer, selectinload
 
 from galaxysim.core.space import Vec3, distance
-from galaxysim.model.entities import Civ, Colony, Fleet, Intent, IntentStatus, World
+from galaxysim.model.entities import (
+    Civ,
+    Colony,
+    Fleet,
+    Intent,
+    IntentStatus,
+    StarSystem,
+    World,
+)
 
 #: Statuses an intent can be in and still need work this tick.
 ACTIVE_STATUSES = (IntentStatus.QUEUED.value, IntentStatus.IN_PROGRESS.value)
@@ -96,6 +104,90 @@ def colonies_by_civ(session: Session, universe_id: int) -> dict[int, list[Colony
     return grouped
 
 
+def colonies_by_id(ctx) -> dict[int, Colony]:
+    """Every colony in the universe, indexed, computed once per tick.
+
+    For the resolvers that hold an *id* rather than an object: routes, orders,
+    projects. Each of those used to reach for ``session.get`` inside its loop,
+    which reads like a cheap lookup and is a database round trip -- a route
+    alone took three, so a civilization supplying thirty outposts paid ninety
+    an hour to move nothing new.
+
+    Memoized on the tick, so the first resolver to ask pays one query and every
+    resolver after it pays nothing.
+    """
+    return ctx.cached_effects(
+        "colonies_by_id",
+        lambda: {
+            colony.id: colony
+            for group in colonies_by_civ(ctx.session, ctx.universe.id).values()
+            for colony in group
+        },
+    )
+
+
+def fleets_by_id(ctx) -> dict[int, Fleet]:
+    """Every fleet in the universe, indexed, computed once per tick."""
+    return ctx.cached_effects(
+        "fleets_by_id",
+        lambda: {fleet.id: fleet for fleet in fleets(ctx.session, ctx.universe.id)},
+    )
+
+
+def charted_keys(ctx) -> set[tuple[int, int, int, int]]:
+    """Generation keys of every system anybody has visited, in one query.
+
+    The galaxy is a pure function, so "does this star exist" is free -- but "has
+    anyone been there" is a row, and asking it one star at a time is what made
+    arrival and scouting expensive. A fleet arriving asked once; the AI looking
+    for somewhere to explore asked once per candidate system per colony per
+    turn, which at forty candidates and thirty colonies is twelve hundred round
+    trips to decide one move.
+
+    Four integers per system, so the whole set is small even when the charted
+    galaxy is not.
+    """
+    return ctx.cached_effects(
+        "charted_keys", lambda: charted_key_set(ctx.session, ctx.universe.id)
+    )
+
+
+def systems_by_key(ctx) -> dict[tuple[int, int, int, int], StarSystem]:
+    """Charted systems indexed by generation key, computed once per tick.
+
+    Arrival needs the *row* for wherever a fleet just docked, and asking for it
+    one fleet at a time is a round trip per arrival -- which on a civilization
+    running thirty supply routes is thirty an hour to look up places it has been
+    docking at all week.
+    """
+    return ctx.cached_effects(
+        "systems_by_key",
+        lambda: {
+            (s.sector_i, s.sector_j, s.sector_k, s.index_in_sector): s
+            for s in ctx.session.scalars(
+                select(StarSystem)
+                .where(StarSystem.universe_id == ctx.universe.id)
+                .order_by(StarSystem.id)
+            )
+        },
+    )
+
+
+def charted_key_set(session: Session, universe_id: int) -> set[tuple[int, int, int, int]]:
+    """:func:`charted_keys` without a tick, for the AI taking its turn."""
+    return {
+        tuple(row)
+        for row in session.execute(
+            select(
+                StarSystem.sector_i,
+                StarSystem.sector_j,
+                StarSystem.sector_k,
+                StarSystem.index_in_sector,
+            ).where(StarSystem.universe_id == universe_id)
+        )
+    }
+
+
 def active_intents(session: Session, universe_id: int, kind: str) -> list[Intent]:
     """Every unresolved intent of one kind, oldest first.
 
@@ -117,7 +209,14 @@ def active_intents(session: Session, universe_id: int, kind: str) -> list[Intent
 
 
 def world_by_id(session: Session, world_id: int) -> World | None:
-    return session.get(World, world_id)
+    """One world, without dragging its survey document along.
+
+    Colonization asks this per pending order per tick. ``session.get`` loads
+    every column, which for a world means the largest JSON object in the game --
+    so a civ with a few expeditions in flight was decoding whole planets to read
+    a name and a position.
+    """
+    return session.get(World, world_id, options=(defer(World.survey),))
 
 
 def total_stockpile(session: Session, civ_id: int) -> dict[str, float]:

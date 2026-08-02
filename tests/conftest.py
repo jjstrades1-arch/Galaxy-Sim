@@ -39,12 +39,18 @@ def new_universe(
     civs: tuple[str, ...] = ("Terrans", "Vex"),
     system_count: int | None = None,
     region: str = "arm",
+    ai: bool = False,
 ) -> int:
     """Create a universe with ``civs`` seated in it, returning its id.
 
     ``system_count`` is accepted and ignored. Nothing is generated eagerly any
     more -- each civ charts its own neighbourhood when it is seated, and
     everything beyond that materializes when a fleet arrives.
+
+    ``ai`` marks the civs as AI-driven, which most tests do not want -- an AI
+    reassigns labour and spends the stockpile underneath whatever is being
+    measured. The exception is anything measuring what a *tick* costs, where
+    leaving the AI out means measuring half of one.
     """
     universe_id = create_universe(
         engine,
@@ -58,7 +64,7 @@ def new_universe(
         universe = session.get(Universe, universe_id)
         assert universe is not None
         for name in civs:
-            add_civ(session, universe, name)
+            add_civ(session, universe, name, is_ai=ai)
     return universe_id
 
 

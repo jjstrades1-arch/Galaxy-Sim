@@ -532,11 +532,20 @@ def test_building_catalogue_is_coherent():
 
 
 class _StubWorld:
-    """Enough of a World for :func:`assess`, which reads geology and nothing else."""
+    """Enough of a World for :func:`assess`.
+
+    Which now means the *promoted columns* rather than the survey document:
+    ``assess`` used to decode a whole planet to learn whether it had surface
+    water and how fast ice came out of the ground, and both have been columns
+    since they were promoted. ``give_deposits`` fills ``extraction`` in through
+    ``refresh_promoted``, the same way it does for a real world.
+    """
 
     def __init__(self, habitability: float, survey: dict) -> None:
         self.habitability = habitability
         self.survey = survey
+        self.surface_water = False
+        self.extraction: dict[str, float] = {}
 
 
 def _stub_world(habitability: float, **yields: float) -> _StubWorld:

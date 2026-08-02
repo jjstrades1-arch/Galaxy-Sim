@@ -21,10 +21,13 @@ from __future__ import annotations
 
 from sqlalchemy import event, select
 
+from galaxysim.ai import take_all_turns
 from galaxysim.colony.labor import balanced_allocation
-from galaxysim.engine.tick import run_ticks
+from galaxysim.engine import intents
+from galaxysim.engine.tick import resolve_tick, run_ticks
+from galaxysim.materials import FOOD, WATER
 from galaxysim.model.base import create_engine_for, open_session
-from galaxysim.model.entities import Building, Civ, Colony, Fleet, World
+from galaxysim.model.entities import Building, Civ, Colony, Fleet, Universe, World
 from tests.conftest import give_deposits, new_universe, rich_stockpile
 
 
@@ -81,7 +84,69 @@ def _populate(engine, universe_id: int, civs: int, colonies_each: int) -> None:
                 )
 
 
-def _statements_per_tick(civs: int, colonies_each: int) -> float:
+def _route_everything(engine, universe_id: int) -> None:
+    """Give every colony but the first a standing route from the first.
+
+    Routes were the single largest thing this file could not see. The fixture
+    never made one, so ``_resolve_routes`` -- which took three point lookups per
+    route per tick and turned out to be a third of a real tick -- ran zero times
+    in every measurement here. A guard that does not exercise the code cannot
+    guard it, and this is the shape of that mistake.
+    """
+    with open_session(engine) as session:
+        for civ in session.scalars(select(Civ).order_by(Civ.id)):
+            colonies = session.scalars(
+                select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
+            ).all()
+            if len(colonies) < 2:
+                continue
+            source = colonies[0]
+            for destination in colonies[1:]:
+                freighter = Fleet(
+                    universe_id=universe_id,
+                    civ_id=civ.id,
+                    name=f"hauler{destination.id}",
+                    strength=0.5,
+                    speed_ly_per_hour=1.0,
+                    cargo={},
+                    cargo_capacity=5_000.0,
+                    x=source.world.system.x,
+                    y=source.world.system.y,
+                    z=source.world.system.z,
+                )
+                session.add(freighter)
+                session.flush()
+                intents.supply_route(
+                    session,
+                    civ,
+                    freighter.id,
+                    source.id,
+                    destination.id,
+                    {WATER: 500.0, FOOD: 200.0},
+                )
+
+
+def _advance(engine, universe_id: int, ticks: int, *, with_ai: bool) -> None:
+    """Resolve ticks, optionally letting the AI take its turn first.
+
+    ``run_ticks`` alone is only half a tick in a real game -- the other half is
+    every civilization deciding what to do, which is where two of the three
+    worst offenders were hiding.
+    """
+    if not with_ai:
+        run_ticks(engine, universe_id, ticks)
+        return
+    for _ in range(ticks):
+        with open_session(engine) as session:
+            universe = session.get(Universe, universe_id)
+            take_all_turns(session, universe)
+            session.flush()
+            resolve_tick(session, universe)
+
+
+def _statements_per_tick(
+    civs: int, colonies_each: int, *, with_ai: bool = False, routes: bool = True
+) -> float:
     engine = create_engine_for("sqlite://")
     universe_id = new_universe(
         engine,
@@ -89,9 +154,12 @@ def _statements_per_tick(civs: int, colonies_each: int) -> float:
         civs=tuple(f"C{i}" for i in range(civs)),
         system_count=90,
         seconds_per_tick=3600,
+        ai=with_ai,
     )
     _populate(engine, universe_id, civs, colonies_each)
-    run_ticks(engine, universe_id, 2)  # settle
+    if routes:
+        _route_everything(engine, universe_id)
+    _advance(engine, universe_id, 2, with_ai=with_ai)  # settle
 
     counted = 0
 
@@ -101,7 +169,7 @@ def _statements_per_tick(civs: int, colonies_each: int) -> float:
 
     event.listen(engine, "before_cursor_execute", count)
     try:
-        run_ticks(engine, universe_id, 5)
+        _advance(engine, universe_id, 5, with_ai=with_ai)
     finally:
         event.remove(engine, "before_cursor_execute", count)
     return counted / 5
@@ -150,6 +218,74 @@ def test_a_tick_is_a_bounded_number_of_round_trips():
     noticed here rather than in a soak run three phases later.
     """
     assert _statements_per_tick(civs=4, colonies_each=20) < 120
+
+
+def test_supply_routes_do_not_cost_a_query_each():
+    """The third of a tick this file could not see.
+
+    ``_resolve_routes`` took three point lookups per route per tick -- the
+    fleet, the origin and the destination -- so a civilization supplying thirty
+    outposts paid ninety round trips an hour to move nothing new. It never
+    showed up here because the fixture had no routes in it at all.
+    """
+    without = _statements_per_tick(civs=2, colonies_each=10, routes=False)
+    with_routes = _statements_per_tick(civs=2, colonies_each=10, routes=True)
+
+    assert with_routes < without * 1.5, (
+        f"adding a route to every colony took a tick from {without:.0f} queries "
+        f"to {with_routes:.0f}. Routes are being resolved one lookup at a time."
+    )
+
+
+def test_the_ai_does_not_query_more_as_its_empire_grows():
+    """The other half of a tick, and the half that was never measured.
+
+    Deciding what to do is as much of a real tick as resolving it -- at a
+    hundred colonies it was very nearly half -- and every guard in this file ran
+    against a universe where nobody decided anything.
+    """
+    small = _statements_per_tick(civs=2, colonies_each=5, with_ai=True)
+    large = _statements_per_tick(civs=4, colonies_each=20, with_ai=True)
+
+    assert large < small * 1.8, (
+        f"queries per tick grew from {small:.0f} at 10 colonies to {large:.0f} "
+        "at 80 once the AI was taking its turn. Something in the AI is asking "
+        "the database a question per colony, per world, or per candidate system."
+    )
+
+
+def test_the_survey_document_is_not_read_by_the_ai_either():
+    """The guard below, applied to the code that walked straight past it.
+
+    A world's survey is the largest document in the game and the tick loop is
+    forbidden from touching it -- but the AI was never part of "the tick loop"
+    as this file defined it, and quietly parsed the whole thing per candidate
+    world per turn while deciding what to terraform.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(
+        engine, seed=7, civs=("A", "B"), seconds_per_tick=3600, ai=True
+    )
+    _populate(engine, universe_id, civs=2, colonies_each=6)
+    _advance(engine, universe_id, 2, with_ai=True)
+
+    surveys = 0
+
+    def watch(conn, cursor, statement, parameters, context, executemany):
+        nonlocal surveys
+        if "worlds.survey" in statement:
+            surveys += 1
+
+    event.listen(engine, "before_cursor_execute", watch)
+    try:
+        _advance(engine, universe_id, 5, with_ai=True)
+    finally:
+        event.remove(engine, "before_cursor_execute", watch)
+
+    assert surveys == 0, (
+        f"the survey document was fetched {surveys} times in five AI turns; "
+        "everything the AI needs from it should be a promoted column"
+    )
 
 
 def test_the_survey_document_is_not_read_during_a_tick():

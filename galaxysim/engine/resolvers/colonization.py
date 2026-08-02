@@ -66,7 +66,7 @@ def resolve(ctx: TickContext) -> None:
         # its supply line. Since barren worlds and gas giants carry the richest
         # yields in the table, that is where the interesting decisions are.
 
-        fleet = ctx.session.get(Fleet, intent.payload.get("fleet_id", -1))
+        fleet = queries.fleets_by_id(ctx).get(intent.payload.get("fleet_id", -1))
         if fleet is None or fleet.civ_id != civ.id:
             _fail(ctx, intent, "no such fleet")
             continue
@@ -188,7 +188,7 @@ def _fail(ctx: TickContext, intent, reason: str) -> None:
     """
     colony_id = intent.payload.get("outfitted_colony_id") if intent.payload else None
     if colony_id:
-        origin = ctx.session.get(Colony, colony_id)
+        origin = queries.colonies_by_id(ctx).get(colony_id)
         if origin is not None:
             returned = dict(origin.stockpile)
             for material, amount in Loadout.from_payload(intent.payload).cost().items():

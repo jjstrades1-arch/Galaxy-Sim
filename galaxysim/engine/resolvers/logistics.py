@@ -82,15 +82,21 @@ def throughput_per_hour(colony: Colony) -> float:
 
 
 def _resolve_transfers(ctx: TickContext) -> None:
-    for intent in queries.active_intents(
+    transfers = queries.active_intents(
         ctx.session, ctx.universe.id, IntentKind.TRANSFER_CARGO.value
-    ):
-        fleet = ctx.session.get(Fleet, intent.payload.get("fleet_id", -1))
+    )
+    if not transfers:
+        return
+    all_fleets = queries.fleets_by_id(ctx)
+    all_colonies = queries.colonies_by_id(ctx)
+
+    for intent in transfers:
+        fleet = all_fleets.get(intent.payload.get("fleet_id", -1))
         if fleet is None or fleet.civ_id != intent.civ_id:
             _fail(ctx, intent, "no such fleet")
             continue
 
-        colony = ctx.session.get(Colony, intent.payload.get("colony_id", -1))
+        colony = all_colonies.get(intent.payload.get("colony_id", -1))
         if colony is None or colony.civ_id != intent.civ_id:
             _fail(ctx, intent, "no such colony")
             continue
@@ -145,16 +151,25 @@ def _resolve_routes(ctx: TickContext) -> None:
     origin, fly, unload at the destination, fly back. It never completes on its
     own -- that is the point, since an outpost's need does not stop.
     """
-    for intent in queries.active_intents(
+    routes = queries.active_intents(
         ctx.session, ctx.universe.id, IntentKind.SUPPLY_ROUTE.value
-    ):
-        fleet = ctx.session.get(Fleet, intent.payload.get("fleet_id", -1))
+    )
+    if not routes:
+        return
+
+    # Indexed once for the whole tick rather than looked up three times per
+    # route. A point lookup reads like it is free and is a round trip.
+    all_fleets = queries.fleets_by_id(ctx)
+    all_colonies = queries.colonies_by_id(ctx)
+
+    for intent in routes:
+        fleet = all_fleets.get(intent.payload.get("fleet_id", -1))
         if fleet is None or fleet.civ_id != intent.civ_id:
             _fail(ctx, intent, "no such fleet")
             continue
 
-        origin = ctx.session.get(Colony, intent.payload.get("origin_colony_id", -1))
-        destination = ctx.session.get(Colony, intent.payload.get("dest_colony_id", -1))
+        origin = all_colonies.get(intent.payload.get("origin_colony_id", -1))
+        destination = all_colonies.get(intent.payload.get("dest_colony_id", -1))
         if origin is None or destination is None:
             _fail(ctx, intent, "route endpoint no longer exists")
             continue
@@ -284,14 +299,22 @@ def _resolve_migrations(ctx: TickContext) -> None:
     world to matter sooner ships people to it rather than waiting. Nobody is
     forced to; doing it is an advantage.
     """
-    for intent in queries.active_intents(ctx.session, ctx.universe.id, IntentKind.MIGRATE.value):
-        fleet = ctx.session.get(Fleet, intent.payload.get("fleet_id", -1))
+    crossings = queries.active_intents(
+        ctx.session, ctx.universe.id, IntentKind.MIGRATE.value
+    )
+    if not crossings:
+        return
+    all_fleets = queries.fleets_by_id(ctx)
+    all_colonies = queries.colonies_by_id(ctx)
+
+    for intent in crossings:
+        fleet = all_fleets.get(intent.payload.get("fleet_id", -1))
         if fleet is None or fleet.civ_id != intent.civ_id:
             _fail(ctx, intent, "no such fleet")
             continue
 
-        origin = ctx.session.get(Colony, intent.payload.get("origin_colony_id", -1))
-        destination = ctx.session.get(Colony, intent.payload.get("dest_colony_id", -1))
+        origin = all_colonies.get(intent.payload.get("origin_colony_id", -1))
+        destination = all_colonies.get(intent.payload.get("dest_colony_id", -1))
         if origin is None or destination is None:
             _fail(ctx, intent, "one end of the crossing no longer exists")
             continue

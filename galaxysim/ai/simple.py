@@ -19,7 +19,7 @@ worth fearing. Smarter behaviour is a later concern.
 from __future__ import annotations
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from galaxysim.colony.expedition import Loadout
 from galaxysim.colony.labor import INDUSTRY, normalize
@@ -40,12 +40,7 @@ from galaxysim.engine import intents
 from galaxysim.engine.resolvers import governor, queries
 from galaxysim.engine.rates import DEFAULT_RATES
 from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY, colony_effects
-from galaxysim.engine.resolvers.terraform import unmet_requirements
-from galaxysim.terraform.plan import next_project
-from galaxysim.terraform.projects import project
 from galaxysim.worldgen.galaxy import systems_near
-from galaxysim.worldgen.materialize import existing_system
-from galaxysim.worldgen.serialize import has_surface_water, survey_from_json
 from galaxysim.model.entities import (
     Civ,
     Colony,
@@ -157,6 +152,84 @@ TERRAFORM_CANDIDATE_HABITABILITY = 0.25
 TERRAFORM_MINIMUM_NEIGHBOURHOOD_WORK = 5.0e5
 
 
+class _Turn:
+    """What one civilization knows while it is deciding, fetched once.
+
+    Every ``_maybe_*`` below wants the same three things -- this civ's colonies,
+    its fleets, and where anybody has already been -- and each used to ask the
+    database for them separately. Six helpers asking twice each is twelve round
+    trips per civilization per tick to look at a picture that cannot change
+    while it is being looked at, because the AI queues intents rather than
+    resolving them.
+
+    That last part is what makes this safe: nothing an AI does during its turn
+    alters what it can see. The orders it queues are resolved later, by the
+    engine, on the tick.
+    """
+
+    __slots__ = (
+        "session", "universe", "civ",
+        "_colonies", "_fleets", "_charted", "_systems",
+    )
+
+    def __init__(self, session: Session, universe: Universe, civ: Civ) -> None:
+        self.session = session
+        self.universe = universe
+        self.civ = civ
+        self._colonies: list[Colony] | None = None
+        self._fleets: list[Fleet] | None = None
+        self._charted: set | None = None
+        self._systems: list[StarSystem] | None = None
+
+    @property
+    def colonies(self) -> list[Colony]:
+        if self._colonies is None:
+            self._colonies = queries.colonies_of(self.session, self.civ.id)
+        return self._colonies
+
+    @property
+    def fleets(self) -> list[Fleet]:
+        if self._fleets is None:
+            self._fleets = list(
+                self.session.scalars(
+                    select(Fleet).where(Fleet.civ_id == self.civ.id).order_by(Fleet.id)
+                )
+            )
+        return self._fleets
+
+    @property
+    def charted(self) -> set:
+        if self._charted is None:
+            self._charted = queries.charted_key_set(self.session, self.universe.id)
+        return self._charted
+
+    @property
+    def systems(self) -> list[StarSystem]:
+        """Every charted system, with its worlds and their owners loaded.
+
+        Looking for somewhere to settle means walking the star charts and asking
+        each world whether anybody has it. Left to lazy loading that is two
+        round trips per system -- once for the worlds, once per world for the
+        colony -- across the *whole* charted galaxy, which by the second week is
+        four hundred systems and climbing. It was the single worst thing the AI
+        did, and it got worse precisely as exploration succeeded.
+        """
+        if self._systems is None:
+            self._systems = list(
+                self.session.scalars(
+                    select(StarSystem)
+                    .where(StarSystem.universe_id == self.universe.id)
+                    .options(
+                        selectinload(StarSystem.worlds)
+                        .defer(World.survey)
+                        .selectinload(World.colony)
+                    )
+                    .order_by(StarSystem.id)
+                )
+            )
+        return self._systems
+
+
 def take_all_turns(session: Session, universe: Universe) -> int:
     """Let every AI civ in ``universe`` queue its orders. Returns how many acted."""
     ai_civs = session.scalars(
@@ -179,20 +252,21 @@ def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
     """
     rng = rng_for(civ.seed, "ai", universe.tick_number)
     pending = _pending_by_kind(session, civ)
+    turn = _Turn(session, universe, civ)
 
     if not pending.get(IntentKind.RESEARCH.value):
         intents.research(session, civ)
 
-    _set_policies(session, civ)
-    _maybe_expand(session, universe, civ, pending)
-    _maybe_supply(session, universe, civ, pending)
-    _maybe_migrate(session, universe, civ, pending)
-    _maybe_terraform(session, universe, civ, pending)
-    _maybe_scout(session, universe, civ, pending)
-    _maybe_build(session, universe, civ, pending, rng)
+    _set_policies(turn)
+    _maybe_expand(turn, pending)
+    _maybe_supply(turn, pending)
+    _maybe_migrate(turn, pending)
+    _maybe_terraform(turn, pending)
+    _maybe_scout(turn, pending)
+    _maybe_build(turn, pending, rng)
 
 
-def _set_policies(session: Session, civ: Civ) -> None:
+def _set_policies(turn: "_Turn") -> None:
     """Leave colonies governed, and pick a sensible policy for each.
 
     The AI runs its empire the way a player with many colonies would: it does
@@ -202,8 +276,7 @@ def _set_policies(session: Session, civ: Civ) -> None:
     governed colonies behave identically -- which is what makes solo play an
     honest rehearsal for the real thing.
     """
-    colonies = queries.colonies_of(session, civ.id)
-    for index, colony in enumerate(colonies):
+    for index, colony in enumerate(turn.colonies):
         if not colony.is_governed:
             continue
         if colony.world.habitability < 0.4:
@@ -225,9 +298,7 @@ def _pending_by_kind(session: Session, civ: Civ) -> dict[str, list[Intent]]:
     return grouped
 
 
-def _maybe_expand(
-    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
-) -> None:
+def _maybe_expand(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     """Send every idle colony ship at the nearest unclaimed world it can afford.
 
     Every, not one. A civ that has built fourteen colony ships has fourteen
@@ -236,15 +307,16 @@ def _maybe_expand(
     it expands should be what its warehouses can outfit, which is a real
     constraint, rather than a queue of one, which is not.
     """
+    session, civ = turn.session, turn.civ
     ordered = pending.get(IntentKind.COLONIZE.value, [])
     busy_fleets = {i.payload.get("fleet_id") for i in ordered}
     claimed = {i.payload.get("world_id") for i in ordered}
 
-    for fleet in _idle_colony_fleets(session, civ):
+    for fleet in _idle_colony_fleets(turn):
         if fleet.id in busy_fleets:
             continue
 
-        target = _nearest_settleable_world(session, universe, fleet, claimed)
+        target = _nearest_settleable_world(turn, fleet, claimed)
         if target is None:
             return  # nothing left for this fleet is nothing left for any of them
         world, system = target
@@ -281,9 +353,7 @@ def _loadout_for(world) -> Loadout:
     return Loadout(colonists=SETTLERS, equipment=5.0, stores=STORES_FOR_A_MONTH * 2.0)
 
 
-def _maybe_supply(
-    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
-) -> None:
+def _maybe_supply(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     """Keep a standing route running to every colony that cannot feed itself.
 
     This is the piece that makes AI expansion mean anything. Almost every world
@@ -295,7 +365,8 @@ def _maybe_supply(
     Ordinary orders through the ordinary API: same route intent a player issues,
     same throughput limits, no privileged access.
     """
-    colonies = queries.colonies_of(session, civ.id)
+    session, universe, civ = turn.session, turn.universe, turn.civ
+    colonies = turn.colonies
     if len(colonies) < 2:
         return
 
@@ -310,9 +381,12 @@ def _maybe_supply(
     for colony in colonies:
         if colony.id == source.id or colony.id in routed:
             continue
-        if has_surface_water(colony.world.survey or {}):
+        # The promoted column, not the document. ``surface_water`` has existed
+        # for exactly this since the columns were added; this call was reading
+        # the whole survey to learn one boolean.
+        if colony.world.surface_water:
             continue  # it draws its own water; it can wait
-        fleet = _idle_freighter(session, civ)
+        fleet = _idle_freighter(turn)
         if fleet is None:
             # Freighters pay upkeep like anything else, and they used to slip
             # past the check that asks whether the civ can carry it -- so a
@@ -320,7 +394,7 @@ def _maybe_supply(
             # alive were themselves deserting.
             if not _can_carry_more_upkeep(
                 colonies,
-                session.scalars(select(Fleet).where(Fleet.civ_id == civ.id)).all(),
+                turn.fleets,
                 FREIGHTER_STRENGTH,
             ):
                 return
@@ -363,9 +437,7 @@ def _order_freighter(
     )
 
 
-def _maybe_migrate(
-    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
-) -> None:
+def _maybe_migrate(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     """Move settlers from a full world to one with room.
 
     The capital opens near capacity and barely grows, so its people are a
@@ -378,6 +450,7 @@ def _maybe_migrate(
     dumping people faster than a colony can build for them just spreads its
     industry thinner.
     """
+    session, universe, civ = turn.session, turn.universe, turn.civ
     if pending.get(IntentKind.MIGRATE.value):
         return
     if any(
@@ -387,7 +460,7 @@ def _maybe_migrate(
     ):
         return
 
-    colonies = queries.colonies_of(session, civ.id)
+    colonies = turn.colonies
     if len(colonies) < 2:
         return
 
@@ -404,7 +477,7 @@ def _maybe_migrate(
     if target is None or headroom(target) < MIGRATION_BATCH:
         return
 
-    fleet = _idle_freighter(session, civ, hold=MIGRATION_BATCH * TONNES_PER_SETTLER)
+    fleet = _idle_freighter(turn, hold=MIGRATION_BATCH * TONNES_PER_SETTLER)
     if fleet is None:
         return
 
@@ -424,7 +497,7 @@ def _all_routes(session: Session, universe: Universe, civ: Civ) -> list[Intent]:
     ]
 
 
-def _idle_freighter(session: Session, civ: Civ, hold: float | None = None) -> Fleet | None:
+def _idle_freighter(turn: "_Turn", hold: float | None = None) -> Fleet | None:
     """A ship with a *useful* hold and nothing better to do.
 
     "Has any hold at all" is not the test: every warship carries forty tonnes
@@ -433,6 +506,7 @@ def _idle_freighter(session: Session, civ: Civ, hold: float | None = None) -> Fl
     than the destination consumed in transit -- routes that looked busy in the
     log and starved the colony anyway.
     """
+    session, civ = turn.session, turn.civ
     busy = {intent.payload.get("fleet_id") for intent in intents.pending(session, civ)}
     busy |= {
         intent.payload.get("fleet_id")
@@ -445,27 +519,18 @@ def _idle_freighter(session: Session, civ: Civ, hold: float | None = None) -> Fl
         )
     }
     wanted = sum(ROUTE_MANIFEST.values()) if hold is None else hold
-    for fleet in session.scalars(
-        select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
-    ):
+    for fleet in turn.fleets:
         if fleet.cargo_capacity >= wanted and not fleet.in_transit and fleet.id not in busy:
             return fleet
     return None
 
 
-def _idle_colony_fleets(session: Session, civ: Civ) -> list[Fleet]:
-    return [
-        fleet
-        for fleet in session.scalars(
-            select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
-        )
-        if fleet.colony_pods > 0 and not fleet.in_transit
-    ]
+def _idle_colony_fleets(turn: "_Turn") -> list[Fleet]:
+    return [f for f in turn.fleets if f.colony_pods > 0 and not f.in_transit]
 
 
 def _nearest_settleable_world(
-    session: Session,
-    universe: Universe,
+    turn: "_Turn",
     fleet: Fleet,
     claimed: set[int] | None = None,
 ) -> tuple[World, StarSystem] | None:
@@ -478,9 +543,7 @@ def _nearest_settleable_world(
     claimed = claimed or set()
     best: tuple[float, World, StarSystem] | None = None
 
-    for system in session.scalars(
-        select(StarSystem).where(StarSystem.universe_id == universe.id).order_by(StarSystem.id)
-    ):
+    for system in turn.systems:
         span = distance(fleet.position, system.position)
         if best is not None and span >= best[0]:
             continue
@@ -527,9 +590,7 @@ def _can_carry_more_upkeep(colonies, fleets, extra_strength: float) -> bool:
     )
 
 
-def _maybe_terraform(
-    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
-) -> None:
+def _maybe_terraform(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     """Start reshaping a dead world the empire is actually placed to reshape.
 
     The single most valuable thing a mature civilization can do, and until now
@@ -546,10 +607,11 @@ def _maybe_terraform(
     range, so the same campaign is three weeks beside a developed cluster and a
     decade alone in the dark.
     """
+    session, civ = turn.session, turn.civ
     if pending.get(IntentKind.TERRAFORM.value):
         return  # one planet at a time; they are enormous
 
-    colonies = queries.colonies_of(session, civ.id)
+    colonies = turn.colonies
     for colony in colonies:
         if colony.world.habitability > TERRAFORM_CANDIDATE_HABITABILITY:
             continue
@@ -566,24 +628,21 @@ def _maybe_terraform(
         if muscle < TERRAFORM_MINIMUM_NEIGHBOURHOOD_WORK:
             continue
 
-        survey = survey_from_json(colony.world.survey)
-        step = next_project(survey)
-        if step is None:
-            continue
-
-        spec = project(step)
-        if unmet_requirements(survey, spec):
-            continue
-        if not can_afford(colony.stockpile, spec.cost):
+        # Read off the promoted column rather than parsing the survey. Working
+        # this out from the document meant decoding the largest object in the
+        # game per candidate world per turn -- the precise cost those columns
+        # exist to avoid, reached from the AI's side where the guard was not
+        # looking. The resolver re-checks the physics before it charges anybody,
+        # so nothing is taken on trust here.
+        step = colony.world.terraform_next
+        if not step:
             continue
 
         intents.terraform(session, civ, colony.id, step)
         return
 
 
-def _maybe_scout(
-    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]]
-) -> None:
+def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     """Send a ship somewhere nobody has been.
 
     The galaxy is a pure function and a system exists as soon as the maths says
@@ -595,11 +654,10 @@ def _maybe_scout(
     This is what makes the frontier unbounded in practice rather than only in
     principle: pick the nearest star nobody has visited and go and look at it.
     """
+    session, universe, civ = turn.session, turn.universe, turn.civ
     idle = [
         fleet
-        for fleet in session.scalars(
-            select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
-        )
+        for fleet in turn.fleets
         if not fleet.in_transit and fleet.colony_pods <= 0 and fleet.cargo_capacity <= 100.0
     ]
     if not idle:
@@ -615,7 +673,12 @@ def _maybe_scout(
     # got to, walking steadily out of supply range until it deserted somewhere
     # nobody would ever look. Anchoring the leash to the empire is what makes
     # the charted frontier expand only as fast as the settled one.
-    colonies = queries.colonies_of(session, civ.id)
+    # One query for everywhere anybody has been, then pure set membership.
+    # Asking the database per candidate meant forty round trips per colony per
+    # turn to decide a single move, which at thirty colonies is twelve hundred.
+    charted = turn.charted
+
+    colonies = turn.colonies
     for colony in queries.sorted_by_distance(colonies, scout.position):
         for stub in systems_near(
             universe.seed,
@@ -623,7 +686,7 @@ def _maybe_scout(
             SCOUT_RANGE_LY,
             limit=SCOUT_CANDIDATES,
         ):
-            if existing_system(session, universe, stub) is None:
+            if stub.key not in charted:
                 intents.move_fleet(
                     session,
                     civ,
@@ -635,9 +698,7 @@ def _maybe_scout(
                 return
 
 
-def _maybe_build(
-    session: Session, universe: Universe, civ: Civ, pending: dict[str, list[Intent]], rng
-) -> None:
+def _maybe_build(turn: "_Turn", pending: dict[str, list[Intent]], rng) -> None:
     """Build a fleet when there is a reason to and it can afford to keep it.
 
     What it builds is decided, not rolled. The version of this that flipped a
@@ -651,6 +712,7 @@ def _maybe_build(
     So: expansion first, and a warship only up to what the empire it actually
     holds would want to defend.
     """
+    session, civ = turn.session, turn.civ
     if pending.get(IntentKind.BUILD_FLEET.value):
         return
 
@@ -659,9 +721,7 @@ def _maybe_build(
         for resource, amount in FLEET_COST_PER_STRENGTH.items()
     }
 
-    colonies = session.scalars(
-        select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
-    ).all()
+    colonies = turn.colonies
     if not colonies:
         return
 
@@ -679,7 +739,7 @@ def _maybe_build(
     if colony is None:
         return
 
-    fleets = session.scalars(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)).all()
+    fleets = turn.fleets
 
     # Affording the purchase is not the same as affording the standing bill.
     # This is the only limit left on how large a navy may get, and it is a real
@@ -689,8 +749,8 @@ def _maybe_build(
         return
 
     # A settler if there is somewhere to send one and nothing to send.
-    wants_settler = not _idle_colony_fleets(session, civ) and any(
-        _nearest_settleable_world(session, universe, fleet) for fleet in fleets[:1]
+    wants_settler = not _idle_colony_fleets(turn) and any(
+        _nearest_settleable_world(turn, fleet) for fleet in fleets[:1]
     )
     if wants_settler:
         intents.build_fleet(

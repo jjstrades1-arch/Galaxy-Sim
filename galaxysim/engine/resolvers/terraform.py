@@ -80,7 +80,7 @@ def _start(ctx: TickContext) -> None:
         if intent.status != IntentStatus.QUEUED.value:
             continue
 
-        colony = ctx.session.get(Colony, intent.payload.get("colony_id", -1))
+        colony = queries.colonies_by_id(ctx).get(intent.payload.get("colony_id", -1))
         if colony is None or colony.civ_id != intent.civ_id:
             _fail(ctx, intent, "no such colony")
             continue
@@ -210,7 +210,7 @@ def _advance(ctx: TickContext) -> None:
     colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id)
 
     for intent in running:
-        colony = ctx.session.get(Colony, intent.payload.get("colony_id", -1))
+        colony = queries.colonies_by_id(ctx).get(intent.payload.get("colony_id", -1))
         project = PROJECTS.get(str(intent.payload.get("project", "")))
         if colony is None or project is None:
             _fail(ctx, intent, "the project has no colony behind it any more")

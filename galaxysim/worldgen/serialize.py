@@ -77,6 +77,7 @@ def promoted_fields(survey: Survey) -> dict:
     """
     from galaxysim.colony.agriculture import quality, regime
     from galaxysim.materials.extraction import extraction_rates
+    from galaxysim.terraform.plan import next_project
 
     return {
         "extraction": extraction_rates(survey.deposits),
@@ -87,6 +88,12 @@ def promoted_fields(survey: Survey) -> dict:
         # it orbits and what its interior is doing.
         "stellar_flux": round(survey.star.flux_at(survey.orbit.semi_major_axis_au), 6),
         "tectonic_activity": round(survey.body.tectonic_activity, 4),
+        # What terraforming this world would need next. A pure function of the
+        # survey like everything else here, and promoted for the same reason:
+        # deciding whether to terraform meant parsing the whole document, per
+        # candidate world, per turn -- the exact cost these columns exist to
+        # avoid, arrived at from the AI's side where the guard was not looking.
+        "terraform_next": next_project(survey) or "",
     }
 
 

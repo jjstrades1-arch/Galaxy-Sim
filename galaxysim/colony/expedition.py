@@ -23,7 +23,6 @@ from dataclasses import dataclass
 
 from galaxysim.materials.catalogue import FOOD, WATER
 from galaxysim.materials.costs import COLONIST_COST, EQUIPMENT_COST, STORES_COST
-from galaxysim.materials.extraction import extraction_rates
 
 #: Infrastructure a colony gains per unit of equipment landed. Infrastructure
 #: multiplies extraction, industry and research, so equipment is the difference
@@ -180,10 +179,12 @@ def assess(loadout: Loadout, world, rates) -> Assessment:
     # seam is. A world with neither is a permanent supply liability regardless
     # of how rich it is -- which is exactly the bargain the best mining worlds
     # offer.
-    from galaxysim.worldgen.serialize import deposits_from_json, has_surface_water
-
-    survey = world.survey or {}
-    if has_surface_water(survey):
+    # Read off the promoted columns rather than the survey document. Both facts
+    # -- whether there is water on the surface, and how fast ice comes out of
+    # the ground -- have lived as columns since they were promoted; this was
+    # decoding a whole planet to look at two of them, once per pending
+    # expedition per tick.
+    if world.surface_water:
         return Assessment(
             loadout=loadout,
             cost=cost,
@@ -193,7 +194,7 @@ def assess(loadout: Loadout, world, rates) -> Assessment:
             self_sufficient=True,
         )
 
-    ice_rate = extraction_rates(deposits_from_json(survey)).get("water_ice", 0.0)
+    ice_rate = (world.extraction or {}).get("water_ice", 0.0)
     local_per_hour = (
         ice_rate
         * loadout.colonists
