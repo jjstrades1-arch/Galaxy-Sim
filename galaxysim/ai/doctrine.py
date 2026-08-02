@@ -109,6 +109,22 @@ class Doctrine:
     upkeep_reserve_hours: float
     #: Warship strength garrisoned per colony held.
     garrison_per_colony: float
+    #: Warship strength this opponent will commit to a raid, over and above its
+    #: garrison. ``0`` means it does not raid at all.
+    #:
+    #: The sharpest difficulty dial in the ladder, because it is the only one
+    #: that can take something away from you. A steady opponent expands into
+    #: empty sky and leaves your worlds alone; a driven one will blockade and
+    #: annex your frontier the moment it has ships to spare. Nothing about the
+    #: mechanic changes between levels -- the same siege, the same colony pod,
+    #: the same supply problem -- only whether the opponent is willing to spend
+    #: a fleet on it.
+    raid_strength: float
+    #: Largest population this opponent will pick a fight with. A frontier world
+    #: falls in a day; a capital cannot be taken from orbit at all, so sending a
+    #: raid at one is a fleet thrown away, and an opponent that does it reads as
+    #: stupid rather than as difficult.
+    raid_population_ceiling: float
 
     # --- circumstance -------------------------------------------------------
     #: Where the game is seated when the player does not say. A property of the
@@ -140,6 +156,8 @@ DORMANT = Doctrine(
     terraform_campaigns=1,
     upkeep_reserve_hours=24.0 * 7.0,
     garrison_per_colony=1.0,
+    raid_strength=0.0,
+    raid_population_ceiling=0.0,
     preferred_region="rim",
     rivals=2,
 )
@@ -162,6 +180,8 @@ STEADY = Doctrine(
     terraform_campaigns=1,
     upkeep_reserve_hours=24.0 * 3.0,
     garrison_per_colony=2.0,
+    raid_strength=0.0,
+    raid_population_ceiling=0.0,
     preferred_region="arm",
     rivals=3,
 )
@@ -184,6 +204,8 @@ DRIVEN = Doctrine(
     terraform_campaigns=2,
     upkeep_reserve_hours=24.0 * 2.0,
     garrison_per_colony=2.5,
+    raid_strength=12.0,
+    raid_population_ceiling=5.0e6,
     preferred_region="arm",
     rivals=5,
 )
@@ -205,6 +227,8 @@ RELENTLESS = Doctrine(
     terraform_campaigns=4,
     upkeep_reserve_hours=24.0,
     garrison_per_colony=3.0,
+    raid_strength=20.0,
+    raid_population_ceiling=5.0e7,
     preferred_region="core",
     rivals=8,
 )

@@ -271,6 +271,9 @@ def take_turn(
     _maybe_migrate(turn, pending)
     _maybe_terraform(turn, pending)
     _maybe_scout(turn, pending)
+    # Before scrapping, so a surplus warship is offered a war before it is
+    # offered a breaker's yard.
+    _maybe_raid(turn, pending)
     _maybe_scrap(turn, pending)
     _maybe_build(turn, pending, rng)
 
@@ -548,6 +551,135 @@ def _all_routes(session: Session, universe: Universe, civ: Civ) -> list[Intent]:
         )
         if intent.civ_id == civ.id
     ]
+
+
+def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
+    """Blockade and take a rival's frontier world, if there is a fleet to spare.
+
+    The whole of the AI's warmaking, and deliberately small. It picks one
+    target, sends what it can spare, and declares. Everything that makes the
+    result interesting -- the siege grinding down a world's population and
+    infrastructure, the colony pod that has to land to finish the job, the
+    supply lines that stop moving on both sides -- already lives in
+    :mod:`galaxysim.engine.resolvers.siege`, and none of it is available to this
+    civ on any terms a player could not also get.
+
+    Three constraints, and each one is the reason a raid reads as a decision
+    rather than as a die roll:
+
+    **It only fights within supply range of its own worlds.** Fleet upkeep is
+    billed to the colonies near a fleet, and there is nothing to draw on past
+    :data:`SUPPLY_RANGE_LY` -- a squadron parked deep in someone else's space
+    deserts within days. So a war is fought along a border, which is where wars
+    are, and holding a distant world means settling toward it first.
+
+    **It only goes after a frontier.** Resistance is a colony's people and its
+    infrastructure, so a capital cannot be taken from orbit by any fleet worth
+    building. Sending a raid at one is a fleet thrown away, and an opponent that
+    does it reads as stupid rather than as difficult.
+
+    **It keeps a navy at home.** It will not go to war unless it holds at least
+    twice the strength the raid asks for, so what it sends is a surplus rather
+    than everything it has. One number, and it is the doctrine's own -- an
+    opponent that empties its home systems to take an outpost has not become
+    harder to play against.
+    """
+    doctrine = turn.doctrine
+    if doctrine.raid_strength <= 0:
+        return
+    # One war at a time. The attack order is standing, so a second declaration
+    # would not add anything except more enemies to be blockaded by.
+    if pending.get(IntentKind.ATTACK.value):
+        return
+
+    session, civ = turn.session, turn.civ
+    colonies = turn.colonies
+    if not colonies:
+        return
+
+    busy = {
+        intent.payload.get("fleet_id") for group in pending.values() for intent in group
+    }
+    warships = [
+        fleet
+        for fleet in turn.fleets
+        if fleet.cargo_capacity <= 100.0
+        and not fleet.in_transit
+        and fleet.id not in busy
+        and fleet.strength > 0
+    ]
+    if sum(fleet.strength for fleet in warships) < doctrine.raid_strength * 2.0:
+        return
+
+    committed: list[Fleet] = []
+    strength = 0.0
+    for fleet in sorted(warships, key=lambda f: (-f.strength, f.id)):
+        committed.append(fleet)
+        strength += fleet.strength
+        if strength >= doctrine.raid_strength:
+            break
+    if strength < doctrine.raid_strength:
+        return
+
+    target = _raidable_colony(turn)
+    if target is None:
+        return
+
+    # A pod goes along if one is idle. Without it the raid is still worth
+    # running -- a blockade starves an outpost whether or not anybody lands --
+    # but with it the world changes hands, which is the only way this
+    # civilization ever takes a *developed* place rather than founding one.
+    for lander in _idle_colony_fleets(turn):
+        if lander.id not in busy:
+            committed.append(lander)
+            break
+
+    system = target.world.system
+    intents.attack(session, civ, target.civ_id)
+    for fleet in committed:
+        if distance(fleet.position, system.position) > DOCKING_TOLERANCE_LY:
+            intents.move_fleet_to_system(session, civ, fleet.id, system)
+
+
+def _raidable_colony(turn: "_Turn") -> Colony | None:
+    """A rival's frontier world this civ could plausibly besiege and hold.
+
+    Read off the star charts the AI already has loaded, so a war costs the tick
+    no queries at all. Those charts are exactly what a player can see -- systems
+    somebody has actually visited -- which is what keeps this an opponent
+    playing the game rather than one reading the database.
+    """
+    ceiling = turn.doctrine.raid_population_ceiling
+    candidates = [
+        (system.position, world.colony)
+        for system in turn.systems
+        for world in system.worlds
+        if world.colony is not None
+        and world.colony.civ_id != turn.civ.id
+        and world.colony.population <= ceiling
+    ]
+    if not candidates:
+        return None
+
+    # Rivals first, then distance -- rather than a distance for every world in
+    # the charted galaxy. By the second week the charts are hundreds of systems
+    # and a handful of them have anybody living on them, and this is the
+    # difference between a decision that costs nothing and one that shows up in
+    # the tick.
+    mine = [colony.world.system.position for colony in turn.colonies]
+    best: tuple[float, int] | None = None
+    chosen: Colony | None = None
+    for position, colony in candidates:
+        reach = min(distance(home, position) for home in mine)
+        if reach > SUPPLY_RANGE_LY:
+            continue
+        # Closest first, ties by id: a determined choice, and the one a player
+        # would recognise as the obvious target.
+        key = (reach, colony.id)
+        if best is None or key < best:
+            best, chosen = key, colony
+
+    return chosen
 
 
 def _maybe_scrap(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:

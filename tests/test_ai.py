@@ -39,8 +39,9 @@ from galaxysim.ai.doctrine import (
     doctrine,
 )
 from galaxysim.engine.resolvers import governor
+from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY
 from galaxysim.model.base import create_engine_for, open_session
-from galaxysim.model.entities import Colony, Universe
+from galaxysim.model.entities import Civ, Colony, Universe
 from tests.conftest import civ_by_name, new_universe
 
 
@@ -67,6 +68,8 @@ PERMITTED_FIELDS = {
     "terraform_campaigns": "count",
     "upkeep_reserve_hours": "timing",
     "garrison_per_colony": "threshold",
+    "raid_strength": "threshold",
+    "raid_population_ceiling": "threshold",
     # circumstance: what galaxy it is played in
     "preferred_region": "choice",
     "rivals": "count",
@@ -139,6 +142,8 @@ def test_the_ladder_climbs():
         "terraform_habitability",
         "terraform_campaigns",
         "garrison_per_colony",
+        "raid_strength",
+        "raid_population_ceiling",
         "rivals",
     )
     falling = (
@@ -180,6 +185,11 @@ def test_steady_is_the_behaviour_the_economy_was_calibrated_against():
     assert STEADY.terraform_campaigns == 1
     assert STEADY.upkeep_reserve_hours == 24.0 * 3.0
     assert STEADY.garrison_per_colony == 2.0
+    # And it does not go to war. Raiding is the one dial that can take a world
+    # off the player, so it belongs above the calibrated default rather than in
+    # it: a steady opponent expands into empty sky, a driven one comes for your
+    # frontier.
+    assert STEADY.raid_strength == 0.0
 
 
 def test_an_unknown_difficulty_falls_back_rather_than_crashing():
@@ -374,3 +384,158 @@ def test_every_named_difficulty_can_actually_run():
 
         with open_session(engine) as session:
             assert session.get(Universe, universe_id).tick_number == 24
+
+
+# --- the dial that can take a world off you -----------------------------------
+
+
+def _border_universe(difficulty: str, *, rival_population: float, warships: float):
+    """An AI civ with a rival's colony one system over, and ships to spare.
+
+    Staged rather than grown, because growing it is not possible in a test and
+    barely possible in a game: civilizations are seated a hundred and thirty
+    light-years apart and expand a few light-years a week, so a *border* is a
+    months-long achievement. What is under test is what an opponent does when it
+    has one, which is a different question from how long it takes to get one.
+    """
+    from galaxysim.core.space import distance
+    from galaxysim.model.entities import Fleet
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(
+        engine, seed=515, civs=("AI-1", "Neighbour"), seconds_per_tick=3600
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        universe.ai_difficulty = difficulty
+        raider = civ_by_name(session, universe_id, "AI-1")
+        rival = civ_by_name(session, universe_id, "Neighbour")
+        raider.is_ai = True
+        home = session.scalar(
+            select(Colony).where(Colony.civ_id == raider.id).order_by(Colony.id)
+        )
+
+        # The rival's world, close enough that the raider's own colonies could
+        # supply a siege there. Past supply range a blockade deserts, so a war
+        # is fought along a border or not at all.
+        world = _free_world(session)
+        target = Colony(
+            world=world,
+            civ_id=rival.id,
+            name="Contested",
+            population=rival_population,
+            infrastructure=1.0,
+            founded_tick=0,
+            stockpile={},
+            labor=dict(home.labor),
+        )
+        session.add(target)
+        session.flush()
+        assert distance(
+            world.system.position, home.world.system.position
+        ) < SUPPLY_RANGE_LY, "the fixture needs a rival inside supply range"
+
+        session.add(
+            Fleet(
+                universe_id=universe_id,
+                civ_id=raider.id,
+                name="Line Squadron",
+                strength=warships,
+                colony_pods=1,
+                speed_ly_per_hour=1.0,
+                cargo={},
+                cargo_capacity=40.0,
+                x=home.world.system.x,
+                y=home.world.system.y,
+                z=home.world.system.z,
+            )
+        )
+        session.flush()
+        return engine, universe_id, raider.id, rival.id
+
+
+def _declared_wars(session, civ_id: int):
+    from galaxysim.model.entities import Intent, IntentKind
+
+    return session.scalars(
+        select(Intent).where(
+            Intent.civ_id == civ_id, Intent.kind == IntentKind.ATTACK.value
+        )
+    ).all()
+
+
+def test_a_driven_opponent_takes_a_rival_frontier_world():
+    """The only difficulty dial that can cost the player something they hold.
+
+    Everything else on the ladder is an opponent that grows faster. This is the
+    one that arrives. It commits the surplus of its navy, declares, and brings a
+    colony pod -- because grinding a world down is not the same as owning it,
+    and without somebody to land there the blockade merely starves the place.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, rival_id = _border_universe(
+        "driven", rival_population=50_000.0, warships=40.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+
+        wars = _declared_wars(session, raider_id)
+        assert wars, "a driven opponent with ships to spare should have declared"
+        assert wars[0].payload["target_civ_id"] == rival_id
+
+
+def test_a_steady_opponent_expands_into_empty_sky_instead():
+    """The default must stay peaceful, and not by accident.
+
+    Every price in the game is calibrated against a soak of steady opponents. An
+    opponent that starts taking worlds off its neighbours is measuring something
+    else, so war belongs above the calibrated default rather than inside it.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, _ = _border_universe(
+        "steady", rival_population=50_000.0, warships=40.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+        assert not _declared_wars(session, raider_id)
+
+
+def test_it_does_not_throw_a_fleet_at_a_homeworld():
+    """Resistance is a colony's people, so a capital cannot be taken at all.
+
+    An opponent that sends a raid at eleven billion people is not a hard
+    opponent, it is a stupid one -- the siege would run for centuries while the
+    fleet went unsupplied and deserted.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, _ = _border_universe(
+        "driven", rival_population=11.0e9, warships=40.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+        assert not _declared_wars(session, raider_id)
+
+
+def test_it_will_not_raid_itself_defenceless():
+    """What it commits is a surplus. A navy that is only just enough stays home."""
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, _ = _border_universe(
+        "driven", rival_population=50_000.0, warships=DRIVEN.raid_strength
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+        assert not _declared_wars(session, raider_id), (
+            "committing the entire navy is not a surplus"
+        )
