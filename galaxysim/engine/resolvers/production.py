@@ -79,6 +79,7 @@ from galaxysim.materials import (
     can_afford,
     deposit,
     draw,
+    gather,
     refine,
     spend,
 )
@@ -1062,39 +1063,21 @@ def _start_fleets(ctx: TickContext) -> None:
         # it can each hour and holds it against the order until the bill is met.
         # That makes an expensive thing *slow* rather than impossible, which is
         # the difference between a price and a wall.
-        banked = dict(intent.payload.get("paid") or {})
-        outstanding = {
-            resource: amount - banked.get(resource, 0.0)
-            for resource, amount in sorted(cost.items())
-            if amount - banked.get(resource, 0.0) > 1e-9
-        }
-        if outstanding:
-            taken = {
-                resource: min(wanted, colony.stockpile.get(resource, 0.0))
-                for resource, wanted in outstanding.items()
-                if colony.stockpile.get(resource, 0.0) > 0.0
-            }
-            if taken:
-                spend(colony.stockpile, taken)
-                for resource, amount in taken.items():
-                    banked[resource] = banked.get(resource, 0.0) + amount
-                intent.payload["paid"] = banked
+        stock = dict(colony.stockpile)
+        banked, short = gather(stock, cost, intent.payload.get("paid") or {})
+        colony.stockpile = stock
 
-            still_short = {
-                resource: amount - banked.get(resource, 0.0)
-                for resource, amount in sorted(cost.items())
-                if amount - banked.get(resource, 0.0) > 1e-9
-            }
-            if still_short:
-                intent.result = (
-                    f"gathering materials at {colony.name} ("
-                    + ", ".join(
-                        f"{amount:,.0f} {resource} short"
-                        for resource, amount in sorted(still_short.items())
-                    )
-                    + ")"
+        if short:
+            intent.payload["paid"] = banked
+            intent.result = (
+                f"gathering materials at {colony.name} ("
+                + ", ".join(
+                    f"{amount:,.0f} {resource} short"
+                    for resource, amount in sorted(short.items())
                 )
-                continue
+                + ")"
+            )
+            continue
 
         intent.payload.pop("paid", None)
         intent.status = IntentStatus.IN_PROGRESS.value

@@ -82,7 +82,14 @@ from galaxysim.materials.extraction import (
 )
 from galaxysim.materials.recipes import RECIPES, Recipe, missing_inputs, recipes_producing
 from galaxysim.materials.refining import DEFAULT_PLAN, refine, shortfalls
-from galaxysim.materials.stock import can_afford, deposit, draw, spend, total_mass
+from galaxysim.materials.stock import (
+    can_afford,
+    deposit,
+    draw,
+    gather,
+    spend,
+    total_mass,
+)
 
 __all__ = [
     # catalogue
@@ -154,6 +161,7 @@ __all__ = [
     "DEFAULT_PLAN",
     # stock arithmetic
     "can_afford",
+    "gather",
     "spend",
     "draw",
     "deposit",

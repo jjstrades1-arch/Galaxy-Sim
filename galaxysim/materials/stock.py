@@ -49,6 +49,51 @@ def deposit(stock: dict[str, float], gains: dict[str, float]) -> None:
         stock[key] = stock.get(key, 0.0) + amount
 
 
+def gather(
+    stock: dict[str, float], cost: dict[str, float], banked: dict[str, float]
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Take what ``stock`` can spare toward ``cost``, adding it to ``banked``.
+
+    Returns the new escrow and whatever is *still* short, so an empty second
+    value means the bill is met and the work may begin.
+
+    **An all-or-nothing bill cannot be saved for**, and that is not a small
+    point -- it was a wall across the middle of the game. A capital's governor
+    spends steel on its own industry the hour it is refined, so the warehouse
+    never holds a large sum at any one instant; asking :func:`can_afford` about
+    a colony pod therefore got "no" at every income, forever. Eight AI
+    civilizations stopped dead at thirty-odd colonies for sixty simulated days,
+    each with somewhere to settle, a ship with a pod aboard, and zero tonnes of
+    steel in the bank. They could afford it over a week and could not afford it
+    in an hour, and only the second question was ever asked.
+
+    A yard, or a quartermaster loading an expedition, procures the way a real
+    one does: it takes delivery of what it can each hour and holds it against
+    the order. That makes an expensive thing *slow* rather than impossible,
+    which is the difference between a price and a wall.
+
+    The escrow is the caller's to store -- on the intent, so it survives a
+    restart and can be handed back if the order is abandoned.
+    """
+    banked = dict(banked)
+    for key, amount in sorted(cost.items()):
+        outstanding = amount - banked.get(key, 0.0)
+        if outstanding <= 1e-9:
+            continue
+        taken = min(outstanding, stock.get(key, 0.0))
+        if taken <= 0.0:
+            continue
+        stock[key] = stock.get(key, 0.0) - taken
+        banked[key] = banked.get(key, 0.0) + taken
+
+    short = {
+        key: amount - banked.get(key, 0.0)
+        for key, amount in sorted(cost.items())
+        if amount - banked.get(key, 0.0) > 1e-9
+    }
+    return banked, short
+
+
 def total_mass(manifest: dict[str, float]) -> float:
     """Cargo tonnage of a manifest, respecting per-unit mass.
 

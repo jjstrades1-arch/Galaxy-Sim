@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from galaxysim.colony.expedition import Loadout, assess
 from galaxysim.colony.labor import balanced_allocation
-from galaxysim.materials import can_afford, spend
+from galaxysim.materials import gather
 from galaxysim.core.space import distance
 from galaxysim.engine.context import TickContext
 from galaxysim.engine.resolvers import queries
@@ -157,9 +157,30 @@ def _outfit(ctx: TickContext, intent, civ: Civ, fleet: Fleet, loadout: Loadout) 
         _fail(ctx, intent, "no colony available to outfit the expedition")
         return False
 
+    # Loaded over time, not in one instant.
+    #
+    # A quartermaster takes delivery of what the warehouse can spare each hour
+    # and holds it against the manifest. Demanding the whole expedition at once
+    # is what stopped eight AI civilizations dead at thirty-odd colonies for two
+    # simulated months: each had a colony ship with a pod aboard and a world
+    # picked out, and each was refused because its capital's governor had spent
+    # the steel on a mine an hour earlier. See :func:`galaxysim.materials.gather`
+    # -- an all-or-nothing bill cannot be saved for at any income.
     cost = loadout.cost()
-    if not can_afford(outfitter.stockpile, cost):
-        waited = (ctx.tick - intent.queued_tick) * ctx.cadence.hours_per_tick
+    stock = dict(outfitter.stockpile)
+    banked, short = gather(stock, cost, intent.payload.get("loaded") or {})
+    outfitter.stockpile = stock
+
+    if short:
+        intent.payload["loaded"] = banked
+        # Patience measures being *stuck*, not being slow. An expedition that
+        # took on stores this hour is making progress and should not be
+        # abandoned for having taken a fortnight to fill its holds.
+        if banked != (intent.payload.get("loaded_last") or {}):
+            intent.payload["loaded_last"] = dict(banked)
+            intent.payload["stalled_since"] = ctx.tick
+        stalled = int(intent.payload.get("stalled_since", intent.queued_tick))
+        waited = (ctx.tick - stalled) * ctx.cadence.hours_per_tick
         if waited >= OUTFITTING_PATIENCE_HOURS:
             _fail(
                 ctx,
@@ -168,10 +189,18 @@ def _outfit(ctx: TickContext, intent, civ: Civ, fleet: Fleet, loadout: Loadout) 
                 f"{OUTFITTING_PATIENCE_HOURS / 24:.0f} days; order abandoned",
             )
             return False
-        intent.result = f"insufficient resources at {outfitter.name} to outfit"
+        intent.result = (
+            f"loading at {outfitter.name} ("
+            + ", ".join(
+                f"{amount:,.0f} {resource} short"
+                for resource, amount in sorted(short.items())
+            )
+            + ")"
+        )
         return False
 
-    spend(outfitter.stockpile, cost)
+    intent.payload.pop("loaded", None)
+    intent.payload.pop("loaded_last", None)
     intent.payload["outfitted_colony_id"] = outfitter.id
     intent.result = "expedition loaded"
     ctx.log(
@@ -202,6 +231,25 @@ def _fail(ctx: TickContext, intent, reason: str) -> None:
             origin.stockpile = returned
             reason = f"{reason}; the expedition was returned to {origin.name}"
         intent.payload["outfitted_colony_id"] = None
+    elif intent.payload and intent.payload.get("loaded"):
+        # Abandoned part-way through loading. What is already in the escrow was
+        # never burned either -- it is stores on a dock -- so it goes back to the
+        # colony that supplied it, and to the same place it would have gone had
+        # the manifest completed.
+        ship = queries.fleets_by_id(ctx).get(intent.payload.get("fleet_id", -1))
+        origin = (
+            queries.nearest_colony(ctx.session, intent.civ_id, ship.position)
+            if ship is not None
+            else None
+        )
+        if origin is not None:
+            returned = dict(origin.stockpile)
+            for material, amount in dict(intent.payload["loaded"]).items():
+                returned[material] = returned.get(material, 0.0) + amount
+            origin.stockpile = returned
+            reason = f"{reason}; part-loaded stores returned to {origin.name}"
+        intent.payload.pop("loaded", None)
+        intent.payload.pop("loaded_last", None)
 
     intent.status = IntentStatus.FAILED.value
     intent.resolved_tick = ctx.tick

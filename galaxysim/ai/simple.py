@@ -346,8 +346,13 @@ def _maybe_expand(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             return
 
         loadout = _loadout_for(world)
-        if not can_afford(outfitter.stockpile, loadout.cost()):
-            return  # the next ship would ask the same warehouse the same thing
+        # Deliberately *not* checking whether the warehouse can cover the
+        # manifest right now. It usually cannot -- a capital's governor spends
+        # steel on its own industry the hour it is refined, so the shelves are
+        # bare most hours of most days -- and an expedition loads over time out
+        # of whatever the colony can spare. Refusing to place the order because
+        # today is a lean day is how a civilization with somewhere to go, a ship
+        # to go in and a healthy income sat still for two simulated months.
 
         if distance(fleet.position, system.position) > 0.01:
             intents.move_fleet_to_system(session, civ, fleet.id, system)
