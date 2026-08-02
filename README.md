@@ -541,22 +541,27 @@ Named explicitly so nobody mistakes scaffolding for design:
 - **Names are syllable soup.** Step 7 gives each civ phoneme banks derived from
   its own species profile.
 
+## Pacing
+
+`galaxysim soak --ai 8 --days 28` is the check, and the property it tests is the
+**shape of the curve** rather than any figure in it: colony count should still
+be climbing at day 28, with what slows a civilization being the cost of what it
+has already built.
+
+That is an inversion of what this file used to say. "Slow and
+compounding-resistant" produced exactly what it asked for — AI empires that
+reached six colonies on day two and sat there for twenty-six days. Growth is
+meant to compound, and a flat line is the failure rather than the target.
+
 ## Known tuning gaps
 
-- **Expansion levels off at what the population supports.** A 28-day soak with
-  8 AI civs runs 6 → 16 → 18 colonies over the first six days and then holds at
-  18. The shape is right and the ceiling is the design rather than a brake: an
-  outpost holds tens of thousands against a homeworld's eleven billion, so
-  settling rocks barely moves the population, and everything scaled to
-  population — fleet upkeep most of all — stops rising with it. The only thing
-  that lifts it is terraforming a world into somewhere billions can live, which
-  is exactly what the tree is for and exactly what no AI does yet. Whether 18 is
-  the *right* plateau is a question for a play session.
-- **A tick costs ~760 ms with 8 civs and 144 colonies.** About 5 ms a colony,
-  down from 8 — the query count is flat in universe size and tested to stay
-  that way, so this is honest per-row cost rather than the quadratic shape that
-  was fixed last phase. It still wants profiling before a shared universe is
-  real, since a five-minute cadence resolves 288 ticks a day.
+- **A tick costs ~2.4 s with 8 civs and 360 colonies.** The query count is flat
+  in universe size and tested to stay that way, so this is honest per-row cost
+  rather than the quadratic shape fixed two phases ago — but it is the number
+  that now decides how large a shared universe can be, since a five-minute
+  cadence resolves 288 ticks a day. Profiling it is the next performance job,
+  and the likely wins are the per-colony refining loop and the survey-free
+  promoted columns being re-read rather than cached across resolvers.
 - **Supply routes over-deliver.** A standing route ships its full manifest every
   trip whether or not the destination needs it, so a well-supplied outpost banks
   months of surplus. A route that tops up to a target level would be better.

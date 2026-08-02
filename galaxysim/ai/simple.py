@@ -112,13 +112,23 @@ DEFENSIVE_STRENGTH_PER_COLONY = 2.0
 #: in steel and alloys, as the AI was with a hundred and fifteen million tonnes
 #: banked, and still be unable to keep a single ship flying.
 #:
-#: So the test is against the fuel bunker rather than the smelters: hold a
-#: fortnight of what the whole fleet burns, including the ship being considered,
-#: or do not build it. That makes the size of a navy a consequence of fuel
-#: production without anything having to say so, and -- more importantly -- it
-#: stops the AI buying ships it will then watch desert, which is what turned a
-#: constraint into a death spiral.
-UPKEEP_RESERVE_HOURS = 24.0 * 14.0
+#: So the test is against the fuel bunker rather than the smelters: hold this
+#: many hours of what the whole fleet burns, including the ship being
+#: considered, or do not build it. That makes the size of a navy a consequence
+#: of fuel production without anything having to say so, and -- more importantly
+#: -- it stops the AI buying ships it will then watch desert, which is what
+#: turned a constraint into a death spiral.
+#:
+#: Three days rather than the fortnight this started at, and the difference
+#: mattered more than it looks. A fortnight's reserve on a fleet of a hundred
+#: and ten points wants forty million tonnes of fuel banked against the twelve
+#: million a civ that size actually accumulates -- so the AI stopped expanding
+#: at day twenty, not because it could not pay its bills but because it was
+#: saving for a rainy fortnight. Prudence became the brake, which is exactly the
+#: species of artificial ceiling this whole pass exists to remove. Three days is
+#: enough to keep ships from deserting between deliveries, which is all the
+#: reserve was ever for.
+UPKEEP_RESERVE_HOURS = 24.0 * 3.0
 
 #: How far the AI will send a scout, and how many candidate systems it weighs.
 #:
