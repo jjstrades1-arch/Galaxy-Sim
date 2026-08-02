@@ -65,6 +65,8 @@ from galaxysim.colony.labor import (
 )
 from galaxysim.colony.population import capacity, growth_per_hour
 from galaxysim.materials import (
+    COLONY_POD_COST,
+    COLONY_POD_WORK,
     FERTILISER,
     FLEET_COST_PER_STRENGTH,
     FLEET_UPKEEP_PER_STRENGTH,
@@ -1034,6 +1036,18 @@ def _start_fleets(ctx: TickContext) -> None:
         for resource, per_tonne in sorted(FREIGHTER_COST_PER_CAPACITY.items()):
             cost[resource] = cost.get(resource, 0.0) + per_tonne * extra_hold
 
+        # And the pods, which are the expensive part and were free.
+        #
+        # A pod is a civilization in a box -- reactors, foundries, pressure
+        # vessels, soil and seed for fifty thousand people on a world that has
+        # never held life. Charging nothing for it meant the pace of expansion
+        # in the whole game was set by the build time of a gunboat, which is why
+        # empires founded five hundred worlds in four weeks and grew four
+        # percent in population doing it.
+        pods = max(0, int(intent.payload.get("colony_pods", 0)))
+        for resource, amount in sorted(COLONY_POD_COST.items()):
+            cost[resource] = cost.get(resource, 0.0) + amount * pods
+
         # Built here, paid for here. A yard can only use what has been shipped
         # to it.
         if not can_afford(colony.stockpile, cost):
@@ -1043,10 +1057,13 @@ def _start_fleets(ctx: TickContext) -> None:
         spend(colony.stockpile, cost)
         intent.status = IntentStatus.IN_PROGRESS.value
         intent.result = ""
-        intent.payload["work_remaining"] = ctx.rates.fleet_work_per_strength * strength
+        intent.payload["work_remaining"] = (
+            ctx.rates.fleet_work_per_strength * strength + COLONY_POD_WORK * pods
+        )
         ctx.log(
             "build_started",
-            f"Began construction of a {strength:.1f}-strength fleet at {colony.name}",
+            f"Began construction of a {strength:.1f}-strength fleet at {colony.name}"
+            + (f" with {pods} colony pod{'s' if pods != 1 else ''}" if pods else ""),
             civ_id=colony.civ_id,
             payload={"colony_id": colony.id, "strength": strength},
         )

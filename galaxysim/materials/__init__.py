@@ -60,6 +60,8 @@ from galaxysim.materials.catalogue import (
 )
 from galaxysim.materials.costs import (
     COLONIST_COST,
+    COLONY_POD_COST,
+    COLONY_POD_WORK,
     EQUIPMENT_COST,
     FLEET_COST_PER_STRENGTH,
     FLEET_UPKEEP_PER_STRENGTH,
@@ -127,6 +129,8 @@ __all__ = [
     "FREIGHTER_COST_PER_CAPACITY",
     "FLEET_UPKEEP_PER_STRENGTH",
     "COLONIST_COST",
+    "COLONY_POD_COST",
+    "COLONY_POD_WORK",
     "EQUIPMENT_COST",
     "STORES_COST",
     "RESEARCH_COST_PER_PROGRESS",

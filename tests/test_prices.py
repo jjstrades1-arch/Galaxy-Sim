@@ -38,6 +38,8 @@ from galaxysim.engine.context import TickContext
 from galaxysim.engine.rates import DEFAULT_RATES, CADENCE_HOURLY
 from galaxysim.engine.resolvers.production import construction_output, industry_output
 from galaxysim.materials.costs import (
+    COLONY_POD_COST,
+    COLONY_POD_WORK,
     FLEET_COST_PER_STRENGTH,
     FLEET_UPKEEP_PER_STRENGTH,
 )
@@ -274,6 +276,62 @@ def test_a_project_costs_a_civilization_rather_than_a_colony():
     # design wants a mature colony to face: deepen this world, or change it.
     deep = max(sum(cost_of_level(b.cost, 200).values()) for b in BUILDING_TYPES)
     assert deep > cheapest_project
+
+
+# --- expansion, which is the pace of the whole game --------------------------
+
+
+def test_founding_a_world_is_the_decision_of_a_season(economies):
+    """A colony pod is the most expensive thing a young civilization builds.
+
+    **It was free.** ``Fleet.colony_pods`` was an integer nobody charged for, so
+    the price of settling a planet was the price of the gunboat carrying the
+    pod -- nine hours of a capital's construction. That one omission set the
+    pace of the entire game: AI empires founded a world every ten hours forever,
+    reached five hundred colonies in four weeks, and grew their population four
+    percent doing it. Enormously wide, completely hollow.
+
+    The intended shape is a new world every five or six days for a *fresh* civ,
+    accelerating from there as its industry deepens -- so the frontier speeds up
+    because the empire got stronger, never because a rule let go. A capital
+    building a pod also has mines and reactors going, so it spends some fraction
+    of its construction on the yard; the band below is wide enough to hold any
+    reasonable split and narrow enough to catch this going free again.
+    """
+    per_hour = economies["capital_work_per_hour"]
+    days_at_full_tilt = _hours(COLONY_POD_WORK, per_hour) / HOURS_PER_DAY
+
+    assert 1.0 < days_at_full_tilt < 3.0, (
+        f"a pod is {days_at_full_tilt:.2f} days of the capital's *entire* "
+        "construction output; sharing that yard with its industry should put a "
+        "new world five or six days apart"
+    )
+
+    # And the materials are a real bill without being the brake. A shipyard
+    # cannot be hurried; a warehouse can be refilled.
+    materials = sum(COLONY_POD_COST.values())
+    hours_of_industry = _hours(materials, economies["capital_industry_per_hour"])
+    assert 0.5 < hours_of_industry < 6.0, (
+        f"pod materials are {hours_of_industry:.1f} hours of the capital's "
+        "output; they should cost something and still leave work as the limit"
+    )
+
+
+def test_an_outpost_cannot_casually_found_another_outpost(economies):
+    """Expansion comes from developed worlds, not from a hole in the ground.
+
+    Fifty thousand people on a dead rock building the kit for fifty thousand
+    more, unaided, is the compounding that made empires hollow. It should take a
+    frontier colony most of a human lifetime -- which is to say, it should send
+    for help instead.
+    """
+    years = _hours(COLONY_POD_WORK, economies["outpost_work_per_hour"]) / (
+        HOURS_PER_DAY * 365.0
+    )
+    assert years > 50.0, (
+        f"a bare outpost could build a colony pod in {years:.1f} years; "
+        "expansion is supposed to come from somewhere that has industry"
+    )
 
 
 # --- upkeep, which is what bounds a navy now that nothing else does ----------

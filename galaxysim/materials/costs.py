@@ -90,6 +90,41 @@ FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {
     ALLOYS: 1_900.0,
 }
 
+#: What a colony pod costs to build, and the work of assembling one.
+#:
+#: **This was free for the entire life of the project**, and it set the pace of
+#: the whole game by accident. ``Fleet.colony_pods`` was an integer nobody
+#: charged for: you ordered a strength-2 hull, ticked the box, and paid for a
+#: gunboat. So how fast a civilization expanded was decided by the build time of
+#: a *warship* -- nine hours of a capital's construction -- and AI empires
+#: founded a new world every ten hours, forever, reaching five hundred colonies
+#: in four weeks while their population moved four percent. Wide and hollow.
+#:
+#: A pod is not a cargo container. It is everything fifty thousand people need
+#: to be self-sufficient on a world that has never held life: pressure vessels,
+#: reactors, foundries, soil, seed stock, the machines that make the machines.
+#: Priced as such, it is the most expensive single object a young civilization
+#: builds, and rightly -- founding a world should be the decision of a season,
+#: not of an afternoon.
+#:
+#: The **work** is what binds. Materials a capital replaces in an hour; a
+#: shipyard cannot be hurried, and that is the honest constraint on expansion.
+#: Calibrated in ``tests/test_prices.py`` against a measured capital so it says
+#: what it means: about five to six days for a fresh civilization's first built
+#: world, and faster as its industry deepens -- so the frontier accelerates
+#: because the empire got stronger, not because a rule let go.
+COLONY_POD_COST: dict[str, float] = {
+    STEEL: 1_200_000.0,
+    ALLOYS: 450_000.0,
+    ELECTRONICS: 300_000.0,
+    CONSTRUCTION: 900_000.0,
+    POLYMERS: 150_000.0,
+    CERAMICS: 100_000.0,
+}
+
+#: Industry-work to assemble one pod. The brake on how fast anyone expands.
+COLONY_POD_WORK = 45_000_000.0
+
 #: Fraction of a hull's build cost recovered when it is broken up at a colony.
 #:
 #: Not all of it, because a ship is not a pile of its inputs -- the shaping, the
