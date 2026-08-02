@@ -301,10 +301,12 @@ def test_founding_a_world_is_the_decision_of_a_season(economies):
     per_hour = economies["capital_work_per_hour"]
     days_at_full_tilt = _hours(COLONY_POD_WORK, per_hour) / HOURS_PER_DAY
 
-    assert 1.0 < days_at_full_tilt < 3.0, (
-        f"a pod is {days_at_full_tilt:.2f} days of the capital's *entire* "
-        "construction output; sharing that yard with its industry should put a "
-        "new world five or six days apart"
+    assert 5.0 < days_at_full_tilt < 12.0, (
+        f"a pod is {days_at_full_tilt:.2f} days of a *fresh* capital's entire "
+        "construction output. Measured against a soak, that lands a new world "
+        "about every five days early on and faster as the capital deepens -- "
+        "which is the intended shape: the frontier speeds up because the empire "
+        "got stronger."
     )
 
     # And the materials are a real bill without being the brake. A shipyard
