@@ -119,7 +119,7 @@ PROJECTS: dict[str, Project] = {
             # uranium could not begin terraforming at all: not slowly, not
             # expensively, but never. Fissiles still gate cometary redirection
             # and oxygenation, which genuinely are nuclear work.
-            cost={STEEL: 4.0e8, ALLOYS: 2.0e8, ELECTRONICS: 1.2e8},
+            cost={STEEL: 4e+07, ALLOYS: 2e+07, ELECTRONICS: 1.2e+07},
             work=5.2e+07,
             magnitude=1.0,
         ),
@@ -130,7 +130,7 @@ PROJECTS: dict[str, Project] = {
             "regolith and venting them. Raises surface pressure, which is the "
             "precondition for every kind of weather.",
             effect=THICKEN_ATMOSPHERE,
-            cost={STEEL: 3.0e8, CERAMICS: 1.5e8, POLYMERS: 8.0e7, FUEL: 1.0e8},
+            cost={STEEL: 3e+07, CERAMICS: 1.5e+07, POLYMERS: 8e+06, FUEL: 1e+07},
             work=3.9e+07,
             #: Bar of nitrogen added per run.
             magnitude=0.25,
@@ -143,7 +143,7 @@ PROJECTS: dict[str, Project] = {
             "which is how you make a cold world habitable rather than merely "
             "pressurised.",
             effect=WARM,
-            cost={CONSTRUCTION: 2.0e8, POLYMERS: 1.5e8, FUEL: 1.2e8},
+            cost={CONSTRUCTION: 2e+07, POLYMERS: 1.5e+07, FUEL: 1.2e+07},
             work=2.6e+07,
             #: Kelvin added to the surface per run.
             magnitude=18.0,
@@ -156,7 +156,7 @@ PROJECTS: dict[str, Project] = {
             "throwing a fraction of the star's light back. The only thing that "
             "helps a world that is too hot rather than too cold.",
             effect=COOL,
-            cost={ALLOYS: 3.5e8, ELECTRONICS: 1.5e8, CERAMICS: 1.0e8},
+            cost={ALLOYS: 3.5e+07, ELECTRONICS: 1.5e+07, CERAMICS: 1e+07},
             work=4.35e+07,
             #: Kelvin removed from the surface per run.
             magnitude=20.0,
@@ -168,7 +168,7 @@ PROJECTS: dict[str, Project] = {
             "Slow, violent, and the only way to put an ocean on a world that "
             "never had one.",
             effect=DELIVER_WATER,
-            cost={FUEL: 4.0e8, FISSILES: 1.0e7, ALLOYS: 1.0e8, WATER_ICE: 5.0e7},
+            cost={FUEL: 4e+07, FISSILES: 1e+06, ALLOYS: 1e+07, WATER_ICE: 5e+06},
             work=6.1e+07,
             #: Fraction of the surface covered in water per run.
             magnitude=0.18,
@@ -181,7 +181,7 @@ PROJECTS: dict[str, Project] = {
             "them. A thick poisonous atmosphere is further from breathable than "
             "no atmosphere at all, and this is what closes that gap.",
             effect=SCRUB_TOXINS,
-            cost={CERAMICS: 2.5e8, ELECTRONICS: 1.0e8, CONSTRUCTION: 1.5e8},
+            cost={CERAMICS: 2.5e+07, ELECTRONICS: 1e+07, CONSTRUCTION: 1.5e+07},
             work=3.5e+07,
             #: Fraction of each toxin removed per run.
             magnitude=0.7,
@@ -194,7 +194,7 @@ PROJECTS: dict[str, Project] = {
             "The slowest project and the only one that keeps working after you "
             "stop paying: a biosphere oxygenates its own sky.",
             effect=SEED_LIFE,
-            cost={FERTILISER: 3.0e8, POLYMERS: 1.0e8, CONSTRUCTION: 2.0e8},
+            cost={FERTILISER: 3e+07, POLYMERS: 1e+07, CONSTRUCTION: 2e+07},
             work=7.8e+07,
             #: Advances the biosphere one stage per run.
             magnitude=1.0,
@@ -207,7 +207,7 @@ PROJECTS: dict[str, Project] = {
             "biosphere will not do it in time. Expensive, and the last step "
             "before people can walk outside.",
             effect=OXYGENATE,
-            cost={ELECTRONICS: 2.5e8, FISSILES: 2.0e7, CERAMICS: 2.0e8, ALLOYS: 1.5e8},
+            cost={ELECTRONICS: 2.5e+07, FISSILES: 2e+06, CERAMICS: 2e+07, ALLOYS: 1.5e+07},
             work=7.0e+07,
             #: Bar of O2 added per run.
             magnitude=0.08,

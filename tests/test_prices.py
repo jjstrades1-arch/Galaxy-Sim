@@ -256,6 +256,67 @@ def test_transforming_a_world_is_about_three_weeks_for_a_young_civilization(econ
     assert 0.5 < days < 4.0, f"one project takes {days:.1f} days"
 
 
+def test_a_projects_materials_take_about_as_long_as_its_work(economies):
+    """The half of the price nobody was checking, and it ran the show.
+
+    A cost has two halves — the industry-work to do it and the materials to do
+    it *with* — and a project is only as fast as the slower one. The test above
+    has always pinned the work at three weeks for a young civilization. Nothing
+    pinned the materials, and they came out at **ten times that**: 620 million
+    tonnes of electronics across the catalogue against a capital that refines
+    191,000 an hour, which is a hundred and thirty-five days of its entire
+    output for the electronics alone.
+
+    So terraforming never happened. Not once, in any game: six AI civilizations
+    over forty-five simulated days with fifty-four colonies between them started
+    **zero** projects, every order sitting for ever on insufficient resources
+    while eighteen worlds waited part-way up the habitability ladder. And since
+    population, compounding growth and half the difficulty ladder are all
+    downstream of worlds becoming habitable, one unchecked number was holding
+    down the whole game.
+
+    What this asserts is the relationship rather than a figure: whatever the
+    scarcest material is, making it must take roughly as long as doing the work.
+    Either half may move; they may not drift apart.
+    """
+    from galaxysim.materials import MATERIALS
+    from galaxysim.materials.refining import refine
+
+    # What the reference capital can actually refine per hour, running the plan
+    # it would run, with inputs freely available. Inputs *not* being free is a
+    # separate problem and would only make this worse.
+    stock = {key: 1e15 for key in MATERIALS}
+    _, made = refine(stock, economies["capital_industry_per_hour"], 1.0)
+
+    catalogue: dict[str, float] = {}
+    for project in PROJECTS.values():
+        for material, amount in project.cost.items():
+            catalogue[material] = catalogue.get(material, 0.0) + amount
+
+    work_days = _hours(
+        sum(p.work for p in PROJECTS.values()), economies["capital_work_per_hour"]
+    ) / HOURS_PER_DAY
+
+    slowest, slowest_days = "", 0.0
+    for material, amount in sorted(catalogue.items()):
+        per_hour = made.get(material, 0.0)
+        if per_hour <= 0:
+            continue  # mined rather than refined; extraction prices it
+        days = amount / per_hour / HOURS_PER_DAY
+        if days > slowest_days:
+            slowest, slowest_days = material, days
+
+    assert slowest_days < work_days * 2.5, (
+        f"the catalogue's work is {work_days:.1f} days of the capital's output "
+        f"but its {slowest} is {slowest_days:.1f} days; the materials have "
+        "become the real price and the work half stopped meaning anything"
+    )
+    assert slowest_days > work_days * 0.1, (
+        f"materials are only {slowest_days:.1f} days against {work_days:.1f} of "
+        "work; terraforming has stopped costing anything but time"
+    )
+
+
 def test_a_project_costs_a_civilization_rather_than_a_colony():
     """Terraforming is the sink at the end of the economy, and stays that way.
 
