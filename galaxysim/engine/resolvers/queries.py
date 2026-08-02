@@ -104,6 +104,25 @@ def colonies_by_civ(session: Session, universe_id: int) -> dict[int, list[Colony
     return grouped
 
 
+def colonies_grouped(ctx) -> dict[int, list[Colony]]:
+    """:func:`colonies_by_civ`, computed once per tick.
+
+    Five call sites wanted this and each one re-ran it: production twice, the
+    governor, and terraforming once per colony with a project running. That was
+    ten full re-selects of every colony in the universe per tick -- each one
+    dragging in buildings, worlds and systems, and each one decoding every
+    colony's stockpile again, because SQLAlchemy applies a JSON column's result
+    processor while building the row and so pays for it whether or not the
+    object is already loaded.
+
+    Safe to memoize for exactly one tick: the only resolver that creates a
+    colony is colonization, and it runs last.
+    """
+    return ctx.cached_effects(
+        "colonies_grouped", lambda: colonies_by_civ(ctx.session, ctx.universe.id)
+    )
+
+
 def colonies_by_id(ctx) -> dict[int, Colony]:
     """Every colony in the universe, indexed, computed once per tick.
 
@@ -120,7 +139,7 @@ def colonies_by_id(ctx) -> dict[int, Colony]:
         "colonies_by_id",
         lambda: {
             colony.id: colony
-            for group in colonies_by_civ(ctx.session, ctx.universe.id).values()
+            for group in colonies_grouped(ctx).values()
             for colony in group
         },
     )

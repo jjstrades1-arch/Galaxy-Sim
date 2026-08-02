@@ -126,7 +126,7 @@ def _neighbourhood(ctx: TickContext, colony: Colony) -> list[Colony]:
     Nearest first, so a project draws on what is closest before reaching further
     back down the line -- the same rule fleet upkeep uses, for the same reason.
     """
-    colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id).get(colony.civ_id, [])
+    colonies = queries.colonies_grouped(ctx).get(colony.civ_id, [])
     return queries.sorted_by_distance(
         colonies, colony.world.system.position, within_ly=SUPPLY_RANGE_LY
     )
@@ -207,7 +207,7 @@ def _advance(ctx: TickContext) -> None:
     # many projects are running. A per-project query here would make a tick's
     # cost scale with how much terraforming is going on, which is exactly the
     # shape ``tests/test_tick_cost.py`` exists to forbid.
-    colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id)
+    colonies = queries.colonies_grouped(ctx)
 
     for intent in running:
         colony = queries.colonies_by_id(ctx).get(intent.payload.get("colony_id", -1))

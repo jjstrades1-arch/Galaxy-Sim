@@ -48,6 +48,17 @@ def init_db(engine: Engine) -> None:
     Base.metadata.create_all(engine)
 
 
+def new_session(engine: Engine) -> Session:
+    """A session that does not expire its objects when a transaction commits.
+
+    ``expire_on_commit=False`` is load-bearing rather than a convenience: it is
+    what lets a session outlive a single tick, which is what
+    :func:`galaxysim.engine.tick.run_ticks` relies on to stop rebuilding the
+    universe from rows every hour.
+    """
+    return sessionmaker(bind=engine, future=True, expire_on_commit=False)()
+
+
 @contextmanager
 def open_session(engine: Engine) -> Iterator[Session]:
     """Session scope that commits on success and rolls back on failure.
@@ -55,8 +66,7 @@ def open_session(engine: Engine) -> Iterator[Session]:
     A tick either lands whole or not at all: partially applied state would leave
     the universe unreplayable.
     """
-    factory = sessionmaker(bind=engine, future=True, expire_on_commit=False)
-    session = factory()
+    session = new_session(engine)
     try:
         yield session
         session.commit()
@@ -65,3 +75,22 @@ def open_session(engine: Engine) -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+@contextmanager
+def transaction(session: Session) -> Iterator[Session]:
+    """One atomic unit of work on a session that outlives it.
+
+    The same commit-or-roll-back guarantee :func:`open_session` gives, without
+    discarding the session afterwards. That distinction is the difference
+    between a tick loop that re-reads the whole universe every hour and one that
+    keeps what it already has: a session's identity map is what stops a row
+    becoming a fresh Python object and a JSON column being decoded again, and
+    throwing the session away throws that away too.
+    """
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise

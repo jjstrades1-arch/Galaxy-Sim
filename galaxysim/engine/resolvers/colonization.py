@@ -112,7 +112,13 @@ def resolve(ctx: TickContext) -> None:
             # The expedition becomes the colony: colonists are its population,
             # equipment its infrastructure, stores its opening stockpile.
             colony = Colony(
-                world_id=world.id,
+                # The relationship, not the raw foreign key. Assigning
+                # ``world_id`` leaves ``World.colony`` unset in memory, so
+                # anything asking "is this world taken?" through the ORM gets
+                # the answer from before the landing -- which is how two
+                # expeditions came to settle the same rock the moment the tick
+                # loop stopped re-reading every row every hour.
+                world=world,
                 civ_id=civ.id,
                 name=str(intent.payload.get("name") or world.name),
                 population=loadout.colonists,

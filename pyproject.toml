@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 postgres = ["psycopg[binary]>=3.1"]
 
 [project.scripts]
@@ -25,3 +25,9 @@ include = ["galaxysim*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Run across cores by default. The suite is dominated by tests that simulate
+# hundreds of ticks, they share nothing (each builds its own in-memory
+# database), and waiting four minutes to find out a change is fine is how a
+# suite stops being run. `-p no:randomly`-style ordering concerns do not apply:
+# determinism here comes from seeds, not from test order.
+addopts = "-n auto"

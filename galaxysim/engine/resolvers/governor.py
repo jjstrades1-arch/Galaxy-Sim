@@ -142,7 +142,7 @@ def resolve(ctx: TickContext) -> None:
             pending_structures.setdefault(colony_id, set()).add(
                 str(intent.payload.get("kind", ""))
             )
-    colonies_by_civ = queries.colonies_by_civ(ctx.session, ctx.universe.id)
+    colonies_by_civ = queries.colonies_grouped(ctx)
 
     for civ in queries.civs(ctx.session, ctx.universe.id):
         for colony in colonies_by_civ.get(civ.id, []):

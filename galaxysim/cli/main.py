@@ -67,7 +67,7 @@ from galaxysim.worldgen.galaxy import ARM, REGIONS, metallicity_at, systems_near
 from galaxysim.worldgen.materialize import existing_system
 from galaxysim.worldgen.serialize import has_surface_water, survey_from_json
 from galaxysim.engine.tick import resolve_tick
-from galaxysim.model.base import create_engine_for, open_session
+from galaxysim.model.base import create_engine_for, new_session, open_session, transaction
 from galaxysim.model.entities import (
     Civ,
     Colony,
@@ -1114,13 +1114,19 @@ def soak(
     started = time.perf_counter()
     total_ticks = 0
 
+    # One session for the whole soak, one transaction per tick -- see
+    # :func:`galaxysim.engine.tick.run_ticks` for why those are different
+    # questions. A session per tick re-materialized the entire universe every
+    # simulated hour, which at scale was most of what a soak measured.
+    ticking = new_session(engine)
+    universe = ticking.get(Universe, universe_id)
+
     for day in range(1, days + 1):
         for _ in range(ticks_per_day):
-            with open_session(engine) as session:
-                universe = session.get(Universe, universe_id)
-                take_all_turns(session, universe)
-                session.flush()
-                resolve_tick(session, universe)
+            with transaction(ticking):
+                take_all_turns(ticking, universe)
+                ticking.flush()
+                resolve_tick(ticking, universe)
             total_ticks += 1
 
         if day % max(1, days // 14) and day != days:
@@ -1150,6 +1156,7 @@ def soak(
                 f"{spread:.2f}x" if spread else "-",
             )
 
+    ticking.close()
     console.print(table)
     elapsed = time.perf_counter() - started
     console.print(

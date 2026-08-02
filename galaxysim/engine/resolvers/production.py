@@ -104,7 +104,7 @@ def resolve(ctx: TickContext) -> None:
     # same fleets, and asking per civilization meant re-reading and re-filtering
     # the whole table once per civ -- which is how a tick's cost came to scale
     # with the size of the game rather than with what happened in it.
-    colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id)
+    colonies = queries.colonies_grouped(ctx)
     fleets = queries.fleets_by_civ(ctx.session, ctx.universe.id)
 
     for civ in queries.civs(ctx.session, ctx.universe.id):
@@ -973,7 +973,12 @@ def _start_structures(ctx: TickContext) -> None:
         else:
             ctx.session.add(
                 Building(
-                    colony_id=colony.id,
+                    # The relationship, so the colony's in-memory building list
+                    # includes it immediately. A raw ``colony_id`` leaves
+                    # ``Colony.buildings`` as it was until something re-reads
+                    # the row, and every industry effect is computed from that
+                    # list.
+                    colony=colony,
                     kind=kind,
                     level=1,
                     work_remaining=work_of_level(spec.work, 1),
@@ -1066,7 +1071,7 @@ def _decommission_fleets(ctx: TickContext) -> None:
         return
 
     all_fleets = queries.fleets_by_id(ctx)
-    colonies = queries.colonies_by_civ(ctx.session, ctx.universe.id)
+    colonies = queries.colonies_grouped(ctx)
 
     for intent in orders:
         fleet = all_fleets.get(intent.payload.get("fleet_id", -1))

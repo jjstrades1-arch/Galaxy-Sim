@@ -171,19 +171,26 @@ class _Turn:
     engine, on the tick.
     """
 
-    __slots__ = (
-        "session", "universe", "civ",
-        "_colonies", "_fleets", "_charted", "_systems",
-    )
+    __slots__ = ("session", "universe", "civ", "_colonies", "_fleets", "_shared")
 
-    def __init__(self, session: Session, universe: Universe, civ: Civ) -> None:
+    def __init__(
+        self,
+        session: Session,
+        universe: Universe,
+        civ: Civ,
+        shared: dict | None = None,
+    ) -> None:
         self.session = session
         self.universe = universe
         self.civ = civ
         self._colonies: list[Colony] | None = None
         self._fleets: list[Fleet] | None = None
-        self._charted: set | None = None
-        self._systems: list[StarSystem] | None = None
+        # The star charts and the list of charted systems are facts about the
+        # *universe*, not about this civ, and they cannot change while the AIs
+        # are deciding. Eight civilizations each re-reading the whole galaxy to
+        # look at the identical picture was eight times the worst query in the
+        # turn. Shared across a tick when the caller offers a place to share.
+        self._shared: dict = {} if shared is None else shared
 
     @property
     def colonies(self) -> list[Colony]:
@@ -203,9 +210,11 @@ class _Turn:
 
     @property
     def charted(self) -> set:
-        if self._charted is None:
-            self._charted = queries.charted_key_set(self.session, self.universe.id)
-        return self._charted
+        if "charted" not in self._shared:
+            self._shared["charted"] = queries.charted_key_set(
+                self.session, self.universe.id
+            )
+        return self._shared["charted"]
 
     @property
     def systems(self) -> list[StarSystem]:
@@ -218,8 +227,8 @@ class _Turn:
         four hundred systems and climbing. It was the single worst thing the AI
         did, and it got worse precisely as exploration succeeded.
         """
-        if self._systems is None:
-            self._systems = list(
+        if "systems" not in self._shared:
+            self._shared["systems"] = list(
                 self.session.scalars(
                     select(StarSystem)
                     .where(StarSystem.universe_id == self.universe.id)
@@ -231,7 +240,7 @@ class _Turn:
                     .order_by(StarSystem.id)
                 )
             )
-        return self._systems
+        return self._shared["systems"]
 
 
 def take_all_turns(session: Session, universe: Universe) -> int:
@@ -242,12 +251,16 @@ def take_all_turns(session: Session, universe: Universe) -> int:
         .order_by(Civ.id)
     ).all()
 
+    # One place for the facts every civ reads identically this tick.
+    shared: dict = {}
     for civ in ai_civs:
-        take_turn(session, universe, civ)
+        take_turn(session, universe, civ, shared=shared)
     return len(ai_civs)
 
 
-def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
+def take_turn(
+    session: Session, universe: Universe, civ: Civ, *, shared: dict | None = None
+) -> None:
     """Queue whatever this AI wants to do next.
 
     Called once per tick. Every decision is seeded from the civ and the tick, so
@@ -256,7 +269,7 @@ def take_turn(session: Session, universe: Universe, civ: Civ) -> None:
     """
     rng = rng_for(civ.seed, "ai", universe.tick_number)
     pending = _pending_by_kind(session, civ)
-    turn = _Turn(session, universe, civ)
+    turn = _Turn(session, universe, civ, shared)
 
     if not pending.get(IntentKind.RESEARCH.value):
         intents.research(session, civ)

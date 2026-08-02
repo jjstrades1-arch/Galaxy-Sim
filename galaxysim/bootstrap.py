@@ -215,7 +215,9 @@ def add_civ(
     )
 
     capital = Colony(
-        world_id=homeworld.id,
+        # The relationship rather than the raw key, so ``World.colony`` is
+        # correct in memory as well as in the database.
+        world=homeworld,
         civ_id=civ.id,
         name=f"{homeworld.name} Prime",
         population=population,
@@ -244,7 +246,7 @@ def add_civ(
     for kind in STARTING_BUILDINGS:
         session.add(
             Building(
-                colony_id=capital.id,
+                colony=capital,
                 kind=kind,
                 level=level,
                 work_remaining=0.0,
