@@ -14,9 +14,14 @@ from sqlalchemy import select
 
 from galaxysim.colony.labor import balanced_allocation
 from galaxysim.materials import IRON, WATER
+from galaxysim.materials.catalogue import ALLOYS, CARBON, FUEL, STEEL
 from galaxysim.core.space import distance
 from galaxysim.engine import intents
-from galaxysim.engine.resolvers.logistics import BASE_THROUGHPUT_PER_HOUR, throughput_per_hour
+from galaxysim.engine.resolvers.logistics import (
+    BACKHAUL_RESERVE,
+    BASE_THROUGHPUT_PER_HOUR,
+    throughput_per_hour,
+)
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Building, Colony, Event, Fleet, IntentStatus, World
@@ -27,6 +32,7 @@ from tests.conftest import (
     give_deposits,
     home_colony,
     new_universe,
+    take_manual_control,
 )
 
 
@@ -308,6 +314,139 @@ def test_a_route_runs_without_further_orders():
             select(Event).where(Event.kind == "supply_delivered")
         ).all()
         assert len(deliveries) >= 3, f"expected repeated round trips, saw {len(deliveries)}"
+
+
+# -------------------------------------------------------------- the backhaul
+
+
+def test_a_freighter_comes_home_loaded():
+    """The return leg is half the journey, and it used to be spent empty."""
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=910, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        take_manual_control(session, civ)
+        home = home_colony(session, civ)
+        home.world.habitability = 1.0
+        give_deposits(home.world)  # the capital digs nothing up itself
+        home.stockpile = {WATER: 100_000_000.0, FUEL: 1.0e8, ALLOYS: 1.0e8}
+        feed(home)
+
+        outpost = _sibling_outpost(
+            session, civ, home, stockpile={WATER: 20_000.0, IRON: 400_000.0}
+        )
+        fleet = _freighter(session, civ, home, capacity=150_000.0)
+        intents.supply_route(session, civ, fleet.id, home.id, outpost.id, {WATER: 10_000.0})
+        home_id = home.id
+
+    run_ticks(engine, universe_id, 336)
+
+    with open_session(engine) as session:
+        home = session.get(Colony, home_id)
+
+        assert session.scalars(
+            select(Event).where(Event.kind == "backhaul_landed")
+        ).all(), "the return leg should be landing cargo at the capital"
+
+        # The capital mines no iron and cannot smelt any -- there is no carbon
+        # anywhere in this universe -- so every tonne it holds was carried there
+        # by a freighter that used to make the same journey empty.
+        assert home.stockpile.get(IRON, 0.0) > 20_000.0
+
+        # The outpost went on being supplied throughout. Ore riding home must not
+        # cost the route the job it exists to do: one port serves both halves of
+        # the trip, and a hold filled with ore is a colony left thirsty.
+        deliveries = session.scalars(
+            select(Event).where(Event.kind == "supply_delivered")
+        ).all()
+        assert len(deliveries) >= 3, f"expected repeated deliveries, saw {len(deliveries)}"
+
+
+def test_the_backhaul_leaves_a_working_reserve():
+    """Surplus goes; the stock the colony needs to keep working stays.
+
+    Checked directly rather than through a fortnight of simulation, because what
+    is under test is the rule, and a colony that goes on mining while the hold
+    fills makes the rule hard to see from the outside.
+    """
+    from galaxysim.engine.resolvers.logistics import _backhaul_manifest
+
+    class _Hold:
+        cargo_space = 1_000_000.0
+
+    class _Colony:
+        stockpile = {
+            IRON: BACKHAUL_RESERVE + 30_000.0,
+            CARBON: BACKHAUL_RESERVE - 5_000.0,  # below the reserve: stays put
+            STEEL: 500_000.0,  # refined, and the destination just made it
+            WATER: 900_000.0,  # consumable, and it was probably just delivered
+        }
+
+    manifest = _backhaul_manifest(_Hold(), _Colony(), 1_000_000.0)
+    assert manifest == {IRON: 30_000.0}
+
+
+def test_the_backhaul_shares_the_hold_between_ores():
+    """A smelter needs iron *and* carbon, so one ore must not take the ship."""
+    from galaxysim.engine.resolvers.logistics import _backhaul_manifest
+
+    class _Hold:
+        cargo_space = 1_000_000.0
+
+    class _Colony:
+        stockpile = {
+            CARBON: BACKHAUL_RESERVE + 100_000.0,
+            IRON: BACKHAUL_RESERVE + 300_000.0,
+        }
+
+    manifest = _backhaul_manifest(_Hold(), _Colony(), 40_000.0)
+    assert sum(manifest.values()) == pytest.approx(40_000.0)
+    # In proportion to what is spare, so the hold mirrors the world's geology
+    # rather than the alphabet.
+    assert manifest[IRON] == pytest.approx(30_000.0)
+    assert manifest[CARBON] == pytest.approx(10_000.0)
+
+
+def test_ore_reaches_the_industry_that_can_use_it():
+    """The point of the backhaul: mined in one place, refined in another.
+
+    A barren world has the geology and no industry; the capital has the industry
+    and no geology. Neither can make steel alone, and until the return leg
+    carried anything neither ever did.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=911, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        take_manual_control(session, civ)
+        home = home_colony(session, civ)
+        home.world.habitability = 1.0
+        give_deposits(home.world)
+        # Strip the opening warehouses: whatever steel exists at the end has to
+        # have been made here out of ore that was mined somewhere else.
+        home.stockpile = {WATER: 100_000_000.0}
+        feed(home)
+
+        outpost = _sibling_outpost(
+            session,
+            civ,
+            home,
+            stockpile={WATER: 20_000.0, IRON: 300_000.0, CARBON: 80_000.0},
+        )
+        give_deposits(outpost.world, iron=0.02, carbon=0.004)
+        fleet = _freighter(session, civ, home, capacity=150_000.0)
+        intents.supply_route(session, civ, fleet.id, home.id, outpost.id, {WATER: 10_000.0})
+        home_id = home.id
+
+    run_ticks(engine, universe_id, 336)
+
+    with open_session(engine) as session:
+        home = session.get(Colony, home_id)
+        assert home.stockpile.get(STEEL, 0.0) > 0.0, (
+            "the capital should be smelting ore it never mined"
+        )
 
 
 def test_a_route_between_other_peoples_colonies_is_rejected():

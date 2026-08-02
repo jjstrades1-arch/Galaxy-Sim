@@ -27,6 +27,7 @@ building.
 from __future__ import annotations
 
 from galaxysim.materials import deposit
+from galaxysim.materials.catalogue import RAW_MATERIALS
 from galaxysim.core.space import distance
 from galaxysim.core.units import format_count as format_people
 from galaxysim.engine.context import TickContext
@@ -53,6 +54,12 @@ BASE_THROUGHPUT_PER_HOUR = 250.0
 #: evacuation runs at the speed of a gravel barge and migration stops being a
 #: thing anyone would order.
 PASSENGER_HANDLING_MULTIPLIER = 20.0
+
+#: Tonnes of each raw material a colony keeps back when a freighter is filling
+#: its hold for the trip home. Enough to keep whatever refining the outpost can
+#: actually run supplied, so the backhaul carries surplus rather than stripping
+#: the place that dug it up.
+BACKHAUL_RESERVE = 20_000.0
 
 
 def passengers_per_hour(colony: Colony) -> float:
@@ -194,8 +201,32 @@ def _resolve_routes(ctx: TickContext) -> None:
 def _run_outbound_leg(
     ctx: TickContext, intent, fleet: Fleet, origin: Colony, destination: Colony, manifest: dict
 ) -> None:
-    """At the origin: load. Elsewhere: fly to the origin or on to the drop."""
+    """At the origin: drop the backhaul, then load. Elsewhere: fly."""
     if _docked(fleet, origin):
+        # Whatever ore came home goes into the warehouse of the world that can
+        # actually refine it. This is the delivery that makes the whole round
+        # trip worth more than the outbound half.
+        #
+        # Which cargo is "the backhaul" is a *state*, not a property of the
+        # goods. Telling them apart by material would work until the day a route
+        # supplied a dry world with ice, at which point the delivery would be
+        # unloadable on one leg and re-unloaded on the other.
+        if intent.payload.get("carrying_back"):
+            landed = _unload(
+                fleet, origin, dict(fleet.cargo), ctx.per_tick(throughput_per_hour(origin))
+            )
+            if fleet.cargo_tonnage > 1e-9:
+                intent.result = f"unloading the return cargo at {origin.name}"
+                return
+            intent.payload["carrying_back"] = False
+            if landed:
+                ctx.log(
+                    "backhaul_landed",
+                    f"{fleet.name} brought {_describe(landed)} back to {origin.name}",
+                    civ_id=intent.civ_id,
+                    payload={"colony_id": origin.id},
+                )
+
         wanted = {
             resource: max(0.0, amount - fleet.cargo.get(resource, 0.0))
             for resource, amount in manifest.items()
@@ -226,6 +257,9 @@ def _run_outbound_leg(
             intent.result = f"waiting for cargo at {origin.name}"
             return
 
+        # What it leaves with is also what it is allowed to bring back; see
+        # :func:`_backhaul_manifest`.
+        intent.payload["outbound_tonnage"] = fleet.cargo_tonnage
         _send(ctx, fleet, destination)
         intent.payload["leg"] = "delivering"
         intent.result = f"carrying {_describe(fleet.cargo)} to {destination.name}"
@@ -258,29 +292,129 @@ def _run_outbound_leg(
 def _run_delivery_leg(
     ctx: TickContext, intent, fleet: Fleet, origin: Colony, destination: Colony
 ) -> None:
-    """Carrying a load to the destination, then heading home empty."""
+    """Carrying a load out, then carrying the outpost's surplus ore home."""
     if not _docked(fleet, destination):
         _send(ctx, fleet, destination)
         intent.result = f"carrying {_describe(fleet.cargo)} to {destination.name}"
         return
 
-    delivered = _unload(
-        fleet, destination, dict(fleet.cargo), ctx.per_tick(throughput_per_hour(destination))
-    )
-    if fleet.cargo_tonnage > 1e-9:
-        intent.result = f"unloading at {destination.name}"
-        return
+    backhaul = intent.payload.get("backhaul")
 
-    if delivered:
-        ctx.log(
-            "supply_delivered",
-            f"{fleet.name} delivered {_describe(delivered)} to {destination.name}",
-            civ_id=intent.civ_id,
-            payload={"colony_id": destination.id},
+    if backhaul is None:
+        # Just docked, so everything aboard is the delivery. Land all of it --
+        # including any ore, since a dry world supplied with ice is a route like
+        # any other and its cargo is not a backhaul just because it came out of
+        # the ground somewhere.
+        delivered = _unload(
+            fleet, destination, dict(fleet.cargo), ctx.per_tick(throughput_per_hour(destination))
         )
+        if fleet.cargo_tonnage > 1e-9:
+            intent.result = f"unloading at {destination.name}"
+            return
+
+        if delivered:
+            ctx.log(
+                "supply_delivered",
+                f"{fleet.name} delivered {_describe(delivered)} to {destination.name}",
+                civ_id=intent.civ_id,
+                payload={"colony_id": destination.id},
+            )
+
+        backhaul = _backhaul_manifest(
+            fleet, destination, float(intent.payload.get("outbound_tonnage") or 0.0)
+        )
+        intent.payload["backhaul"] = backhaul
+
+    if backhaul:
+        outstanding = {
+            material: amount - fleet.cargo.get(material, 0.0)
+            for material, amount in backhaul.items()
+            if amount - fleet.cargo.get(material, 0.0) > 1e-9
+        }
+        if outstanding:
+            _load(
+                fleet, destination, outstanding, ctx.per_tick(throughput_per_hour(destination))
+            )
+        short = {
+            material
+            for material, amount in backhaul.items()
+            if fleet.cargo.get(material, 0.0) + 1e-9 < amount
+        }
+        # The same rule the outbound leg loads under, for the same reason: a
+        # hold that leaves one tick's throughput full is a freighter making a
+        # round trip to move a rounding error. Go when the hold is full, or when
+        # the colony has nothing more of what was asked for.
+        still_there = any(destination.stockpile.get(material, 0.0) > 1e-9 for material in short)
+        if short and still_there and fleet.cargo_space > 1e-9:
+            intent.result = f"loading surplus at {destination.name} ({_describe(fleet.cargo)})"
+            return
+
+    del intent.payload["backhaul"]
+    intent.payload["carrying_back"] = fleet.cargo_tonnage > 1e-9
     _send(ctx, fleet, origin)
     intent.payload["leg"] = "outbound"
-    intent.result = f"returning to {origin.name}"
+    intent.result = (
+        f"returning to {origin.name} with {_describe(fleet.cargo)}"
+        if fleet.cargo_tonnage > 1e-9
+        else f"returning to {origin.name}"
+    )
+
+
+def _backhaul_manifest(fleet: Fleet, colony: Colony, limit: float) -> dict[str, float]:
+    """What ore this colony can spare for the trip home, up to ``limit`` tonnes.
+
+    ``limit`` is what the freighter *brought*, and that is the whole answer to
+    "how long may it stay". A port is one bottleneck serving both halves of the
+    route: the first version of this filled the hold, which at a bare outpost's
+    250 tonnes an hour meant parking for twenty-five days and letting the colony
+    it was supplying go thirsty while it loaded. Coming home no fuller than it
+    went out splits the port's time evenly between the two jobs, with no
+    constant to tune and no way for the ore to starve the water.
+
+    A consequence worth knowing: a route that carries nothing out carries
+    nothing back. To *fetch* from a world, run the route the other way.
+
+    **The return leg used to fly empty**, and that one word was why a
+    civilization could mine uranium for a month and never make a gram of
+    fissiles. Refining is *local*: enrichment wants uranium and fuel in the same
+    warehouse, electronics wants copper, rare earths and silicon together. An
+    outpost has ore and no industry; the capital has industry and no ore; and a
+    freighter was already making the round trip twice a day carrying nothing on
+    the way back.
+
+    Raw materials only. Sending refined goods back would undo the delivery that
+    just happened, and it is the *ore* that is stranded -- ``extraction.py`` has
+    said since it was written that a colony "mines a little faster than it can
+    process, ore accumulates slowly, and shipping the surplus somewhere with
+    spare industry is worth doing". Nothing ever did it.
+
+    A reserve stays behind so the outpost can still run whatever chains it does
+    have; what leaves is genuinely surplus. Fixed at the moment of docking
+    rather than recomputed each tick, which is what bounds the stay: the colony
+    goes on mining while the hold fills, and a manifest that grew with it would
+    park the freighter at the outpost forever.
+    """
+    space = min(fleet.cargo_space, limit)
+    if space <= 1e-9:
+        return {}
+
+    surplus = {
+        material: held - BACKHAUL_RESERVE
+        for material, held in sorted(colony.stockpile.items())
+        if material in RAW_MATERIALS and held - BACKHAUL_RESERVE > 1e-9
+    }
+    total = sum(surplus.values())
+    if total <= 1e-9:
+        return {}
+    if total <= space:
+        return surplus
+
+    # Share the hold out in proportion to what is spare. Filling it in name
+    # order instead would mean a world with carbon and iron shipped carbon and
+    # only carbon -- and smelting, which wants both, would be no better off than
+    # before the freighter came back at all.
+    scale = space / total
+    return {material: amount * scale for material, amount in surplus.items()}
 
 
 # ---------------------------------------------------------------- migration
