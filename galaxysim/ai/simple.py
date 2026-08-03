@@ -129,7 +129,7 @@ class _Turn:
     """
 
     __slots__ = (
-        "session", "universe", "civ", "doctrine", "claimed",
+        "session", "universe", "civ", "doctrine", "claimed", "on_station",
         "_colonies", "_fleets", "_shared",
     )
 
@@ -161,6 +161,14 @@ class _Turn:
         # colonisation wins, the siege gets nobody, and no world has ever changed
         # hands in this game as a result.
         self.claimed: set[int] = set()
+        # Fleets holding a blockade. Filled once per turn by :func:`_besieging`.
+        #
+        # Kept beside ``claimed`` because it is the same idea reached from the
+        # other direction: ``claimed`` is a job just given, this is a job already
+        # being done that nothing wrote down. Every helper that looks for a spare
+        # ship must consult both, or it will find one of these and re-task it --
+        # scouting did, and so did supply, and each of them quietly ended a war.
+        self.on_station: set[int] = set()
         self._colonies: list[Colony] | None = None
         self._fleets: list[Fleet] | None = None
         # The star charts and the list of charted systems are facts about the
@@ -284,6 +292,10 @@ def take_turn(
 
     if not pending.get(IntentKind.RESEARCH.value):
         intents.research(session, civ)
+
+    # Which ships are already keeping a cordon, before anything decides they
+    # look spare. See :func:`_besieging`.
+    turn.on_station = _besieging(turn, pending)
 
     _set_policies(turn)
     # War before settlement, and this order is load-bearing rather than
@@ -677,6 +689,39 @@ def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             intents.move_fleet_to_system(session, civ, fleet.id, system)
 
 
+def _besieging(turn: "_Turn", pending: dict[str, list[Intent]]) -> set[int]:
+    """This civ's fleets holding station over a colony it is at war with.
+
+    They have a job -- the most important one the civilization currently has --
+    and it is a job that exists nowhere in the order queue, because keeping a
+    cordon is *staying put*. Every other helper here works out whether a ship is
+    free by looking for an order attached to it, so a blockade is invisible to
+    all of them and the ship reads as spare.
+    """
+    at_war = {
+        intent.payload.get("target_civ_id")
+        for intent in pending.get(IntentKind.ATTACK.value, [])
+    }
+    if not at_war:
+        return set()
+
+    besieged = [
+        system.position
+        for system in turn.systems
+        for world in system.worlds
+        if world.colony is not None and world.colony.civ_id in at_war
+    ]
+    if not besieged:
+        return set()
+
+    return {
+        fleet.id
+        for fleet in turn.fleets
+        if not fleet.in_transit
+        and any(distance(fleet.position, where) <= BLOCKADE_RANGE_LY for where in besieged)
+    }
+
+
 def _maybe_annex(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     """Land somebody to run a world this civilization is already besieging.
 
@@ -876,7 +921,7 @@ def _idle_freighter(turn: "_Turn", hold: float | None = None) -> Fleet | None:
     """
     session, civ = turn.session, turn.civ
     busy = {intent.payload.get("fleet_id") for intent in intents.pending(session, civ)}
-    busy |= turn.claimed
+    busy |= turn.claimed | turn.on_station
     busy |= {
         intent.payload.get("fleet_id")
         for intent in session.scalars(
@@ -1167,10 +1212,26 @@ def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     principle: pick the nearest star nobody has visited and go and look at it.
     """
     session, universe, civ = turn.session, turn.universe, turn.civ
+    # A ship holding a blockade is not idle, however idle it looks.
+    #
+    # "Idle" here meant "carrying no move order", and a fleet that has *arrived*
+    # carries none -- its order completed when it got there. So the one warship
+    # keeping an enemy world cut off read as spare capacity, and every single
+    # turn the AI sent it off to look at a star. Staged and watched: a besieger
+    # of fifty strength was on station at one tick and gone at the next, the
+    # colony's resistance recovered from fifty thousand back past a hundred, and
+    # the lander that arrived behind it died alone. Sieges collapsed in six to
+    # twenty-five hours and not one world has ever changed hands.
+    #
+    # Third time today that the same mistake has bitten in a different place:
+    # a job nobody wrote down is a job that does not exist.
     idle = [
         fleet
         for fleet in turn.fleets
-        if not fleet.in_transit and fleet.colony_pods <= 0 and fleet.cargo_capacity <= 100.0
+        if not fleet.in_transit
+        and fleet.colony_pods <= 0
+        and fleet.cargo_capacity <= 100.0
+        and fleet.id not in turn.on_station
     ]
     if not idle:
         return  # warships only; freighters and settlers have jobs

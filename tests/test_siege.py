@@ -25,7 +25,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from galaxysim.colony.labor import balanced_allocation
-from galaxysim.core.space import distance
+from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
 from galaxysim.engine.resolvers import siege
 from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY
@@ -572,13 +572,24 @@ def test_an_ai_holding_a_blockade_sends_somebody_to_take_the_world():
         # the movement resolver runs on the tick.
         from galaxysim.model.entities import Intent, IntentKind
 
-        moves = [
+        # Toward the besieged world specifically. Asserting merely that *a*
+        # move order exists is a false positive: expansion issues one too, for
+        # a rock on the other side of the map, and an earlier version of this
+        # test passed on exactly that.
+        besieged = session.get(Colony, outpost_id).world.system.position
+        ordered = [
             order
             for order in session.scalars(select(Intent).where(Intent.civ_id == vex_id))
             if order.kind == IntentKind.MOVE_FLEET.value
-            and order.payload.get("fleet_id") == lander_id
+            and distance(
+                Vec3(order.payload["x"], order.payload["y"], order.payload["z"]),
+                besieged,
+            )
+            <= siege.BLOCKADE_RANGE_LY
         ]
-        assert moves, "the pod should have been ordered to the siege"
+        assert ordered, "somebody should have been ordered to the siege to land"
+        carrier = session.get(Fleet, ordered[0].payload["fleet_id"])
+        assert carrier.colony_pods > 0, "and it has to be carrying a pod"
 
     run_ticks(engine, universe_id, 96)
 
