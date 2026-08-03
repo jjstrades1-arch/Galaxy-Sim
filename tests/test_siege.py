@@ -32,7 +32,7 @@ from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY
 from galaxysim.engine.tick import run_ticks
 from galaxysim.materials import IRON, WATER
 from galaxysim.model.base import create_engine_for, open_session
-from galaxysim.model.entities import Building, Colony, Event, Fleet, Universe, World
+from galaxysim.model.entities import Building, Civ, Colony, Event, Fleet, Universe, World
 from tests.conftest import (
     OUTPOST_POPULATION,
     civ_by_name,
@@ -496,3 +496,147 @@ def test_a_fleet_passing_through_is_not_a_blockade():
         outpost = session.get(Colony, outpost_id)
         assert not outpost.blockaded
         assert outpost.resistance == -1.0, "nothing was ground down"
+
+
+# ------------------------------------------------------ the AI taking a world
+
+
+def _ai_besieging(engine, universe_id, *, pods):
+    """A Vex AI with warships over a Terran outpost, at war, ready to land.
+
+    Staged as a *position* rather than as orders: the AI is then asked what it
+    wants to do about it, which is the thing under test.
+    """
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        universe.ai_difficulty = "driven"
+        terrans = civ_by_name(session, universe_id, "Terrans")
+        vex = civ_by_name(session, universe_id, "Vex")
+        vex.is_ai = True
+        take_manual_control(session, terrans)
+
+        home = home_colony(session, terrans)
+        home.world.habitability = 1.0
+        home.stockpile = rich_stockpile()
+        feed(home)
+        outpost = _outpost(session, terrans, home, stockpile={WATER: 10_000_000.0})
+        base = _forward_base(session, vex, outpost)
+        base.stockpile = rich_stockpile()
+
+        besieger = _besieger(session, vex, outpost, strength=50.0)
+        # The pod sits at the Vex base, not at the siege -- exactly the position
+        # a civilization is in after its fleet arrives ahead of its settlers.
+        lander = Fleet(
+            universe_id=universe_id,
+            civ_id=vex.id,
+            name="Lander",
+            strength=1.0,
+            colony_pods=pods,
+            speed_ly_per_hour=1.0,
+            cargo={},
+            cargo_capacity=40.0,
+            x=base.world.system.x,
+            y=base.world.system.y,
+            z=base.world.system.z,
+        )
+        session.add(lander)
+        _at_war(session, vex, terrans)
+        session.flush()
+        return outpost.id, vex.id, besieger.id, lander.id
+
+
+def test_an_ai_holding_a_blockade_sends_somebody_to_take_the_world():
+    """The half of conflict that never happened once.
+
+    Blockade worked and siege worked -- two colonies were cut off and ground to
+    nothing in a sixty-day soak -- and then the war simply stopped, because a
+    colony pod was dispatched at the moment war was declared and never again.
+    One of those worlds sat subdued and blockaded for three hundred and thirteen
+    hours with nobody coming for it.
+
+    Wanting the world has to be a standing intention, so this asks the AI what
+    it wants to do about a siege it is already holding, and expects it to send
+    somebody.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=4201, seconds_per_tick=3600)
+    outpost_id, vex_id, _, lander_id = _ai_besieging(engine, universe_id, pods=1)
+
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, vex_id))
+        session.flush()
+        # An order, not a position: queuing a move does not move anything until
+        # the movement resolver runs on the tick.
+        from galaxysim.model.entities import Intent, IntentKind
+
+        moves = [
+            order
+            for order in session.scalars(select(Intent).where(Intent.civ_id == vex_id))
+            if order.kind == IntentKind.MOVE_FLEET.value
+            and order.payload.get("fleet_id") == lander_id
+        ]
+        assert moves, "the pod should have been ordered to the siege"
+
+    run_ticks(engine, universe_id, 96)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, outpost_id)
+        assert colony.civ_id == vex_id, (
+            "the siege should have ended in the world changing hands"
+        )
+        assert session.scalars(
+            select(Event).where(Event.kind == "colony_captured")
+        ).all()
+
+
+def test_a_pod_already_settling_a_world_is_not_also_sent_to_a_siege():
+    """One ship, one job.
+
+    Every ``_maybe_*`` decision works out which ships are free from a snapshot
+    of pending orders taken before any of them ran, so an order issued by an
+    earlier decision was invisible to a later one. Expansion dispatches every
+    idle colony ship -- and a queued move does not set ``in_transit``, so the
+    ship still looked idle -- and the war then picked the same hull as the pod
+    it meant to land. The colonisation won every time.
+    """
+    from galaxysim.ai.simple import _Turn, _maybe_annex, _maybe_expand
+    from galaxysim.model.entities import Intent
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=4202, seconds_per_tick=3600)
+    _, vex_id, _, lander_id = _ai_besieging(engine, universe_id, pods=1)
+
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        civ = session.get(Civ, vex_id)
+        turn = _Turn(session, universe, civ)
+        pending = {}
+
+        _maybe_expand(turn, pending)
+        session.flush()
+        after_expansion = len(
+            [
+                order
+                for order in session.scalars(select(Intent).where(Intent.civ_id == vex_id))
+                if order.payload.get("fleet_id") == lander_id
+            ]
+        )
+        assert after_expansion, "the fixture needs expansion to claim the lander first"
+
+        _maybe_annex(turn, pending)
+        session.flush()
+        after_annex = len(
+            [
+                order
+                for order in session.scalars(select(Intent).where(Intent.civ_id == vex_id))
+                if order.payload.get("fleet_id") == lander_id
+            ]
+        )
+
+        assert after_annex == after_expansion, (
+            "the siege took a ship expansion had already sent somewhere else; "
+            "one hull cannot settle a rock and land on a besieged world at once"
+        )

@@ -40,10 +40,11 @@ from galaxysim.materials import (
 )
 from galaxysim.materials.catalogue import RAW_MATERIALS
 from galaxysim.core.seeds import rng_for
-from galaxysim.core.space import distance
+from galaxysim.core.space import Vec3, distance
 from galaxysim.colony.buildings import FLEET_CONSTRUCTION
 from galaxysim.engine import intents
 from galaxysim.engine.resolvers import governor, queries
+from galaxysim.engine.resolvers.siege import BLOCKADE_RANGE_LY
 from galaxysim.engine.rates import DEFAULT_RATES
 from galaxysim.engine.resolvers.production import (
     DOCKING_TOLERANCE_LY,
@@ -128,7 +129,8 @@ class _Turn:
     """
 
     __slots__ = (
-        "session", "universe", "civ", "doctrine", "_colonies", "_fleets", "_shared",
+        "session", "universe", "civ", "doctrine", "claimed",
+        "_colonies", "_fleets", "_shared",
     )
 
     def __init__(
@@ -147,6 +149,18 @@ class _Turn:
         # module constants, so difficulty is one object rather than a scatter
         # of numbers. See :mod:`galaxysim.ai.doctrine`.
         self.doctrine = doctrine_for(universe.ai_difficulty)
+        # Fleets already given a job *this turn*.
+        #
+        # Every ``_maybe_*`` below works out which ships are busy from
+        # ``pending``, and ``pending`` is read once before any of them run. So an
+        # order issued by an earlier decision is invisible to a later one, and
+        # two of them will happily send the same ship to two places. That is not
+        # theoretical: expansion dispatches every idle colony ship to settle, a
+        # queued move does not set ``in_transit``, and the raid then picks one of
+        # those very ships as the pod it means to land on a besieged world. The
+        # colonisation wins, the siege gets nobody, and no world has ever changed
+        # hands in this game as a result.
+        self.claimed: set[int] = set()
         self._colonies: list[Colony] | None = None
         self._fleets: list[Fleet] | None = None
         # The star charts and the list of charted systems are facts about the
@@ -272,14 +286,21 @@ def take_turn(
         intents.research(session, civ)
 
     _set_policies(turn)
+    # War before settlement, and this order is load-bearing rather than
+    # stylistic. The AI builds its warships *with a colony pod attached*, so
+    # almost every fighting ship it owns is also a lander -- and expansion
+    # dispatches every idle pod-carrier it can see. Run settlement first and
+    # there is never a pod left for a siege, which is why in the entire history
+    # of this game not one world has ever changed hands. A civilization already
+    # holding an enemy world under blockade commits to finishing that before it
+    # sends the remainder off to plant flags on rocks.
+    _maybe_annex(turn, pending)
+    _maybe_raid(turn, pending)
     _maybe_expand(turn, pending)
     _maybe_supply(turn, pending)
     _maybe_migrate(turn, pending)
     _maybe_terraform(turn, pending)
     _maybe_scout(turn, pending)
-    # Before scrapping, so a surplus warship is offered a war before it is
-    # offered a breaker's yard.
-    _maybe_raid(turn, pending)
     _maybe_scrap(turn, pending)
     _maybe_build(turn, pending, rng)
 
@@ -365,7 +386,7 @@ def _maybe_expand(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     """
     session, civ = turn.session, turn.civ
     ordered = pending.get(IntentKind.COLONIZE.value, [])
-    busy_fleets = {i.payload.get("fleet_id") for i in ordered}
+    busy_fleets = {i.payload.get("fleet_id") for i in ordered} | turn.claimed
     claimed = {i.payload.get("world_id") for i in ordered}
 
     for fleet in _idle_colony_fleets(turn):
@@ -396,6 +417,7 @@ def _maybe_expand(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             intents.move_fleet_to_system(session, civ, fleet.id, system)
         intents.colonize(session, civ, fleet.id, world.id, loadout=loadout)
         claimed.add(world.id)
+        turn.claimed.add(fleet.id)
 
 
 def _loadout_for(world) -> Loadout:
@@ -463,6 +485,7 @@ def _maybe_supply(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             _order_freighter(session, civ, source, pending)
             return
         intents.supply_route(session, civ, fleet.id, source.id, colony.id, dict(ROUTE_MANIFEST))
+        turn.claimed.add(fleet.id)
         return
 
 
@@ -547,6 +570,7 @@ def _maybe_migrate(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     if people <= 0:
         return
     intents.migrate(session, civ, fleet.id, source.id, target.id, people)
+    turn.claimed.add(fleet.id)
 
 
 def _all_routes(session: Session, universe: Universe, civ: Civ) -> list[Intent]:
@@ -605,7 +629,7 @@ def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
 
     busy = {
         intent.payload.get("fleet_id") for group in pending.values() for intent in group
-    }
+    } | turn.claimed
     warships = [
         fleet
         for fleet in turn.fleets
@@ -635,16 +659,104 @@ def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     # running -- a blockade starves an outpost whether or not anybody lands --
     # but with it the world changes hands, which is the only way this
     # civilization ever takes a *developed* place rather than founding one.
-    for lander in _idle_colony_fleets(turn):
-        if lander.id not in busy:
-            committed.append(lander)
-            break
+    # Often one of the warships already going: the AI builds its hulls with a
+    # pod attached, so most of its navy can land an administration. Only look
+    # for a separate ship if none of the fighting force can.
+    if not any(fleet.colony_pods > 0 for fleet in committed):
+        going = {fleet.id for fleet in committed}
+        for lander in _idle_colony_fleets(turn):
+            if lander.id not in busy and lander.id not in going:
+                committed.append(lander)
+                break
 
     system = target.world.system
     intents.attack(session, civ, target.civ_id)
     for fleet in committed:
+        turn.claimed.add(fleet.id)
         if distance(fleet.position, system.position) > DOCKING_TOLERANCE_LY:
             intents.move_fleet_to_system(session, civ, fleet.id, system)
+
+
+def _maybe_annex(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
+    """Land somebody to run a world this civilization is already besieging.
+
+    The half of conflict that never happened. Blockade and siege both worked --
+    measured, two colonies were cut off and ground to zero resistance -- and
+    then nothing, because a colony pod was dispatched exactly once, at the
+    moment war was declared, and never again. One of those worlds sat subdued
+    and blockaded for three hundred and thirteen hours with nobody coming for
+    it. Grinding a world down is not taking it; somebody has to land an
+    administration, and that has to be a standing intention rather than a
+    gesture made at the outbreak.
+
+    The rule is deliberately something the besieger can *see*: my warships are
+    holding station over a colony belonging to somebody I am at war with, and no
+    lander of mine is there or on the way. It never reads the defender's
+    resistance -- which would be looking at a number no player is shown -- and
+    it does not need to. The pod sits in orbit and
+    :func:`galaxysim.engine.resolvers.siege._try_capture` spends it the moment
+    the world stops resisting, whether that is this afternoon or next month.
+    """
+    session, civ = turn.session, turn.civ
+    at_war = {
+        intent.payload.get("target_civ_id")
+        for intent in pending.get(IntentKind.ATTACK.value, [])
+    }
+    if not at_war:
+        return
+
+    on_station = [f for f in turn.fleets if not f.in_transit and f.strength > 0]
+    if not on_station:
+        return
+
+    busy = {
+        intent.payload.get("fleet_id") for group in pending.values() for intent in group
+    } | turn.claimed
+
+    for system in turn.systems:
+        for world in system.worlds:
+            colony = world.colony
+            if colony is None or colony.civ_id not in at_war:
+                continue
+
+            here = [
+                fleet
+                for fleet in on_station
+                if distance(fleet.position, system.position) <= BLOCKADE_RANGE_LY
+            ]
+            if not here:
+                continue  # not besieging this one
+            if any(fleet.colony_pods > 0 for fleet in here):
+                continue  # a lander is already on station, waiting
+
+            # Or already on its way. Reading our own ships' destinations, which
+            # is why this needs no order bookkeeping to stay idempotent -- the
+            # decision is re-made every turn and answers itself.
+            if any(
+                fleet.colony_pods > 0
+                and fleet.in_transit
+                and _destination(fleet) is not None
+                and distance(_destination(fleet), system.position) <= BLOCKADE_RANGE_LY
+                for fleet in turn.fleets
+            ):
+                continue
+
+            lander = next(
+                (f for f in _idle_colony_fleets(turn) if f.id not in busy), None
+            )
+            if lander is None:
+                return  # nothing to send anywhere
+
+            intents.move_fleet_to_system(session, civ, lander.id, system)
+            turn.claimed.add(lander.id)
+            return
+
+
+def _destination(fleet: Fleet) -> Vec3 | None:
+    """Where a fleet in transit is headed, if it is going anywhere."""
+    if fleet.dest_x is None or fleet.dest_y is None or fleet.dest_z is None:
+        return None
+    return Vec3(fleet.dest_x, fleet.dest_y, fleet.dest_z)
 
 
 def _raidable_colony(turn: "_Turn") -> Colony | None:
@@ -730,7 +842,7 @@ def _maybe_scrap(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     # this cheap should not cost the tick a round trip.
     busy = {
         intent.payload.get("fleet_id") for group in pending.values() for intent in group
-    }
+    } | turn.claimed
     docked = [
         fleet
         for fleet in warships
@@ -741,7 +853,9 @@ def _maybe_scrap(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
 
     # The smallest hull that is surplus to requirements, so the empire sheds the
     # least capability it can while still shedding the bill.
-    intents.decommission_fleet(session, civ, min(docked, key=lambda f: (f.strength, f.id)).id)
+    scrapped = min(docked, key=lambda f: (f.strength, f.id))
+    intents.decommission_fleet(session, civ, scrapped.id)
+    turn.claimed.add(scrapped.id)
 
 
 def _at_a_colony(fleet: Fleet, colonies: list[Colony]) -> bool:
@@ -762,6 +876,7 @@ def _idle_freighter(turn: "_Turn", hold: float | None = None) -> Fleet | None:
     """
     session, civ = turn.session, turn.civ
     busy = {intent.payload.get("fleet_id") for intent in intents.pending(session, civ)}
+    busy |= turn.claimed
     busy |= {
         intent.payload.get("fleet_id")
         for intent in session.scalars(
@@ -1092,6 +1207,7 @@ def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
                     stub.position.y,
                     stub.position.z,
                 )
+                turn.claimed.add(scout.id)
                 return
 
 
