@@ -289,6 +289,17 @@ class World(Base):
     #: cached, because working it out means reading the whole survey and both
     #: the AI and the interface want to ask it constantly.
     terraform_next: Mapped[str] = mapped_column(String(40), default="")
+    #: Whether this world could ever be made somewhere people live, rather than
+    #: merely what it wants next. See
+    #: :func:`galaxysim.terraform.plan.is_finishable`.
+    #:
+    #: Two thirds of generated worlds cannot: an orbital shade cools by
+    #: reflection and albedo saturates, so a world whose air alone holds it above
+    #: the growing band stays there whatever is spent on it. Knowing that in
+    #: advance is the difference between a campaign and a hole in the ground --
+    #: a hopeless world still absorbs nine real projects before its albedo caps,
+    #: and every one of them looks like progress.
+    terraform_finishable: Mapped[bool] = mapped_column(Boolean, default=False)
 
     #: Usable surface in square kilometres, from radius and land fraction.
     #: Real area, so a superearth genuinely holds more than a moon.

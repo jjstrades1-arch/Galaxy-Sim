@@ -158,8 +158,12 @@ PROJECTS: dict[str, Project] = {
             effect=COOL,
             cost={ALLOYS: 3.5e+07, ELECTRONICS: 1.5e+07, CERAMICS: 1e+07},
             work=4.35e+07,
-            #: Kelvin removed from the surface per run.
-            magnitude=20.0,
+            #: Albedo added per run -- the fraction of starlight thrown back.
+            #: Not degrees: how much colder that makes the surface depends on
+            #: the star, the orbit and what the air is doing, and it is derived
+            #: rather than declared. It also has a ceiling, which is why a world
+            #: can be too hot to save.
+            magnitude=0.12,
         ),
         Project(
             key="cometary_redirection",

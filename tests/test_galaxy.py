@@ -405,3 +405,52 @@ def test_most_of_the_frontier_is_rock():
 
     liveable = sum(1 for w in worlds if w.habitability >= 0.25) / len(worlds)
     assert liveable < 0.01, f"{liveable:.1%} of worlds are liveable; should be rare"
+
+
+def test_a_small_game_is_seated_for_the_people_actually_in_it():
+    """The frontier holds who is there, not who might have been.
+
+    The radius is derived from the number of players it has to hold at
+    ``TARGET_SPACING_LY`` separation, and the seating call took the default --
+    a hundred, whoever was actually playing. So a solo game with eight rivals
+    got a hundred players' worth of room and everyone landed a hundred and
+    thirty light years apart, against a fleet's supply reach of twenty-five.
+
+    Nothing closed that gap. Empires expand to about thirteen light years and
+    stop, because a growing empire settles the *nearest* unclaimed world and
+    fills in its own neighbourhood -- so two of them can touch across roughly
+    fifty light years, which is exactly what ``TARGET_SPACING_LY`` was chosen to
+    give them. Neighbours were unreachable for the whole life of the project and
+    every test here passed, because every test here called ``seed_position``
+    directly with the right number.
+    """
+    from galaxysim.model.entities import UniverseMode
+
+    engine = create_engine_for("sqlite://")
+    universe_id = create_universe(
+        engine, "Small", seed=1, seconds_per_tick=3600,
+        mode=UniverseMode.SOLO, region="arm", difficulty="driven",
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        for index in range(8):
+            add_civ(session, universe, f"AI-{index + 1}", is_ai=True)
+
+    with open_session(engine) as session:
+        homes = [
+            colony.world.system for colony in session.scalars(select(Colony).order_by(Colony.id))
+        ]
+        assert len(homes) == 8
+        gaps = sorted(
+            min(distance(a.position, b.position) for b in homes if b is not a) for a in homes
+        )
+
+    median = gaps[len(gaps) // 2]
+    assert median < TARGET_SPACING_LY * 2, (
+        f"neighbours are {median:.0f} ly apart in an eight-rival game; a fleet is "
+        f"supplied to 25 ly, so nobody can ever reach anybody"
+    )
+    assert gaps[0] > TARGET_SPACING_LY * 0.5, (
+        f"closest pair only {gaps[0]:.0f} ly apart -- the frontier has been "
+        "packed tighter than it was designed for"
+    )

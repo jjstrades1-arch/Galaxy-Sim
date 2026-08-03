@@ -53,8 +53,22 @@ def _fresh(seed: int):
     )
 
 
+#: A world holding fewer people than a small town is dead in the sense these
+#: tests mean: whatever lives there lives in habitats, not on the planet.
+DEAD_WORLD_CAPACITY = 1e6
+
+
 def _cold_rock(session) -> World:
-    """A dead world people could stand on: the classic terraforming target."""
+    """A dead world people could stand on: the classic terraforming target.
+
+    "Dead" is a filter and not an afterthought. This used to pick the warmest
+    cold rock and nothing else, which is not the same thing -- the warmest one
+    in a given sky may be a large world at 0.02 habitability already holding a
+    ceiling of four hundred million, and a test claiming terraforming raises the
+    ceiling by four orders of magnitude then fails on a world that was never
+    dead to begin with. Warmest *among the dead*, so the target matches the
+    claim and the sequence still converges.
+    """
     best = None
     for world in session.scalars(select(World).order_by(World.id)):
         if world.colony is not None:
@@ -64,9 +78,11 @@ def _cold_rock(session) -> World:
             continue
         if survey.climate.surface_temp_k >= 260:
             continue
+        if survey.carrying_capacity >= DEAD_WORLD_CAPACITY:
+            continue
         if best is None or survey.climate.surface_temp_k > best[1]:
             best = (world, survey.climate.surface_temp_k)
-    assert best is not None, "the test universe has no cold rock in it"
+    assert best is not None, "the test universe has no dead cold rock in it"
     return best[0]
 
 
@@ -397,3 +413,134 @@ def test_a_project_is_charged_up_front(engine):
         assert order.status == IntentStatus.QUEUED.value
         assert "insufficient" in order.result
         assert session.get(Colony, colony_id).world.habitability >= 0.0
+
+
+# --- the ladder as a whole ----------------------------------------------------
+
+
+def _generated_worlds(session, engine, seeds=(1, 2)):
+    """Every world three seated civilizations bring into being."""
+    from galaxysim.bootstrap import add_civ, create_universe
+    from galaxysim.model.entities import Universe, UniverseMode
+
+    for seed in seeds:
+        universe_id = create_universe(
+            engine, f"sweep-{seed}", seed=seed, seconds_per_tick=3600,
+            mode=UniverseMode.SOLO, region="arm",
+        )
+        with open_session(engine) as setup:
+            universe = setup.get(Universe, universe_id)
+            for index in range(3):
+                add_civ(setup, universe, f"AI-{seed}-{index}", is_ai=True)
+    return list(session.scalars(select(World).order_by(World.id)))
+
+
+def test_no_world_asks_for_a_project_that_would_change_nothing():
+    """The guard that did not exist, against the bug that cost the most.
+
+    ``next_project`` used to answer the question "what does this world need?"
+    when the honest answer was "nothing anybody can do". An orbital shade cools
+    by reflection and albedo saturates, so a world whose air alone holds it
+    above the growing band stays there for ever -- and the ladder went on asking
+    for another shade. Measured across two thousand generated worlds, **1,295 of
+    them looped**, each run costing 43.5 million work and sixty million tonnes
+    to produce a survey identical to the one before it.
+
+    Every world must now end somewhere: finished, or as far as anyone can take
+    it. Not still asking.
+    """
+    engine = create_engine_for("sqlite://")
+    with open_session(engine) as session:
+        worlds = _generated_worlds(session, engine)
+        assert len(worlds) > 500, "the sweep needs a real sample to mean anything"
+
+        looping = []
+        for world in worlds:
+            survey = survey_from_json(world.survey)
+            for _ in range(60):
+                key = next_project(survey)
+                if key is None:
+                    break
+                after = apply_project(survey, project(key))
+                if after == survey:
+                    looping.append((world.name, key))
+                    break
+                survey = after
+            else:
+                looping.append((world.name, "never terminates"))
+
+    assert not looping, (
+        f"{len(looping)} of {len(worlds)} worlds ask for a project that changes "
+        f"nothing, for ever -- e.g. {looping[:3]}"
+    )
+
+
+def test_a_world_says_in_advance_whether_it_can_be_finished():
+    """Stopping the sink is not the same as not walking into it.
+
+    A hopeless world still absorbs nine real projects before its albedo caps,
+    and every one of them looks like progress. ``terraform_finishable`` is what
+    lets the AI and a player decline it before spending anything, and it is a
+    promoted column for the same reason the others are: working it out means
+    walking fifteen projects' worth of physics.
+    """
+    from galaxysim.terraform.plan import is_finished
+
+    engine = create_engine_for("sqlite://")
+    with open_session(engine) as session:
+        worlds = _generated_worlds(session, engine)
+
+        wrong = []
+        finishable = 0
+        for world in worlds:
+            survey = survey_from_json(world.survey)
+            for _ in range(60):
+                key = next_project(survey)
+                if key is None:
+                    break
+                survey = apply_project(survey, project(key))
+            truth = is_finished(survey)
+            finishable += truth
+            if world.terraform_finishable != truth:
+                wrong.append(world.name)
+
+    assert not wrong, (
+        f"{len(wrong)} worlds' promoted terraform_finishable disagreed with "
+        f"walking the ladder, e.g. {wrong[:3]}"
+    )
+    # And it discriminates: a column that answered the same for everything would
+    # pass the check above and be worthless.
+    assert 0 < finishable < len(worlds), (
+        f"{finishable} of {len(worlds)} worlds finishable -- the column is not "
+        "telling worlds apart"
+    )
+
+
+def test_the_promoted_columns_survive_a_homeworld_being_reseeded():
+    """A world rewritten after generation must not keep the old world's facts.
+
+    ``_prepare_homeworld`` regenerates every world in a civ's home system around
+    its new star, and the copy that wrote them back listed the derived columns
+    by hand. The list fell behind: stellar flux, tectonic activity and the
+    terraforming answer were all left describing a planet that no longer
+    existed -- and stellar flux decides whether solar power is worth building
+    there.
+    """
+    from galaxysim.worldgen.serialize import promoted_fields
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=31, civs=("Terrans",))
+    with open_session(engine) as session:
+        home = home_colony(session, civ_by_name(session, universe_id, "Terrans"))
+        system_worlds = session.scalars(
+            select(World).where(World.system_id == home.world.system_id)
+        ).all()
+        assert system_worlds
+
+        for world in system_worlds:
+            for field, value in promoted_fields(survey_from_json(world.survey)).items():
+                stored = getattr(world, field)
+                assert stored == value, (
+                    f"{world.name}.{field} is {stored!r} but its survey says "
+                    f"{value!r} -- a derived column was left behind by a rewrite"
+                )

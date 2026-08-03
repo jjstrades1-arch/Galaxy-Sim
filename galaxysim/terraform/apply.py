@@ -49,10 +49,14 @@ from galaxysim.worldgen.survey import Survey, derive_habitability
 #: has ever measured.
 FILLER_GAS = "N2"
 
-#: Albedo an orbital shade removes per run, and the floor it cannot go below --
-#: a world reflecting nothing is a world with no clouds and no ice, which is not
-#: a thing a shade produces.
-SHADE_ALBEDO_STEP = 0.12
+#: Most of the starlight a world can be made to throw back. A shade is a swarm
+#: of statites, not a lid: past this there is nothing left to shadow.
+#:
+#: The ceiling is load-bearing rather than cosmetic. A world whose greenhouse
+#: forcing alone exceeds the growing band cannot be cooled to it by reflection
+#: at any price, which makes it *unfinishable* -- see
+#: :func:`galaxysim.terraform.plan.is_finishable`, which exists because the
+#: ladder used to ask for another shade for ever instead of saying so.
 MAX_ALBEDO = 0.85
 
 #: A magnetic shield is machinery, not a dynamo, so it is recorded as a field
@@ -104,8 +108,11 @@ def _apply_effect(survey: Survey, project: Project) -> Survey:
         )
 
     if effect == COOL:
-        # Cooling is done by reflecting light away, so it is albedo.
-        albedo = min(MAX_ALBEDO, survey.atmosphere.albedo + SHADE_ALBEDO_STEP)
+        # Cooling is done by reflecting light away, so the magnitude is albedo
+        # and not degrees. How much colder that makes the surface is not this
+        # function's to say: it depends on the star, the orbit and the air, and
+        # it falls out of _rederive like everything else.
+        albedo = min(MAX_ALBEDO, survey.atmosphere.albedo + size)
         return replace(survey, atmosphere=replace(survey.atmosphere, albedo=albedo))
 
     if effect == DELIVER_WATER:

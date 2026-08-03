@@ -44,6 +44,7 @@ from galaxysim.model.entities import (
 )
 from galaxysim.worldgen.galaxy import ARM, REGIONS, seed_position
 from galaxysim.worldgen.materialize import materialize_around, world_from_survey
+from galaxysim.worldgen.serialize import promoted_fields, survey_from_json
 from galaxysim.worldgen.star import Star, roll_star
 from galaxysim.worldgen.survey import plausible_mass, plausible_orbits, survey_world
 
@@ -170,6 +171,33 @@ def _seat_positions(session: Session, universe: Universe) -> list[Vec3]:
     ]
 
 
+def _expected_civs(universe: Universe, taken: list[Vec3]) -> int:
+    """How many civilizations this universe is being sized for.
+
+    The frontier's radius is derived from the number of players it has to hold
+    at :data:`~galaxysim.worldgen.galaxy.TARGET_SPACING_LY` separation, and that
+    number used to be the default -- a hundred, whoever was actually playing. So
+    a solo game with eight rivals got a hundred players' worth of room and
+    everyone landed a hundred and thirty light years apart, against a fleet's
+    supply reach of twenty-five.
+
+    That is not a gap expansion closes. Measured over sixty simulated days, an
+    empire's radius grows to about thirteen light years and then stops: colony
+    count went from sixty-eight to ninety-one over the last fortnight without
+    gaining a light year, because a growing empire settles the *nearest*
+    unclaimed world and fills in its own neighbourhood. Two empires can
+    therefore touch across roughly fifty light years, which is what the frontier
+    was designed to give them and never did.
+
+    So: the rivals this difficulty seats, plus the player. Floored at whoever is
+    already sitting there, because a late join must never shrink the region
+    under the civilizations already in it.
+    """
+    from galaxysim.ai.doctrine import doctrine
+
+    return max(len(taken) + 1, doctrine(universe.ai_difficulty).rivals + 1)
+
+
 def add_civ(
     session: Session,
     universe: Universe,
@@ -203,7 +231,10 @@ def add_civ(
     # being. Everything past that stays a pure function until somebody flies to
     # it.
     region = REGIONS.get(universe.region, ARM)
-    seat = seed_position(universe.seed, region, _seat_positions(session, universe))
+    taken = _seat_positions(session, universe)
+    seat = seed_position(
+        universe.seed, region, taken, expected_players=_expected_civs(universe, taken)
+    )
     charted = materialize_around(
         session, universe, seat, STARTING_CHART_RADIUS_LY, STARTING_CHARTED_SYSTEMS
     )
@@ -382,7 +413,21 @@ def _prepare_homeworld(session: Session, system: StarSystem, rng) -> World:
 
 
 def _apply_survey(world: World, generated: World) -> None:
-    """Copy a freshly generated world's fields onto an existing row."""
+    """Make an existing row into the world that was just generated.
+
+    The derived columns are recomputed from the new survey rather than listed
+    out by hand. They were listed by hand, and the list had silently fallen
+    behind: ``stellar_flux``, ``tectonic_activity`` and ``terraform_next`` were
+    all left holding values derived from the world as it was *before* the
+    system was reseeded around its new star. Every world in every civ's home
+    system started the game with a solar constant and a heat flow belonging to a
+    planet that no longer existed -- which decides what power stations are worth
+    building there.
+
+    Nothing here can drift again, because the set of derived columns is now
+    whatever :func:`promoted_fields` says it is. The cost is one survey parse
+    per world at bootstrap, which happens a handful of times per game.
+    """
     world.name = generated.name
     world.world_type = generated.world_type
     world.habitability = generated.habitability
@@ -390,7 +435,5 @@ def _apply_survey(world: World, generated: World) -> None:
     world.survey = generated.survey
     world.land_area_km2 = generated.land_area_km2
     world.carrying_capacity = generated.carrying_capacity
-    world.extraction = generated.extraction
-    world.surface_water = generated.surface_water
-    world.farm_quality = generated.farm_quality
-    world.needs_fertiliser = generated.needs_fertiliser
+    for field, value in promoted_fields(survey_from_json(generated.survey)).items():
+        setattr(world, field, value)

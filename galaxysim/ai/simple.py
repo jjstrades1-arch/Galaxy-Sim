@@ -960,6 +960,16 @@ def _maybe_terraform(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             continue  # already being reshaped
         if colony.world.habitability > turn.doctrine.terraform_habitability:
             continue
+        # Worlds that can actually be finished, and only those. Two thirds of
+        # the galaxy cannot be: their air holds them above the growing band and
+        # no amount of orbital shade brings them down, because reflection
+        # saturates. Nothing said so, so a civilization would commit to one,
+        # spend nine projects' worth of industry watching the albedo climb, and
+        # stop for ever a long way short of anywhere habitable. Spreading that
+        # across a dozen rocks is why no world in a sixty-day soak ever became
+        # somewhere people could live.
+        if not colony.world.terraform_finishable:
+            continue
 
         neighbourhood = queries.sorted_by_distance(
             colonies, colony.world.system.position, within_ly=SUPPLY_RANGE_LY

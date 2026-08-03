@@ -77,7 +77,7 @@ def promoted_fields(survey: Survey) -> dict:
     """
     from galaxysim.colony.agriculture import quality, regime
     from galaxysim.materials.extraction import extraction_rates
-    from galaxysim.terraform.plan import next_project
+    from galaxysim.terraform.plan import is_finishable, next_project
 
     return {
         "extraction": extraction_rates(survey.deposits),
@@ -94,6 +94,14 @@ def promoted_fields(survey: Survey) -> dict:
         # candidate world, per turn -- the exact cost these columns exist to
         # avoid, arrived at from the AI's side where the guard was not looking.
         "terraform_next": next_project(survey) or "",
+        # Whether finishing it is possible at all, which is a different question
+        # from what it needs next and a much more expensive one to ask -- the
+        # ladder has to be walked to its end. Promoted for exactly the reason
+        # the others are: it is a pure function of the survey, it changes only
+        # when terraforming changes the world, and asking it per candidate world
+        # per AI turn would mean walking fifteen projects' worth of physics
+        # inside a decision that is supposed to be free.
+        "terraform_finishable": is_finishable(survey),
     }
 
 
