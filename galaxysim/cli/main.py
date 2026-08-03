@@ -88,6 +88,10 @@ console = Console()
 
 DEFAULT_DB = "galaxysim.db"
 
+#: Colonies a civilization starts with. Subtracted before working out how often
+#: it founds a new world, since the homeworld was not founded.
+HOMEWORLDS = 1
+
 
 def _db_url() -> str:
     """Database location, overridable with GALAXYSIM_DB."""
@@ -1139,7 +1143,19 @@ def soak(
     ticks_per_day = cadence.ticks_for_hours(24)
 
     table = Table(
-        "day", "colonies", "pop", "fleet str", "techs", "spread", title="Pacing soak (medians)"
+        "day",
+        "colonies",
+        # The number this table exists to show, and it was the one column
+        # missing. A running count only ever goes up, so a perfectly steady
+        # expansion reads as a runaway one -- which is exactly how a soak got
+        # reported as "out of hand" when it was settling a world every five
+        # days, dead on the design target. Rate is the pace; the total is not.
+        "days/world",
+        "pop",
+        "fleet str",
+        "techs",
+        "spread",
+        title="Pacing soak (per civilization, medians)",
     )
     started = time.perf_counter()
     total_ticks = 0
@@ -1177,9 +1193,19 @@ def soak(
             # here is the early warning that someone is snowballing.
             spread = (invested[-1] / invested[0]) if invested and invested[0] > 0 else 0.0
 
+            # Cumulative rather than per-interval. A median steps in whole
+            # colonies, so an interval rate flickers between "-" and a number
+            # and reads as noise; measured since the opening position it is the
+            # plain answer to "how often does a world appear", which is the
+            # question the design target is written in.
+            held = _median(colonies)
+            founded = held - HOMEWORLDS
+            rate = f"{day / founded:.1f}" if founded > 0 else "-"
+
             table.add_row(
                 str(day),
-                f"{_median(colonies):.0f}",
+                f"{held:.0f}",
+                rate,
                 f"{_median(pops):,.0f}",
                 f"{_median(strengths):.0f}",
                 f"{_median(techs):.0f}",
