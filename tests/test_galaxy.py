@@ -171,10 +171,22 @@ def test_a_bounded_chart_does_not_pay_for_the_whole_core():
 # --- the settlement frontier -------------------------------------------------
 
 
-def _seat(players: int, region=ARM, seed: int = 7) -> list[Vec3]:
+def _seat(players: int, region=ARM, seed: int = 7, sized_for: int | None = None) -> list[Vec3]:
+    """Seat ``players`` in a frontier sized for ``sized_for``.
+
+    The two are different questions and the difference is the point of the two
+    tests below. A frontier *sized for* a hundred and then filled by three
+    hundred packs them in -- that is where pressure comes from. A frontier sized
+    for the nine who are actually in it should hand those nine the spacing the
+    design asks for, which is what nothing checked.
+    """
     taken: list[Vec3] = []
     for _ in range(players):
-        taken.append(seed_position(seed, region, taken, expected_players=DESIGN_POPULATION))
+        taken.append(
+            seed_position(
+                seed, region, taken, expected_players=DESIGN_POPULATION if sized_for is None else sized_for
+            )
+        )
     return taken
 
 
@@ -196,6 +208,34 @@ def test_the_frontier_is_sized_from_the_contact_target():
     gap = _median_gap(_seat(DESIGN_POPULATION))
     assert gap == pytest.approx(TARGET_SPACING_LY, rel=0.15), (
         f"median neighbour gap {gap:.1f} ly against a {TARGET_SPACING_LY:.0f} ly target"
+    )
+
+
+def test_the_target_is_delivered_at_every_size_a_game_is_played_at():
+    """The assertion whose absence let neighbours drift out of reach.
+
+    The check above only ever ran at a hundred, and the packing constant is a
+    *volume* argument that is exact only when most of the population has
+    neighbours in every direction. Below a hundred most of it does not --
+    farthest-point placement pushes a small crowd out toward the surface of the
+    sphere -- so the arrangement came out looser than it was asked for: 1.20x
+    the target at nine civilizations and 1.33x at four.
+
+    A solo game is played at nine. That drift is why neighbours sat sixty light
+    years apart when the design called for fifty, and fifty is the distance two
+    expanding empires can actually close, so it was the difference between a
+    galaxy with borders in it and one without.
+    """
+    loose = {}
+    for players in (6, 9, 25, DESIGN_POPULATION):
+        gap = _median_gap(_seat(players, sized_for=players))
+        if gap != pytest.approx(TARGET_SPACING_LY, rel=0.15):
+            loose[players] = gap
+
+    assert not loose, (
+        "a frontier sized for its population must deliver "
+        f"{TARGET_SPACING_LY:.0f} ly between neighbours; got "
+        + ", ".join(f"{gap:.1f} ly at {n}" for n, gap in sorted(loose.items()))
     )
 
 

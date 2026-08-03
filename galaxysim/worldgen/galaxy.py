@@ -374,6 +374,30 @@ DESIGN_POPULATION = 100
 #: needs measuring again -- ``tests/test_galaxy.py`` fails if it drifts.
 PACKING_FACTOR = 0.93
 
+#: Correction for the fact that a small crowd is nearly all edge.
+#:
+#: :data:`PACKING_FACTOR` is a *volume* argument, and it is exact only when most
+#: of the population has neighbours in every direction. Below the design
+#: population most of it does not: farthest-point placement pushes a handful of
+#: civilizations out toward the surface of the sphere, where each has fewer
+#: neighbours than the volume calculation assumes, and the arrangement comes out
+#: looser than it was asked for. Measured, seating civilizations and comparing
+#: the median gap against :data:`TARGET_SPACING_LY`:
+#:
+#:       4 civs  1.33x too far      25 civs  1.08x
+#:       9 civs  1.20x too far     100 civs  1.00x
+#:
+#: which ``1 + k / N**(1/3)`` reproduces within three percent for ``k`` here.
+#: Normalised to vanish at :data:`DESIGN_POPULATION`, so the hundred-player
+#: calibration that :data:`PACKING_FACTOR` encodes is left exactly as it was.
+#:
+#: This mattered because a solo game is played at nine, not a hundred: it is why
+#: neighbours sat sixty light-years apart when the design called for fifty, and
+#: fifty is what two expanding empires can actually close. Measured again if the
+#: placement rule changes -- ``tests/test_galaxy.py`` checks every size a game is
+#: played at, which it did not used to.
+EDGE_CORRECTION = 0.75
+
 #: Candidate positions considered when seating each new civilization. Higher is
 #: a better spread and a slower join; this is enough that the result is visibly
 #: even and the cost is nothing.
@@ -384,14 +408,28 @@ def frontier_radius(expected_players: int = DESIGN_POPULATION) -> float:
     """Radius of the settlement region, in light-years.
 
     Derived: the volume needed to hold ``expected_players`` at
-    :data:`TARGET_SPACING_LY` separation. A hundred players comes out near
-    130 ly -- a region about 260 ly across, which is a quarter of one percent of
-    the galaxy's diameter and is the whole point. Everyone starts close enough
-    to matter to each other.
+    :data:`TARGET_SPACING_LY` separation, tightened by
+    :data:`EDGE_CORRECTION` because a small population sits on the surface of
+    that volume rather than filling it. A hundred players comes out near 130 ly
+    -- a region about 260 ly across, which is a quarter of one percent of the
+    galaxy's diameter and is the whole point. Everyone starts close enough to
+    matter to each other, at nine players as well as at a hundred.
     """
     players = max(1, expected_players)
     volume_each = TARGET_SPACING_LY**3 / PACKING_FACTOR
-    return round((players * volume_each * 3.0 / (4.0 * math.pi)) ** (1.0 / 3.0), 2)
+    ideal = (players * volume_each * 3.0 / (4.0 * math.pi)) ** (1.0 / 3.0)
+    return round(ideal / _edge_looseness(players), 2)
+
+
+def _edge_looseness(players: int) -> float:
+    """How much looser than the target this population will actually sit.
+
+    One at the design population by construction, rising as the crowd shrinks.
+    See :data:`EDGE_CORRECTION`.
+    """
+    return 1.0 + EDGE_CORRECTION * (
+        players ** (-1.0 / 3.0) - DESIGN_POPULATION ** (-1.0 / 3.0)
+    )
 
 
 def frontier_centre(universe_seed: int, region: Region) -> Vec3:
