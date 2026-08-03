@@ -411,7 +411,17 @@ def test_a_project_is_charged_up_front(engine):
             select(intents.Intent).where(intents.Intent.kind == "terraform")
         )
         assert order.status == IntentStatus.QUEUED.value
-        assert "insufficient" in order.result
+        # It must say *what* is short, not merely that something is.
+        #
+        # This used to read "insufficient resources within 25 ly", which was
+        # wrong twice: the materials pool across the whole civilization, and
+        # naming a distance points at a logistics problem instead of at an empty
+        # warehouse. It cost a wrong diagnosis; the two have nothing in common
+        # as fixes.
+        assert "short" in order.result and "t of " in order.result, order.result
+        assert "25 ly" not in order.result, (
+            "the pool is the whole civilization, so a radius here is a lie"
+        )
         assert session.get(Colony, colony_id).world.habitability >= 0.0
 
 

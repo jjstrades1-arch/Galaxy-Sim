@@ -109,7 +109,19 @@ RECIPES: dict[str, Recipe] = {
         Recipe(
             "electronics",
             "Electronics fabrication",
-            inputs={COPPER: 4.0, RARE_EARTHS: 1.0, SILICON: 6.0},
+            # Silicon-dominant, with a little copper for interconnect and traces
+            # of rare earths -- which is both what electronics are actually made
+            # of and what the ground actually gives.
+            #
+            # It used to ask for four parts copper to six of silicon. Measured
+            # across four hundred and fifty generated worlds, mining yields
+            # copper at 0.02 t/h against silicon at 0.75 -- so the recipe wanted
+            # copper twenty-five times faster than any world produces it, and
+            # copper alone decided how much anybody could make. The visible
+            # result was empires sitting on twenty-one *thousand* megatonnes of
+            # silicon and a tenth of a megatonne of copper, unable to build the
+            # one material terraforming, shipyards and laboratories all need.
+            inputs={COPPER: 1.0, RARE_EARTHS: 1.0, SILICON: 12.0},
             outputs={ELECTRONICS: 6.0},
             work=6.0,
             description="The chain everyone needs and few worlds can supply alone.",

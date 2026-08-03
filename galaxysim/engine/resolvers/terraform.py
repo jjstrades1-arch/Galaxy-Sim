@@ -105,10 +105,7 @@ def _start(ctx: TickContext) -> None:
 
         suppliers = _neighbourhood(ctx, colony)
         if not _draw_from(suppliers, project.cost):
-            intent.result = (
-                f"insufficient resources within {SUPPLY_RANGE_LY:.0f} ly of "
-                f"{colony.name}"
-            )
+            intent.result = _shortfall(suppliers, project.cost)
             continue
 
         intent.status = IntentStatus.IN_PROGRESS.value
@@ -123,11 +120,53 @@ def _start(ctx: TickContext) -> None:
         )
 
 
-def _neighbourhood(ctx: TickContext, colony: Colony) -> list[Colony]:
-    """This colony and every other of the same civ within supply range.
+def _shortfall(suppliers: list[Colony], cost: dict[str, float]) -> str:
+    """Which material is actually missing, and how much of it.
 
-    Nearest first, so a project draws on what is closest before reaching further
-    back down the line -- the same rule fleet upkeep uses, for the same reason.
+    This used to read "insufficient resources within 25 ly of <colony>", which
+    was wrong twice over: :func:`_neighbourhood` passes no radius, so the pool is
+    the *whole civilization*, and naming a distance sent the reader looking for a
+    logistics problem that does not exist. It cost a wrong diagnosis, and it
+    would cost a player one -- the fix for "we own none of this anywhere" is
+    nothing like the fix for "it is in the wrong warehouse".
+
+    Names the worst shortage rather than listing all of them: a project stalls on
+    the material it is furthest from, and that is the one to go and get.
+    """
+    available: dict[str, float] = {}
+    for colony in suppliers:
+        for material, amount in colony.stockpile.items():
+            available[material] = available.get(material, 0.0) + amount
+
+    short = sorted(
+        (
+            (available.get(material, 0.0) / wanted, material, wanted - available.get(material, 0.0))
+            for material, wanted in cost.items()
+            if available.get(material, 0.0) < wanted
+        )
+    )
+    if not short:
+        return "waiting on materials"
+    _, material, missing = short[0]
+    return (
+        f"short {missing:,.0f}t of {material} across all "
+        f"{len(suppliers)} of this civilization's colonies"
+    )
+
+
+def _neighbourhood(ctx: TickContext, colony: Colony) -> list[Colony]:
+    """Every colony this civilization holds, nearest to the project first.
+
+    **Every one, with no radius.** The name and this docstring both used to say
+    "within supply range", and neither was true -- no radius is passed. That is
+    the right behaviour and the wrong description: freight can go anywhere given
+    time, so *materials* pool across the whole civilization, while the *work*
+    attenuates with distance because an engineering corps a hundred light-years
+    away is not helping you this month. See :data:`_reach`.
+
+    Order still matters even without a cutoff: a project spends what is nearest
+    before reaching further back down the line, the same rule fleet upkeep uses,
+    so the warehouse next door is drawn down before the one across the empire.
     """
     colonies = queries.colonies_grouped(ctx).get(colony.civ_id, [])
     return queries.sorted_by_distance(colonies, colony.world.system.position)

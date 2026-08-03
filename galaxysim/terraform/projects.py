@@ -40,7 +40,6 @@ from galaxysim.materials.catalogue import (
     CONSTRUCTION,
     ELECTRONICS,
     FERTILISER,
-    FISSILES,
     FUEL,
     POLYMERS,
     STEEL,
@@ -111,15 +110,23 @@ PROJECTS: dict[str, Project] = {
             "otherwise strip away anything you release into the sky. "
             "Nothing else is worth starting until this stands.",
             effect=SHIELD,
-            # No fissiles, deliberately, and it is the only project here without
-            # them. A shield is a superconducting loop -- an enormous amount of
-            # wire and switchgear, not a reactor. It also happens to be the
-            # project that gates every other one, and requiring a rare material
-            # for the first step meant a civilization that had not yet found
-            # uranium could not begin terraforming at all: not slowly, not
-            # expensively, but never. Fissiles still gate cometary redirection
-            # and oxygenation, which genuinely are nuclear work.
-            cost={STEEL: 4e+07, ALLOYS: 2e+07, ELECTRONICS: 1.2e+07},
+            # A shield is a superconducting loop -- an enormous amount of wire
+            # and switchgear, not a reactor.
+            #
+            # **No project in this catalogue is priced in fissiles any more.**
+            # Uranium is in the ground on fifty-five worlds out of four hundred
+            # and fifty-seven, so any bill that named it made the whole ladder
+            # conditional on happening to own one of them; measured over sixty
+            # days, every civilization in a soak held exactly zero fissiles and
+            # no world was ever finished. Rarity is a fine thing for a reactor
+            # fuel to have and a fatal one for a material on the critical path
+            # to every habitable planet in the game.
+            #
+            # Steel likewise: forty megatonnes against the twelve an empire
+            # actually holds. The tonnage moved onto alloys, of which it holds
+            # over a thousand. Totals are unchanged throughout -- these projects
+            # are not cheaper, they are payable.
+            cost={STEEL: 5e+06, ALLOYS: 5.5e+07, ELECTRONICS: 1.2e+07},
             work=5.2e+07,
             magnitude=1.0,
         ),
@@ -130,7 +137,8 @@ PROJECTS: dict[str, Project] = {
             "regolith and venting them. Raises surface pressure, which is the "
             "precondition for every kind of weather.",
             effect=THICKEN_ATMOSPHERE,
-            cost={STEEL: 3e+07, CERAMICS: 1.5e+07, POLYMERS: 8e+06, FUEL: 1e+07},
+            # Steel halved onto ceramics for the same reason and the same total.
+            cost={STEEL: 5e+06, CERAMICS: 4.5e+07, POLYMERS: 8e+06, FUEL: 5e+06},
             work=3.9e+07,
             #: Bar of nitrogen added per run.
             magnitude=0.25,
@@ -143,7 +151,7 @@ PROJECTS: dict[str, Project] = {
             "which is how you make a cold world habitable rather than merely "
             "pressurised.",
             effect=WARM,
-            cost={CONSTRUCTION: 2e+07, POLYMERS: 1.5e+07, FUEL: 1.2e+07},
+            cost={CONSTRUCTION: 3.4e+07, POLYMERS: 8e+06, FUEL: 5e+06},
             work=2.6e+07,
             #: Kelvin added to the surface per run.
             magnitude=18.0,
@@ -172,7 +180,12 @@ PROJECTS: dict[str, Project] = {
             "Slow, violent, and the only way to put an ocean on a world that "
             "never had one.",
             effect=DELIVER_WATER,
-            cost={FUEL: 4e+07, FISSILES: 1e+06, ALLOYS: 1e+07, WATER_ICE: 5e+06},
+            # Same total tonnage, drawn from what an empire actually has. Fuel
+            # at forty megatonnes was above the twenty-seven a mature
+            # civilization holds of it, so this could never be paid for even
+            # setting the fissiles aside; the balance moves onto alloys, which
+            # they hold by the thousand.
+            cost={FUEL: 8e+06, ALLOYS: 4.5e+07, WATER_ICE: 3e+06},
             work=6.1e+07,
             #: Fraction of the surface covered in water per run.
             magnitude=0.18,
@@ -211,7 +224,14 @@ PROJECTS: dict[str, Project] = {
             "biosphere will not do it in time. Expensive, and the last step "
             "before people can walk outside.",
             effect=OXYGENATE,
-            cost={ELECTRONICS: 2.5e+07, FISSILES: 2e+06, CERAMICS: 2e+07, ALLOYS: 1.5e+07},
+            # No fissiles. Electrolysis at planetary scale wants electrodes and
+            # an enormous amount of power, not fissile material -- and uranium
+            # is in the ground on fifty-five worlds out of four hundred and
+            # fifty-seven, so pricing the *last step to every habitable world*
+            # in it made every terraforming campaign in the game depend on
+            # happening to own a uranium world. Nothing ever finished. The
+            # tonnage moves to ceramics, which is what an electrode array is.
+            cost={ELECTRONICS: 2.5e+07, CERAMICS: 2.2e+07, ALLOYS: 1.5e+07},
             work=7.0e+07,
             #: Bar of O2 added per run.
             magnitude=0.08,

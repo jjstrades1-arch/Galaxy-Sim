@@ -99,6 +99,12 @@ TONNES_PER_SETTLER = 0.5
 #: industrial worlds out of twelve measurably finished *behind* asking for three.
 INDUSTRIAL_WORLD_SHARE = 3
 
+#: Hours a terraforming order may sit unfunded before the AI gives up on it and
+#: frees the campaign slot. A week: long enough that an order waiting on one more
+#: freight run is not thrown away, short enough that a world the empire cannot
+#: supply at all does not cost it a month of doing nothing.
+TERRAFORM_PATIENCE_HOURS = 24 * 7
+
 # Standards of play -- how often this opponent thinks, how many yards it runs,
 # how far it scouts, how bold it is about terraforming and how thin it lets its
 # reserves run -- all live on its :class:`~galaxysim.ai.doctrine.Doctrine`, which
@@ -949,10 +955,22 @@ def _maybe_terraform(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     # why a world took four months even once projects were affordable: a full
     # transformation is fourteen of them, so a civ running them in sequence
     # waits on its own queue rather than on its industry.
-    running = pending.get(IntentKind.TERRAFORM.value, [])
+    queued = pending.get(IntentKind.TERRAFORM.value, [])
+    # A campaign is one that is *happening*. Counting orders that have never
+    # started against the limit is how a civilization stopped terraforming
+    # altogether: measured, fifteen of fifteen live orders had never begun,
+    # waiting a median of thirty-two days and up to forty-nine for materials
+    # nobody had. Two of those permanently filled a driven opponent's two slots,
+    # so it could not begin a project on a world it could have paid for that
+    # afternoon. A queued order standing in for an active campaign -- the same
+    # substitution as free colony pods and alphabetical refining priorities.
+    running = [
+        intent for intent in queued if intent.status == IntentStatus.IN_PROGRESS.value
+    ]
+    _abandon_unfundable(turn, queued)
     if len(running) >= max(1, turn.doctrine.terraform_campaigns):
         return
-    under_way = {intent.payload.get("colony_id") for intent in running}
+    under_way = {intent.payload.get("colony_id") for intent in queued}
 
     colonies = turn.colonies
     for colony in colonies:
@@ -995,6 +1013,30 @@ def _maybe_terraform(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
 
         intents.terraform(session, civ, colony.id, step)
         return
+
+
+def _abandon_unfundable(turn: "_Turn", queued: list[Intent]) -> None:
+    """Give up on a terraforming order the empire has never been able to pay for.
+
+    Not impatience -- a project is meant to be waited for, and one that starts a
+    week late is a project that started. This is about an order that will *never*
+    start: the ones measured here had been queued for a month and a half against
+    materials the civilization held none of anywhere, and they were still sitting
+    there at the end of the run.
+
+    Letting go is what makes the empty slot mean something. The world is not lost
+    -- nothing about it changed, it is still on the list, and the moment the
+    warehouses can cover the bill the same order is placed again. What is gained
+    is that in the meantime the civilization is allowed to reshape somewhere it
+    *can* afford, instead of standing still holding a receipt.
+    """
+    session = turn.session
+    for intent in queued:
+        if intent.status != IntentStatus.QUEUED.value:
+            continue
+        if turn.universe.tick_number - intent.queued_tick < TERRAFORM_PATIENCE_HOURS:
+            continue
+        intents.cancel(session, intent)
 
 
 def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
