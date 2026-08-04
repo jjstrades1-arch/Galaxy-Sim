@@ -731,17 +731,34 @@ Measured across a 120-day run of eight Driven civs:
 
 ```
 day        10    30    60    90   120
-colonies   21    50    90   124   157
+colonies   23    49    95   138   171
 worlds ≥ 0.4 habitability:  8 → 37
-population:              88 B → 561 B
+population:              88 B → 510 B
+buildings finished over the run:      1,957
+terraforming projects finished:         365
 ```
 
 Population is the interesting column. It was frozen near 11.37 B per civ in
 every run at every setting for most of this project's life, and what moved it
 was not shipyards — it was worlds becoming places people can live. A terraformed
-world holds billions where a dead one holds a few hundred thousand, and once one
-converts it becomes the industry that converts its neighbours. The compounding
-turns on habitability, which contradicted the expectation going in.
+world holds billions where a dead one holds a few hundred thousand. The
+compounding turns on habitability, which contradicted the expectation going in.
+
+**This file used to add "and once one converts it becomes the industry that
+converts its neighbours", and that part was simply false.** A converted world
+became twenty-five billion people and six factories — measured, the single most
+populous world in a 60-day run had six industry levels against a capital's two
+thousand, and sat on eleven million tonnes of iron it could not turn into steel.
+Both causes are fixed below, and the same worlds now reach twenty-six to
+forty-eight levels: no colony over five billion people is still in single digits,
+where three of the top eight were. Finished buildings across a 120-day run went
+from 625 to 1,957.
+
+It is still not the whole claim. A homeworld is *seeded* at roughly two thousand
+levels by `bootstrap._prepare_homeworld`; everything else starts at zero and
+climbs. Fifty-fold is a lot better than four-hundred-fold, and whether a settled
+world should be able to approach a seeded one at all is a live balance question
+rather than a defect — see the tuning gaps below.
 
 ## Known tuning gaps
 
@@ -763,6 +780,17 @@ turns on habitability, which contradicted the expectation going in.
   rebuilds instead. Over 120 days: seven wars declared, six of them ended, four
   worlds changed hands, and two civilizations fought three and four wars each.
   What is missing is reinforcement, not resolution.
+- **A settled world cannot catch a seeded one, and nobody has decided whether it
+  should.** `bootstrap._prepare_homeworld` gives a capital `STARTING_DEVELOPMENT`
+  of its world's ceiling — about two thousand industry levels — while every world
+  founded or terraformed afterwards starts at zero. Now that governors build
+  properly, a converted garden world reaches twenty-six to forty-eight levels
+  over 120 days. That is a real economy rather than an inert one, and it is still
+  fifty times behind the world its civilization started on, which means an empire
+  remains its capital for as long as anyone has watched. Whether that is the
+  intended shape — expansion buying *population* while the capital stays the
+  workshop — or a number that wants lowering is the most interesting open
+  question in the economy, and it is a play-session question rather than a sweep.
 - **A capital cannot generate what it demands, and that is now a real question
   rather than a bug.** Two defects were hiding this: governors could not build at
   all, and the brownout rule abandoned any plant it could not immediately afford.
@@ -791,6 +819,18 @@ Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
 
+- **The best world in the game had six factories.** A governor stopped walking
+  its build order at the first entry it could not pay for — right while a colony
+  is *accumulating*, and nothing checked whether it was. A terraformed garden of
+  24.8 billion people with room for 7,122 industry levels had six, waiting on a
+  factory priced at 1.62 million tonnes of steel while holding 777 thousand, with
+  a mine and a refinery at thirty thousand each going unbuilt every tick for two
+  months. It could not earn its way out either: the industry build order had no
+  refinery in it, so the one policy dedicated to being an empire's workshop was
+  the only one that could never turn its own ore into the material every entry on
+  its list is priced in. Same species as the power order above, one level up — a
+  ranked list treated as a queue when its entries are not independent. Skipping
+  what it cannot afford makes both paths one rule instead of two.
 - **Every colony built one thing and then stopped, for ever.** Nothing completed
   a `build_structure` order — the resolver charged for it, laid the foundations,
   marked it in progress, and that was the last thing that ever happened to it.
