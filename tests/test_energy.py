@@ -33,7 +33,7 @@ from galaxysim.engine.resolvers.production import (
     industry_output,
 )
 from galaxysim.engine.tick import run_ticks
-from galaxysim.materials import DEUTERIUM, FISSILES, HELIUM3
+from galaxysim.materials import DEUTERIUM, FISSILES, HELIUM3, can_afford
 from galaxysim.model.base import open_session
 from galaxysim.model.entities import Building, Colony, Event, Universe, World
 from galaxysim.colony.labor import normalize
@@ -432,3 +432,61 @@ def test_a_governor_builds_power_before_whatever_its_policy_wanted(engine):
         )
         # And not a solar array on a world with no sun.
         assert "solar_array" not in ordered
+
+
+def test_a_governor_takes_the_reactor_it_can_pay_for(engine):
+    """The power order is a set of alternatives, not a ranking of preferences.
+
+    A policy order ranks things that do different jobs, so stopping at the first
+    one a colony cannot afford is right -- saving up for the mine it wants beats
+    always building the cheapest shed. The power order is not like that. Fusion,
+    fission, ground heat and sunlight are four ways to buy the same commodity,
+    and abandoning the list at the dearest one leaves a colony sitting in the
+    dark beside a plant it could pay for today.
+
+    Measured on the four capitals still browning out after construction orders
+    were fixed: every one could afford a geothermal plant, and every one was
+    stopping at a fusion plant twenty levels deep.
+    """
+    universe_id = new_universe(
+        engine, seed=7305, civs=("Terrans",), seconds_per_tick=3600
+    )
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = home_colony(session, civ)
+        intents.set_management(session, colony, governed=True, policy="extraction")
+        colony.world.stellar_flux = 0.0
+        colony.world.tectonic_activity = 0.9  # a live world: ground heat works here
+        for building in list(colony.buildings):
+            if building_type(building.kind).generation:
+                session.delete(building)
+        session.flush()
+
+        # Exactly enough for the cheapest route and nowhere near the dearest,
+        # which is the shape a developed capital is actually in.
+        geothermal = cost_of_level(building_type("geothermal_plant").cost, 1)
+        colony.stockpile = {m: t * 1.5 for m, t in geothermal.items()}
+        assert not can_afford(
+            colony.stockpile, cost_of_level(building_type("fusion_plant").cost, 1)
+        ), "the fixture needs the head of the power order to be out of reach"
+        # The governor resolves before production, so what it reacts to is the
+        # stored figure from last tick -- which on a fresh colony reads 1.0.
+        # Set it, or the first tick is spent discovering the brownout rather
+        # than deciding what to do about it.
+        colony.power_satisfaction = 0.5
+        colony_id = colony.id
+
+    # One tick, deliberately. A capital refines fast enough to afford a fusion
+    # plant within a few hours, and then this would pass whether or not the
+    # fall-through exists. The question is what it reaches for on the tick where
+    # ground heat is the only thing it can pay for.
+    run_ticks(engine, universe_id, 1)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        built = [b.kind for b in colony.buildings if building_type(b.kind).generation]
+        assert "geothermal_plant" in built, (
+            "it could not afford a fusion plant and stopped, rather than taking "
+            f"the ground heat it could pay for; generation built: {built}"
+        )

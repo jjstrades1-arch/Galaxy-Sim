@@ -353,6 +353,8 @@ def _maybe_build(
         # Nothing else this colony could queue is worth as much as ending the
         # brownout, so this jumps the queue rather than joining it.
         order = _worthwhile_power(colony)
+        # And these are *alternatives*, not preferences -- see the loop below.
+        interchangeable = True
     elif pending_kinds:
         return  # already building something, and the lights are on
     else:
@@ -360,15 +362,25 @@ def _maybe_build(
         order = _BUILD_ORDER[policy]
         if effective_habitability(colony, effects_for(ctx, colony)) < HOSTILE_THRESHOLD:
             order = _BUILD_ORDER[SURVIVAL] + order
+        interchangeable = False
 
     for kind in order:
         spec = BUILDING_TYPES_BY_KIND[kind]
         level = existing.get(kind, 0) + 1
         if not can_afford(colony.stockpile, cost_of_level(spec.cost, level)):
-            # Cannot pay for this one yet. Stop rather than skipping ahead --
-            # saving up for the thing the policy wants most beats always
-            # building the cheapest thing available.
-            return
+            if not interchangeable:
+                # A policy order is a ranking of things that do *different*
+                # jobs, so saving up for the mine it actually wants beats
+                # always building the cheapest shed available.
+                return
+            # A power order is not. Fusion, fission, ground heat and sunlight
+            # are four ways to buy the same commodity, and stopping at the
+            # dearest one a colony cannot afford yet leaves it sitting in the
+            # dark next to a plant it could pay for today. Measured on the four
+            # capitals still browning out after construction orders were fixed:
+            # every one of them could afford a geothermal plant, and every one
+            # of them was stopping at a fusion plant twenty levels deep.
+            continue
         intents.build_structure(ctx.session, civ, colony.id, kind)
         ctx.log(
             "governor_building",

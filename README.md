@@ -763,6 +763,17 @@ turns on habitability, which contradicted the expectation going in.
   rebuilds instead. Over 120 days: seven wars declared, six of them ended, four
   worlds changed hands, and two civilizations fought three and four wars each.
   What is missing is reinforcement, not resolution.
+- **A capital cannot generate what it demands, and that is now a real question
+  rather than a bug.** Two defects were hiding this: governors could not build at
+  all, and the brownout rule abandoned any plant it could not immediately afford.
+  Both are fixed, three of the eight capitals recovered on their own — and four
+  still sit between 0.56 and 0.77 power at day 60. Demand scales with industrial
+  *output*, which grows with every level of every industry; generation grows only
+  with levels of plant, and the quadratic cost curve bites hardest exactly where
+  demand is highest. So a developed capital has to build its grid several times
+  deeper than the rest of its stack. That may well be the intended pressure — it
+  is what makes power a decision — but the number has never been chosen on
+  purpose, and it wants a play session rather than another sweep.
 - **Nobody has played a core start for long.** Neighbours a fraction of a
   light-year apart is a very different game, and the difference is still
   arithmetic rather than a session.
@@ -790,8 +801,19 @@ from the inside.
   capital's fusion plant was ordered on tick 1, completed on tick 2, and was
   still holding the only build slot fourteen hundred ticks later. That is why
   every homeworld in every soak ran at half power for the whole game: it could
-  never build another reactor. Sixteen buildings became **144**, and two of the
-  six brownout capitals came back to full power on their own.
+  never build another reactor. Sixteen buildings became **144**, and three of
+  the six brownout capitals came back to full power on their own.
+- **The brownout rule abandoned the plant it could afford.** Below the power
+  threshold a governor drops its policy and builds generation, walking
+  `fusion → fission → geothermal → solar` and stopping at the first thing it
+  cannot pay for. That stop is right for a *policy* order, where the entries do
+  different jobs and saving up for the mine you want beats building the cheapest
+  shed. It is wrong here: those four are four ways to buy the same commodity, so
+  stopping at the dearest one leaves a colony in the dark beside a plant it could
+  pay for today. Every one of the four capitals still browning out could afford a
+  geothermal plant and was stopping at a fusion plant twenty levels deep. A
+  preference standing in for a set of alternatives — the same species of bug as
+  the rest of this list.
 - **Half the event log was one sentence.** A brownout is a condition that lasts,
   and it was logged every tick it lasted — 8,506 of 19,907 events in a sixty-day
   soak were eight homeworlds each writing "still at 50% power" fourteen hundred
