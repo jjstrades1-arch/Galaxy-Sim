@@ -292,3 +292,74 @@ def sorted_by_distance(
     if within_ly is None:
         return ordered
     return [c for c in ordered if distance(position, c.world.system.position) <= within_ly]
+
+
+def visible_rivals(systems: list[StarSystem], civ_id: int) -> list[Colony]:
+    """Colonies belonging to somebody else, in systems anybody has charted.
+
+    **The one definition of what a civilization can see of its neighbours**, and
+    it exists because for a while the two sides of the game did not agree.
+
+    The AI walks the charted systems with each world's owner attached, so it has
+    always known who holds what -- and once it started choosing targets by the
+    fleet strength standing over them, it was reading a picture the interface
+    could not show a player at all. No difficulty setting granted that; the guard
+    in ``tests/test_ai.py`` did not catch it, because it checks what a doctrine
+    may contain and whether the survey is read. The asymmetry was in what the
+    *other* side had never been given.
+
+    Charted means "somebody has been there", which is the same simplification the
+    star charts have always run on: a system exists as a row once a ship has
+    arrived, and the row is what either side reads. Ownership and a fleet's
+    position are things anyone standing in the system can see. Anything past
+    that -- what a rival holds in its warehouses, what it is researching, what it
+    means to do next -- is not here and should not arrive here.
+    """
+    return sorted(
+        (
+            world.colony
+            for system in systems
+            for world in system.worlds
+            if world.colony is not None and world.colony.civ_id != civ_id
+        ),
+        key=lambda colony: colony.id,
+    )
+
+
+def strength_at(garrisons, where: Vec3, civ_id: int, within_ly: float) -> float:
+    """Fleet strength a given civilization has standing near ``where``.
+
+    ``garrisons`` is ``(position, civ_id, strength)`` triples -- read once and
+    passed in, because both callers already hold the list and neither wants a
+    query per system.
+    """
+    return sum(
+        strength
+        for position, owner, strength in garrisons
+        if owner == civ_id and distance(position, where) <= within_ly
+    )
+
+
+def charted_systems(session: Session, universe_id: int) -> list[StarSystem]:
+    """Every system anybody has visited, with its worlds and their owners.
+
+    Eager-loaded down to ``World.colony`` because every caller walks it asking
+    who holds what, and left lazy that is two round trips per system across the
+    whole charted galaxy -- which by the second week is hundreds of systems.
+
+    The survey is deferred. It is the largest document in the game and nothing
+    reading star charts needs it; everything they do need is a promoted column
+    beside it.
+    """
+    return list(
+        session.scalars(
+            select(StarSystem)
+            .where(StarSystem.universe_id == universe_id)
+            .options(
+                selectinload(StarSystem.worlds)
+                .defer(World.survey)
+                .selectinload(World.colony)
+            )
+            .order_by(StarSystem.id)
+        )
+    )

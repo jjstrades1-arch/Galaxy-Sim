@@ -60,6 +60,7 @@ from galaxysim.core.space import Vec3, distance
 from galaxysim.engine import intents
 from galaxysim.engine.rates import DEFAULT_RATES, Cadence
 from galaxysim.engine.resolvers import queries, siege
+from galaxysim.engine.resolvers.siege import BLOCKADE_RANGE_LY
 from galaxysim.engine.resolvers.governor import POLICIES
 from galaxysim.engine.resolvers.production import colony_effects, effective_habitability
 from galaxysim.cli.survey_view import format_count
@@ -248,6 +249,19 @@ def status() -> None:
                 )
             console.print(table)
 
+        # Who you are fighting, in either direction. A standing attack order is
+        # the entire mechanical surface of "we are at war" and nothing displayed
+        # it -- a player could be invaded without the game ever saying by whom.
+        wars = _wars(session, universe, civ)
+        if wars:
+            names = ", ".join(
+                sorted(
+                    (session.get(Civ, other).name if session.get(Civ, other) else f"civ {other}")
+                    for other in wars
+                )
+            )
+            console.print(f"[red]At war with: {names}[/red]")
+
         # Loud and above the fleet list, because a blockade is the one thing in
         # this readout that is actively killing a colony while its owner reads.
         for besieged in (c for c in colonies if c.blockaded):
@@ -298,12 +312,27 @@ def systems(
         ).all()
         rows.sort(key=lambda s: (distance(origin, s.position), s.id))
 
+        names = {c.id: c.name for c in session.scalars(
+            select(Civ).where(Civ.universe_id == universe.id)
+        )}
+
         table = Table("id", "system", "class", "ly away", "worlds", title="Known systems")
         for system in rows[:limit]:
             worlds = sorted(system.worlds, key=lambda w: w.id)
             summary = ", ".join(
-                f"[{'green' if w.colony is None else 'yellow'}]{w.id}:{w.world_type}"
-                f"{'' if w.habitability > 0 else '*'}[/]"
+                f"[{'green' if w.colony is None else 'cyan' if w.colony.civ_id == civ.id else 'yellow'}]"
+                f"{w.id}:{w.world_type}"
+                f"{'' if w.habitability > 0 else '*'}"
+                # Settled by *whom*. A colour said a world was taken and stopped
+                # there, which is the one thing about it a player most needs.
+                + (
+                    ""
+                    if w.colony is None
+                    else " (yours)"
+                    if w.colony.civ_id == civ.id
+                    else f" ({names.get(w.colony.civ_id, '?')})"
+                )
+                + "[/]"
                 for w in worlds
             )
             table.add_row(
@@ -525,8 +554,21 @@ def planet(world_id: int = typer.Argument(..., help="World to survey.")) -> None
             world.system.discovered_tick,
         )
         if world.colony is not None:
+            # Whose it is, not merely that it is somebody's. The AI has always
+            # read the owner off the star charts; naming it here is what lets a
+            # player answer the same question -- and find the id that
+            # ``galaxysim attack`` wants.
+            owner = session.get(Civ, world.colony.civ_id)
+            player = _require_player(session, universe)
+            whose = (
+                "yours"
+                if world.colony.civ_id == player.id
+                else f"[yellow]{owner.name}[/yellow] (civ {owner.id})"
+                if owner
+                else "unknown"
+            )
             console.print(
-                f"[dim]Settled: {world.colony.name}, "
+                f"[dim]Settled: {world.colony.name} - {whose}, "
                 f"population {format_count(world.colony.population)}[/dim]"
             )
         # Whether this world could ever be made somewhere people live, which is
@@ -1072,6 +1114,101 @@ def research() -> None:
         civ = _require_player(session, universe)
         intents.research(session, civ)
         console.print("[green]Research programme underway.[/green]")
+
+
+@app.command()
+def civs() -> None:
+    """Who else is out there, and what you can see of them.
+
+    Exactly what the AI opponent reads about you -- and that symmetry is the
+    point rather than a nicety. The AI has always walked the star charts with
+    each world's owner attached, and it now picks the worlds it attacks by the
+    fleet strength standing over them. None of that was visible from this side:
+    ``attack`` wanted a civilization id and nothing in the game would tell you
+    one, so the whole of conflict was unreachable by a player while the opponent
+    used it freely.
+
+    Ownership and where ships are standing is what anybody in a system can see.
+    What a rival holds in its warehouses, what it is researching and what it
+    intends are not here, and should not arrive here.
+    """
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+
+        charted = queries.charted_systems(session, universe.id)
+        rivals = queries.visible_rivals(charted, civ.id)
+        if not rivals:
+            console.print(
+                "[dim]Nobody else has been found yet. Scout further out.[/dim]"
+            )
+            return
+
+        home = session.scalar(
+            select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
+        )
+        origin = home.world.system.position if home else Vec3(0.0, 0.0, 0.0)
+        garrisons = [
+            (fleet.position, fleet.civ_id, fleet.strength)
+            for fleet in queries.fleets(session, universe.id)
+            if not fleet.in_transit and fleet.strength > 0
+        ]
+        wars = _wars(session, universe, civ)
+
+        seen: dict[int, list[Colony]] = {}
+        for colony in rivals:
+            seen.setdefault(colony.civ_id, []).append(colony)
+
+        table = Table(
+            "id", "civilization", "colonies seen", "nearest", "fleets seen", "standing",
+            title="Known civilizations",
+        )
+        for civ_id, colonies in sorted(seen.items()):
+            them = session.get(Civ, civ_id)
+            nearest = min(
+                colonies, key=lambda c: distance(origin, c.world.system.position)
+            )
+            gap = distance(origin, nearest.world.system.position)
+            strength = sum(
+                queries.strength_at(
+                    garrisons, c.world.system.position, civ_id, BLOCKADE_RANGE_LY
+                )
+                for c in colonies
+            )
+            standing = "[red]at war[/red]" if civ_id in wars else "no quarrel"
+            table.add_row(
+                str(civ_id),
+                them.name if them else f"civ {civ_id}",
+                str(len(colonies)),
+                f"{nearest.name} ({gap:.1f} ly)",
+                f"{strength:.0f}",
+                standing,
+            )
+        console.print(table)
+        console.print(
+            "[dim]Only what you could see: systems somebody has visited, and "
+            "ships standing in them. Use the id with [bold]galaxysim attack[/bold]."
+            "[/dim]"
+        )
+
+
+def _wars(session, universe, civ) -> set[int]:
+    """Civilizations you have declared on, and any who have declared on you.
+
+    A standing attack order is the entire mechanical surface of "we are at war",
+    and until now nothing displayed it in either direction -- a player could be
+    invaded without the interface ever saying by whom.
+    """
+    from galaxysim.model.entities import IntentKind
+
+    at_war: set[int] = set()
+    for intent in queries.active_intents(session, universe.id, IntentKind.ATTACK.value):
+        target = intent.payload.get("target_civ_id")
+        if intent.civ_id == civ.id and isinstance(target, int):
+            at_war.add(target)
+        elif target == civ.id:
+            at_war.add(intent.civ_id)
+    return at_war
 
 
 @app.command()

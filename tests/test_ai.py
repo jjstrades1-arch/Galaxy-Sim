@@ -108,15 +108,35 @@ def test_the_ai_reads_nothing_a_player_could_not_see():
     import inspect
     import re
 
+    from sqlalchemy import inspect as sa_inspect
+
+    from galaxysim.engine.resolvers import queries
+    from galaxysim.model.entities import World
+
     source = inspect.getsource(simple)
 
-    # It must explicitly decline to load the document...
-    assert "defer(World.survey)" in source, (
-        "the AI's star-chart query should defer the survey; it is the largest "
-        "JSON object in the game and it is loaded once per world"
-    )
-    # ...and never actually read one. Anything of the form `x.survey` that is
-    # not the deferral itself is a read.
+    # The document must genuinely not be loaded -- asked of the query rather
+    # than of the source that calls it.
+    #
+    # This used to grep the AI module for ``defer(World.survey)``, which stopped
+    # meaning anything the moment the star-chart query moved into
+    # ``queries.charted_systems`` to be shared with the interface: the deferral
+    # was still there and still working, and the guard would have failed anyway.
+    # A test that watches for a spelling rather than a fact is the same mistake
+    # this codebase keeps finding in itself.
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=99, civs=("A",), seconds_per_tick=3600)
+    with open_session(engine) as session:
+        charted = queries.charted_systems(session, universe_id)
+        loaded = [w for system in charted for w in system.worlds]
+        assert loaded, "the fixture charted no worlds"
+        assert all("survey" in sa_inspect(w).unloaded for w in loaded), (
+            "the star-chart query is loading the survey document; it is the "
+            "largest JSON object in the game and it loads once per world"
+        )
+
+    # ...and the AI never reads one either. Anything of the form `x.survey` that
+    # is not a deferral is a read.
     reads = [
         match.group(0)
         for match in re.finditer(r"\b\w+\.survey\b", source)
@@ -602,3 +622,43 @@ def test_it_still_attacks_a_world_it_can_take():
         session.flush()
         wars = _declared_wars(session, raider_id)
         assert wars and wars[0].payload["target_civ_id"] == rival_id
+
+
+def test_the_player_and_the_opponent_see_the_same_galaxy():
+    """The rule this whole module opens with, checked instead of asserted.
+
+    "Reads only what a human could read" was not true for a while, and no test
+    caught it. The guard above checks what a doctrine may *contain* and whether
+    the survey is read — both about things the AI might be handed. This
+    asymmetry was the opposite shape: the AI walked the star charts with every
+    world's owner attached and every fleet's position and strength, and the
+    interface had no way to show a player any of it. Nothing was granted; the
+    other side was simply never given the same view.
+
+    So both now read one function, and this is what says they still do.
+    """
+    from galaxysim.ai.simple import _Turn
+    from galaxysim.engine.resolvers import queries
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(
+        engine, seed=8080, civs=("Player", "AI-1", "AI-2"), seconds_per_tick=3600
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        opponent = civ_by_name(session, universe_id, "AI-1")
+        opponent.is_ai = True
+        session.flush()
+
+        turn = _Turn(session, universe, opponent)
+        # What the opponent walks when it goes looking for somewhere to attack.
+        theirs = {c.id for c in queries.visible_rivals(turn.systems, opponent.id)}
+        # What the interface offers a player standing in the same galaxy.
+        charted = queries.charted_systems(session, universe_id)
+        mine = {c.id for c in queries.visible_rivals(charted, opponent.id)}
+
+        assert theirs == mine, (
+            "the opponent and the interface are looking at different galaxies; "
+            "whichever one sees more is playing with privileged information"
+        )
+        assert theirs, "the fixture needs a rival colony to be visible at all"

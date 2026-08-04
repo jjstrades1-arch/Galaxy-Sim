@@ -23,7 +23,7 @@ of gifts.
 from __future__ import annotations
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from galaxysim.ai.doctrine import doctrine as doctrine_for
 from galaxysim.colony.expedition import Loadout
@@ -238,17 +238,8 @@ class _Turn:
         did, and it got worse precisely as exploration succeeded.
         """
         if "systems" not in self._shared:
-            self._shared["systems"] = list(
-                self.session.scalars(
-                    select(StarSystem)
-                    .where(StarSystem.universe_id == self.universe.id)
-                    .options(
-                        selectinload(StarSystem.worlds)
-                        .defer(World.survey)
-                        .selectinload(World.colony)
-                    )
-                    .order_by(StarSystem.id)
-                )
+            self._shared["systems"] = queries.charted_systems(
+                self.session, self.universe.id
             )
         return self._shared["systems"]
 
@@ -720,11 +711,7 @@ def _defenders(turn: "_Turn", where: Vec3, owner: int) -> float:
     not defending anything, and counting it would talk this opponent out of
     attacks it would have won.
     """
-    return sum(
-        strength
-        for position, civ_id, strength in turn.garrisons
-        if civ_id == owner and distance(position, where) <= BLOCKADE_RANGE_LY
-    )
+    return queries.strength_at(turn.garrisons, where, owner, BLOCKADE_RANGE_LY)
 
 
 def _besieging(turn: "_Turn", pending: dict[str, list[Intent]]) -> set[int]:
@@ -744,10 +731,9 @@ def _besieging(turn: "_Turn", pending: dict[str, list[Intent]]) -> set[int]:
         return set()
 
     besieged = [
-        system.position
-        for system in turn.systems
-        for world in system.worlds
-        if world.colony is not None and world.colony.civ_id in at_war
+        colony.world.system.position
+        for colony in queries.visible_rivals(turn.systems, turn.civ.id)
+        if colony.civ_id in at_war
     ]
     if not besieged:
         return set()
@@ -851,13 +837,13 @@ def _raidable_colony(turn: "_Turn", committing: float) -> Colony | None:
     playing the game rather than one reading the database.
     """
     ceiling = turn.doctrine.raid_population_ceiling
+    # The shared definition of what this civilization can see of its
+    # neighbours, so the opponent and the player are looking at one picture
+    # rather than two that have to be kept in step by hand.
     candidates = [
-        (system.position, world.colony)
-        for system in turn.systems
-        for world in system.worlds
-        if world.colony is not None
-        and world.colony.civ_id != turn.civ.id
-        and world.colony.population <= ceiling
+        (colony.world.system.position, colony)
+        for colony in queries.visible_rivals(turn.systems, turn.civ.id)
+        if colony.population <= ceiling
     ]
     if not candidates:
         return None

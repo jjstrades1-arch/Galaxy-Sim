@@ -19,7 +19,7 @@ from typer.testing import CliRunner
 from galaxysim.cli.main import app
 from galaxysim.materials.catalogue import ALLOYS, ELECTRONICS, STEEL
 from galaxysim.model.base import create_engine_for, open_session
-from galaxysim.model.entities import Colony, Universe, World
+from galaxysim.model.entities import Civ, Colony, Universe, World
 from galaxysim.terraform.projects import project as project_spec
 from tests.conftest import civ_by_name, home_colony
 
@@ -167,3 +167,50 @@ def test_an_order_in_progress_reports_how_far_along_it_is(game):
 
     output = _run(runner, "orders")
     assert "days left" in output or "% done" in output, output
+
+
+def test_a_player_can_find_out_who_else_is_out_there_and_fight_them(game):
+    """Conflict was unreachable from this side of the game.
+
+    ``attack`` takes a civilization id and nothing in the interface would tell
+    you one -- while the AI, reading the same star charts, has always known who
+    owns what and now picks its targets by the fleet strength standing over
+    them. That asymmetry was not granted by any difficulty setting; it was in
+    what the other side had never been given.
+    """
+    runner, engine = game
+
+    listing = _run(runner, "civs")
+    assert "AI-1" in listing, listing
+
+    with open_session(engine) as session:
+        universe = session.scalar(select(Universe))
+        rival = session.scalar(
+            select(Civ).where(Civ.universe_id == universe.id, Civ.is_ai.is_(True))
+        )
+        rival_id, rival_name = rival.id, rival.name
+
+    # The id the listing shows is the id the order takes.
+    assert str(rival_id) in listing, listing
+    _run(runner, "attack", str(rival_id))
+
+    # And once declared, the game says so -- in either direction, which it
+    # never did before: a player could be invaded and never be told by whom.
+    assert rival_name in _run(runner, "status")
+
+
+def test_a_settled_world_says_whose_it_is(game):
+    """A colour said "taken" and stopped, which is the one thing you need."""
+    runner, engine = game
+    with open_session(engine) as session:
+        universe = session.scalar(select(Universe))
+        rival = session.scalar(
+            select(Civ).where(Civ.universe_id == universe.id, Civ.is_ai.is_(True))
+        )
+        world_id = session.scalar(
+            select(Colony).where(Colony.civ_id == rival.id).order_by(Colony.id)
+        ).world_id
+        rival_name = rival.name
+
+    assert rival_name in _run(runner, "planet", str(world_id))
+    assert rival_name in _run(runner, "systems", "--limit", "60")
