@@ -755,11 +755,39 @@ forty-eight levels: no colony over five billion people is still in single digits
 where three of the top eight were. Finished buildings across a 120-day run went
 from 625 to 1,957.
 
-It is still not the whole claim. A homeworld is *seeded* at roughly two thousand
-levels by `bootstrap._prepare_homeworld`; everything else starts at zero and
-climbs. Fifty-fold is a lot better than four-hundred-fold, and whether a settled
-world should be able to approach a seeded one at all is a live balance question
-rather than a defect — see the tuning gaps below.
+**An empire is its capital, and then slowly stops being.** `galaxysim empire`
+exists to show this and it is the sharpest number in the game. A homeworld is
+*seeded* at 55% of its world's ceiling by `bootstrap._prepare_homeworld` —
+around two thousand industry levels — while everything settled or terraformed
+afterwards starts at zero. At day 30 the capital is **99.975%** of its
+civilization's industry: the next largest colony, with 135 million people,
+makes 1,410 units an hour against the capital's 10.2 million. That is not the
+readout rounding. It is a factor of seven thousand.
+
+Then it turns. The capital's share goes **100% → 91% → 83%** across days 30, 60
+and 120 as terraformed worlds come online, so expansion does eventually buy
+industry — it just buys population for two months first, and the compounding
+starts on the far side of the first converted world.
+
+That shape is deliberate now rather than merely observed. `STARTING_DEVELOPMENT`
+is the lever, and lowering it was measured over 120 days:
+
+```
+opening development     0.55     0.35     0.20
+capital share, day 60    91%      97%     100%
+capital share, day 120   83%      73%      75%
+colonies, day 120        171      139       92
+worlds ≥ 0.4 hab          37       32       25
+population            510 B    454 B    366 B
+```
+
+Weakening the opening does not decentralise the empire, it shrinks it. The
+capital is what builds the colony pods, so taking industry off it costs 46% of
+the colonies and 28% of the population by day 120 and buys eight points of
+capital share — and at 0.20 the share is *worse* at day 120 than at 0.35, since
+the empire never got large enough to convert worlds. **0.55 stays**, and the
+opening being a one-world economy is the intended arc rather than a number
+waiting to be tuned.
 
 ## Known tuning gaps
 
@@ -781,17 +809,6 @@ rather than a defect — see the tuning gaps below.
   rebuilds instead. Over 120 days: seven wars declared, six of them ended, four
   worlds changed hands, and two civilizations fought three and four wars each.
   What is missing is reinforcement, not resolution.
-- **A settled world cannot catch a seeded one, and nobody has decided whether it
-  should.** `bootstrap._prepare_homeworld` gives a capital `STARTING_DEVELOPMENT`
-  of its world's ceiling — about two thousand industry levels — while every world
-  founded or terraformed afterwards starts at zero. Now that governors build
-  properly, a converted garden world reaches twenty-six to forty-eight levels
-  over 120 days. That is a real economy rather than an inert one, and it is still
-  fifty times behind the world its civilization started on, which means an empire
-  remains its capital for as long as anyone has watched. Whether that is the
-  intended shape — expansion buying *population* while the capital stays the
-  workshop — or a number that wants lowering is the most interesting open
-  question in the economy, and it is a play-session question rather than a sweep.
 - **A capital cannot generate what it demands, and that is now a real question
   rather than a bug.** Two defects were hiding this: governors could not build at
   all, and the brownout rule abandoned any plant it could not immediately afford.
