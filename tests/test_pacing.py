@@ -14,10 +14,10 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from galaxysim.colony.labor import balanced_allocation
+from galaxysim.colony.labor import INDUSTRY, balanced_allocation
 from galaxysim.colony.population import capacity
 from galaxysim.engine import intents
-from galaxysim.materials import IRON, MATERIALS, STEEL
+from galaxysim.materials import HELIUM3, IRON, MATERIALS, STEEL
 from galaxysim.engine.rates import CADENCE_FIVE_MINUTE, CADENCE_HOURLY, DEFAULT_RATES, Cadence
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
@@ -78,6 +78,64 @@ def test_growth_is_equivalent_across_cadences():
         assert fine[key] == pytest.approx(coarse[key], rel=0.05), (
             f"{key} diverged across cadences: {fine[key]} vs {coarse[key]}. "
             "Something is almost certainly authored per tick instead of per hour."
+        )
+
+
+def _power_after_hours(seconds_per_tick: int, hours: int, seed: int = 7301) -> float:
+    """How much power a hard-pressed capital gets, after ``hours`` at a cadence.
+
+    Deliberately not the fixture the test above uses. A *fresh* homeworld is
+    comfortably inside its grid and reads 1.000 at every cadence, which is
+    exactly why the existing pace guard never noticed that power was cadence-
+    dependent. This one puts the whole workforce in the smelters and takes away
+    the sun and the ground heat, so the colony is genuinely short and the
+    arithmetic has something to disagree about.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(
+        engine, seed=seed, civs=("Terrans",), seconds_per_tick=seconds_per_tick
+    )
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = home_colony(session, civ)
+        intents.set_management(session, colony, governed=False)
+        intents.set_labor(session, colony, {INDUSTRY: 1.0})
+        colony.world.stellar_flux = 0.0
+        colony.world.tectonic_activity = 0.0
+        colony.stockpile = {IRON: 1e12, HELIUM3: 1e12}
+        colony_id = colony.id
+
+    run_ticks(engine, universe_id, Cadence(seconds_per_tick).ticks_for_hours(hours))
+
+    with open_session(engine) as session:
+        return session.get(Colony, colony_id).power_satisfaction
+
+
+def test_power_does_not_depend_on_the_tick_rate():
+    """The rule this module is named for, in the one system that broke it.
+
+    ``_run_power`` compared per-*tick* industrial demand and baseline generation
+    against per-*hour* life support, sunlight, ground heat and reactor capacity.
+    At the hourly cadence everything in this project runs at, those coincide and
+    the mixture is invisible; away from it the same world was at 0.496 power in
+    an hourly universe, 1.000 at fifteen minutes and 0.415 at five.
+
+    Power multiplies industry, extraction, refining, construction, shipbuilding
+    and terraforming, so a cadence-dependent brownout makes the cadence set the
+    pace of everything -- which is the precise thing this file exists to forbid.
+    """
+    hourly = _power_after_hours(CADENCE_HOURLY.seconds_per_tick, SIMULATED_HOURS)
+    quarter = _power_after_hours(900, SIMULATED_HOURS)
+    fine = _power_after_hours(CADENCE_FIVE_MINUTE.seconds_per_tick, SIMULATED_HOURS)
+
+    assert hourly < 0.99, (
+        f"the fixture has to actually brown out or this proves nothing (got {hourly})"
+    )
+    for label, value in (("15-minute", quarter), ("5-minute", fine)):
+        assert value == pytest.approx(hourly, rel=0.02), (
+            f"power at a {label} cadence is {value:.3f} but {hourly:.3f} hourly -- "
+            "something in the power arithmetic is authored per tick instead of "
+            "per hour"
         )
 
 

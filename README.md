@@ -664,10 +664,19 @@ Median colonies per AI civ, 8 civs over 28 simulated days:
 ```
 day     4   8  12  16  20  24  28  32  40  48  60
       ────────────────────────────────────────────
-        2   3   4   4   5   6   6   8   8  10  13
+        2   3   4   4   6   6   7   8  10  12  14
 ```
 
-Still rising at the end, which is the point. Every version of this before the
+Still rising at the end, which is the point.
+
+That curve moved once, and the way it moved is worth recording. Fixing the
+construction orders that never closed — see below — put an extra world on the
+board through the middle of the run (day 28 went 6 → 7, about 4.7 days per world
+against 5.1) and then **converged**: 14 colonies at day 60 against 13 before. So
+the effect of letting every governor build again is one world earlier rather than
+a faster game, which is the right shape. It was tempting to price a colony pod up
+by ten percent and put day 28 back to six, and that would have been the exact
+mistake this file keeps documenting: hiding a fixed economy behind a constant. Every version of this before the
 prices were real went flat inside a fortnight, and each time the cause was a
 number that had stopped meaning anything rather than a civilization running out
 of room — a colony pod, most recently, which was an integer nobody charged for,
@@ -736,18 +745,24 @@ turns on habitability, which contradicted the expectation going in.
 
 ## Known tuning gaps
 
-- **Supply routes over-deliver.** A standing route ships its full manifest every
-  trip whether or not the destination needs it, so a well-supplied outpost banks
-  months of surplus. A route that tops up to a target level would be better.
+- **A supply route ships a quantity, not a shortfall.** A standing route carries
+  its full manifest every trip whether or not the destination needs it. This used
+  to say the consequence was outposts banking months of surplus; measured over
+  sixty days and sixty routes, it is not — water at a routed outpost sits between
+  zero and four manifests, several are near empty and one dry world was at
+  nothing. What the manifest cannot do is *respond*, so a thirsty world and a
+  full one get the same delivery. A route that topped up to a level would be
+  better on both ends.
 - **Ships take about twice as long to build.** Refining takes half the industry
   pool, so construction runs at half the rate it did. That is the intended
   shape — ore has to become steel before it can become a hull — but the split is
   a first-pass number that wants a play session, not a spreadsheet.
 - **A war is one raid, and it does not reinforce.** The AI commits a force once,
-  holds the cordon and lands a pod when it can. It will not send a second wave
-  if the first is ground down, and it has no notion of making peace — the attack
-  order stands until somebody cancels it. Of two sieges in a 120-day run, one
-  converted and one lifted.
+  holds the cordon and lands a pod when it can. If that force is ground down it
+  will not send a second wave at the same objective — it stands the war down and
+  rebuilds instead. Over 120 days: seven wars declared, six of them ended, four
+  worlds changed hands, and two civilizations fought three and four wars each.
+  What is missing is reinforcement, not resolution.
 - **Nobody has played a core start for long.** Neighbours a fraction of a
   light-year apart is a very different game, and the difference is still
   arithmetic rather than a session.
@@ -765,6 +780,36 @@ Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
 
+- **Every colony built one thing and then stopped, for ever.** Nothing completed
+  a `build_structure` order — the resolver charged for it, laid the foundations,
+  marked it in progress, and that was the last thing that ever happened to it.
+  The governor decides whether to build by asking whether an order is
+  outstanding, so one order that never closed froze a colony's development
+  permanently. Eighty-five colonies produced **sixteen** buildings in sixty days,
+  all sixteen orders still open with their buildings long finished; the first
+  capital's fusion plant was ordered on tick 1, completed on tick 2, and was
+  still holding the only build slot fourteen hundred ticks later. That is why
+  every homeworld in every soak ran at half power for the whole game: it could
+  never build another reactor. Sixteen buildings became **144**, and two of the
+  six brownout capitals came back to full power on their own.
+- **Half the event log was one sentence.** A brownout is a condition that lasts,
+  and it was logged every tick it lasted — 8,506 of 19,907 events in a sixty-day
+  soak were eight homeworlds each writing "still at 50% power" fourteen hundred
+  times, burying the terraform completions and life-support failures underneath.
+  The log is what an offline player reads to find out what happened, so a
+  standing state is not news; the *edges* are, exactly as a blockade already gave
+  them a "cut" and a "reopened". Fourteen power events over sixty days now, and
+  the most common thing in the log is a ship arriving somewhere.
+- **Power depended on the tick rate.** The demand side mixed per-tick industrial
+  figures with per-hour life support; the generation side mixed a per-tick
+  baseline with per-hour sunlight, ground heat and reactors. At the hourly
+  cadence everything here runs at, the two conventions coincide and the mixture
+  is invisible — the same world was at 0.496 power hourly, 1.000 at fifteen
+  minutes and 0.415 at five. Since power multiplies industry, extraction,
+  refining, construction, shipbuilding and terraforming, the cadence was setting
+  the pace of the entire economy, which is the one thing this design forbids.
+  The pace guard did not catch it because its fixture is a fresh homeworld, and
+  a fresh homeworld never browns out.
 - **"Terraforming has never once run in an actual game."** It runs 370 projects
   in 120 days now and converts 21 worlds past 0.4 habitability, twelve of them
   to 1.000 — a dead rock becoming a world of twenty billion people. Three things

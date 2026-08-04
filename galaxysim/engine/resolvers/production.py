@@ -291,6 +291,12 @@ def effective_habitability(colony: Colony, effects: ColonyEffects) -> float:
     return min(1.0, colony.world.habitability + effects.habitability_offset)
 
 
+#: Satisfaction at or above which a colony counts as fully powered. Short of
+#: 1.0 because satisfaction is a ratio of two floating-point sums and a colony
+#: meeting its demand exactly should not read as browning out.
+FULL_POWER = 0.999
+
+
 #: Cache key under which a colony's power satisfaction is published for the
 #: rest of the tick to read.
 def _power_key(colony_id: int) -> tuple[str, int]:
@@ -330,11 +336,31 @@ def _run_power(
     whether you like it or not -- then fuel is bought only for the shortfall. So
     a world with good sun runs its fusion plants at idle and keeps its helium-3,
     which is the right incentive and nobody had to write it.
+
+    **Everything here is per real hour**, and it has to be said out loud because
+    it was not true. Three of these terms used to be per *tick* -- the two
+    industrial demands and the baseline generation -- while the life-support
+    demand, sunlight, ground heat and reactor capacity were per hour. At the
+    hourly cadence every soak and every test runs at, the two coincide and the
+    mixture is invisible. Away from it, it is not:
+
+    ======  =================  ======
+    s/tick  min satisfaction   median
+    ======  =================  ======
+    3600    0.496              1.000
+    900     1.000              1.000
+    300     0.415              0.454
+    ======  =================  ======
+
+    The same world, the same ten simulated days, at half power in one universe
+    and full in another because of a knob this project calls granularity rather
+    than pace. ``hours`` now appears exactly where a tick genuinely consumes
+    something -- the fuel actually burned -- and nowhere else.
     """
     hours = ctx.cadence.hours_per_tick
     wanted = energy.demand(
-        industry_capacity(ctx, colony),
-        _extraction_capacity(ctx, colony, allocation, effects),
+        industry_capacity_per_hour(ctx, colony),
+        _extraction_capacity_per_hour(ctx, colony, allocation, effects),
         colony.population,
         effective_habitability(colony, effects),
     )
@@ -343,7 +369,7 @@ def _run_power(
         return ctx.remember(_power_key(colony.id), 1.0)
 
     free = (
-        energy.baseline_output(colony.population) * hours
+        energy.baseline_output(colony.population)
         + energy.solar_output(
             effects.generation.get("solar", 0.0), colony.world.stellar_flux
         )
@@ -364,12 +390,29 @@ def _run_power(
         stock[material] = max(0.0, stock.get(material, 0.0) - tonnes)
 
     met = energy.satisfaction(free + fuelled, wanted)
+
+    # The *edge*, not the state. A brownout is a condition that lasts, and
+    # logging a condition every tick is not news -- it is 43% of the event log,
+    # measured: eight homeworlds each writing "still at 50% power" 1,440 times
+    # over a sixty-day soak, burying the 141 terraform completions and the 95
+    # life-support failures a player actually needed to see. What an offline
+    # player needs is the same pair a blockade gives them -- the lights went out,
+    # and later they came back on -- which is why ``Colony.blockaded`` exists and
+    # why this reads the stored satisfaction the same way.
+    was_short = (colony.power_satisfaction or 1.0) < FULL_POWER
     colony.power_satisfaction = round(met, 4)
-    if met < 0.999:
+    if met < FULL_POWER and not was_short:
         ctx.log(
             "power_shortfall",
             f"{colony.name} is running at {met * 100:.0f}% power; "
             "industry and extraction are throttled",
+            civ_id=colony.civ_id,
+            payload={"colony_id": colony.id, "satisfaction": round(met, 4)},
+        )
+    elif met >= FULL_POWER and was_short:
+        ctx.log(
+            "power_restored",
+            f"{colony.name} is back to full power",
             civ_id=colony.civ_id,
             payload={"colony_id": colony.id, "satisfaction": round(met, 4)},
         )
@@ -624,6 +667,30 @@ def _extract(
     )
 
 
+def _extraction_worker_hours_per_hour(
+    ctx: TickContext,
+    colony: Colony,
+    allocation: dict[str, float],
+    effects: ColonyEffects,
+) -> float:
+    """Effective worker-hours of mining per real hour, before power.
+
+    The per-hour figure exists in its own right because power demand is measured
+    against generation, and generation is authored per hour. Handing the *per
+    tick* number to :func:`galaxysim.colony.energy.demand` made a colony's power
+    satisfaction depend on the universe's tick rate -- see :func:`_run_power`.
+    """
+    workers = workers_in(colony.population, allocation, EXTRACTION)
+    if workers <= 0:
+        return 0.0
+    return (
+        ctx.rates.extraction_per_worker_per_hour
+        * workers
+        * productivity_of(ctx, colony)
+        * effects.sector(EXTRACTION)
+    )
+
+
 def _extraction_worker_hours(
     ctx: TickContext,
     colony: Colony,
@@ -631,15 +698,23 @@ def _extraction_worker_hours(
     effects: ColonyEffects,
 ) -> float:
     """Effective worker-hours of mining this tick, before power is considered."""
-    workers = workers_in(colony.population, allocation, EXTRACTION)
-    if workers <= 0:
-        return 0.0
     return ctx.per_tick(
-        ctx.rates.extraction_per_worker_per_hour
-        * workers
-        * productivity_of(ctx, colony)
-        * effects.sector(EXTRACTION)
+        _extraction_worker_hours_per_hour(ctx, colony, allocation, effects)
     )
+
+
+def _extraction_capacity_per_hour(
+    ctx: TickContext,
+    colony: Colony,
+    allocation: dict[str, float],
+    effects: ColonyEffects,
+) -> float:
+    """Tonnes this colony could pull per real hour at full power."""
+    rates = mining_rates(ctx, colony)
+    if not rates:
+        return 0.0
+    hours = _extraction_worker_hours_per_hour(ctx, colony, allocation, effects)
+    return sum(rate * hours * effects.resource(m) for m, rate in rates.items())
 
 
 def _extraction_capacity(
@@ -648,12 +723,10 @@ def _extraction_capacity(
     allocation: dict[str, float],
     effects: ColonyEffects,
 ) -> float:
-    """Tonnes this colony could pull at full power. Drives its power demand."""
-    rates = mining_rates(ctx, colony)
-    if not rates:
-        return 0.0
-    hours = _extraction_worker_hours(ctx, colony, allocation, effects)
-    return sum(rate * hours * effects.resource(m) for m, rate in rates.items())
+    """Tonnes this colony could pull this tick at full power."""
+    return ctx.per_tick(
+        _extraction_capacity_per_hour(ctx, colony, allocation, effects)
+    )
 
 
 def mining_rates(ctx: TickContext, colony: Colony) -> dict[str, float]:
@@ -800,6 +873,25 @@ def construction_output(ctx: TickContext, colony: Colony) -> float:
     return industry_output(ctx, colony) * (1.0 - ctx.rates.refining_share_of_industry)
 
 
+def industry_capacity_per_hour(ctx: TickContext, colony: Colony) -> float:
+    """Industry-work per real hour at full power.
+
+    The per-hour figure, because that is the unit power demand is measured in --
+    generation is authored per hour throughout
+    :mod:`galaxysim.colony.energy`. See :func:`_run_power`.
+    """
+    allocation = normalize(colony.labor)
+    workers = workers_in(colony.population, allocation, INDUSTRY)
+    if workers <= 0:
+        return 0.0
+    return (
+        ctx.rates.industry_per_worker_per_hour
+        * workers
+        * productivity_of(ctx, colony)
+        * effects_for(ctx, colony).sector(INDUSTRY)
+    )
+
+
 def industry_capacity(ctx: TickContext, colony: Colony) -> float:
     """Industry-work this colony could produce this tick with all the power it
     wanted.
@@ -809,16 +901,7 @@ def industry_capacity(ctx: TickContext, colony: Colony) -> float:
     deepened, and a shortage would quietly cure itself by shrinking the load
     that caused it.
     """
-    allocation = normalize(colony.labor)
-    workers = workers_in(colony.population, allocation, INDUSTRY)
-    if workers <= 0:
-        return 0.0
-    return ctx.per_tick(
-        ctx.rates.industry_per_worker_per_hour
-        * workers
-        * productivity_of(ctx, colony)
-        * effects_for(ctx, colony).sector(INDUSTRY)
-    )
+    return ctx.per_tick(industry_capacity_per_hour(ctx, colony))
 
 
 def industry_output(ctx: TickContext, colony: Colony) -> float:
@@ -1187,6 +1270,8 @@ def _advance_construction(ctx: TickContext, colonies_by_civ: dict) -> None:
         if intent.status == IntentStatus.IN_PROGRESS.value:
             orders_by_colony.setdefault(intent.payload.get("colony_id"), []).append(intent)
 
+    structure_orders = _open_structure_orders(ctx)
+
     for civ in queries.civs(ctx.session, ctx.universe.id):
         for colony in colonies_by_civ.get(civ.id, []):
             structures = [b for b in sorted(colony.buildings, key=lambda b: b.id or 0)
@@ -1226,6 +1311,12 @@ def _advance_construction(ctx: TickContext, colonies_by_civ: dict) -> None:
                             "level": building.level,
                         },
                     )
+                    # And tell the *order* it is done. Nothing did, and nothing
+                    # else ever would have -- see :func:`_open_structure_orders`.
+                    order = structure_orders.pop((colony.id, building.kind), None)
+                    if order is not None:
+                        order.status = IntentStatus.COMPLETED.value
+                        order.resolved_tick = ctx.tick
 
             for intent in fleet_orders:
                 remaining = float(intent.payload.get("work_remaining", 0.0)) - share
@@ -1233,6 +1324,87 @@ def _advance_construction(ctx: TickContext, colonies_by_civ: dict) -> None:
                     intent.payload["work_remaining"] = remaining
                     continue
                 _commission_fleet(ctx, colony, intent)
+
+    # Whatever is left in the map is an order this civilization will never see
+    # finish, and an order that waits for ever is the bug being fixed here.
+    _close_orphaned_structure_orders(ctx, structure_orders)
+
+
+def _open_structure_orders(ctx: TickContext) -> dict[tuple[int, str], object]:
+    """Construction orders still under way, keyed by the colony and what is rising.
+
+    **Nothing used to close one.** ``_start_structures`` charged for the order,
+    laid the foundations and set it ``IN_PROGRESS``, and that was the last thing
+    that ever happened to it -- ``BUILD_STRUCTURE`` appeared exactly once in this
+    module. The building finished, ``construction_completed`` was logged, and the
+    order stayed open for the rest of the game.
+
+    That is not a tidiness problem, it is the largest defect this project has
+    found. ``queries.active_intents`` returns queued *and* in-progress orders, so
+    :func:`galaxysim.engine.resolvers.governor.resolve` saw that kind as still
+    pending for ever, and ``_maybe_build`` opens by returning when the colony is
+    already building something. **Every governed colony in the game built exactly
+    one structure and then stopped, permanently.** Measured across a 60-day soak:
+    eighty-five colonies, sixteen buildings, all sixteen orders still open with
+    their buildings long finished -- the first capital's fusion plant was ordered
+    on tick 1, completed on tick 2, and its order was still holding the colony's
+    only build slot fourteen hundred ticks later. That is why every homeworld in
+    every soak ran at half power for the whole game: it could never build another
+    reactor, or another anything.
+
+    The asymmetry was right there in this file. ``BUILD_FLEET`` carries its work
+    in the intent payload and :func:`_commission_fleet` closes it; a structure
+    carries its work on the ``Building`` row, and the order was simply forgotten.
+
+    Keyed on ``(colony_id, kind)`` because that pair is unique among open orders:
+    ``_start_structures`` refuses to begin a second order for a kind whose
+    building is still going up, so only one of each can ever be in flight.
+    """
+    open_orders: dict[tuple[int, str], object] = {}
+    for intent in queries.active_intents(
+        ctx.session, ctx.universe.id, IntentKind.BUILD_STRUCTURE.value
+    ):
+        if intent.status != IntentStatus.IN_PROGRESS.value:
+            continue
+        colony_id = intent.payload.get("colony_id")
+        kind = str(intent.payload.get("kind", ""))
+        if colony_id is not None:
+            open_orders[(colony_id, kind)] = intent
+    return open_orders
+
+
+def _close_orphaned_structure_orders(
+    ctx: TickContext, open_orders: dict[tuple[int, str], object]
+) -> None:
+    """End orders whose building this civilization is never going to see finish.
+
+    Completing an order when its building completes fixes the ordinary case. It
+    does not fix the two cases where the building never will, and an order left
+    open in either of them reproduces the original bug exactly -- a colony that
+    can no longer build anything, for a reason nobody can see.
+
+    **The colony changed hands.** Worlds are captured now, and a capture
+    reassigns ``colony.civ`` underneath whatever was rising there. The order
+    belongs to the civilization that placed it, which no longer owns the ground.
+
+    **The building is not there.** Nothing deletes buildings today, so this is
+    defensive -- but "the order waits for ever" is precisely the failure being
+    fixed, and it should not be reintroduced by an unhandled case.
+    """
+    if not open_orders:
+        return
+    colonies = queries.colonies_by_id(ctx)
+    for (colony_id, kind), intent in open_orders.items():
+        colony = colonies.get(colony_id)
+        if colony is not None and colony.civ_id == intent.civ_id:
+            if any(b.kind == kind for b in colony.buildings):
+                continue  # still going up, which is the ordinary case
+            reason = f"nothing is being built at {colony.name}"
+        elif colony is None:
+            reason = "the colony is gone"
+        else:
+            reason = f"{colony.name} no longer belongs to this civilization"
+        _fail(ctx, intent, reason, "Construction order")
 
 
 def _commission_fleet(ctx: TickContext, colony: Colony, intent) -> None:

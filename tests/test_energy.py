@@ -35,7 +35,7 @@ from galaxysim.engine.resolvers.production import (
 from galaxysim.engine.tick import run_ticks
 from galaxysim.materials import DEUTERIUM, FISSILES, HELIUM3
 from galaxysim.model.base import open_session
-from galaxysim.model.entities import Building, Colony, Universe, World
+from galaxysim.model.entities import Building, Colony, Event, Universe, World
 from galaxysim.colony.labor import normalize
 from tests.conftest import (
     OUTPOST_POPULATION,
@@ -248,6 +248,72 @@ def test_a_colony_that_outgrows_its_grid_is_throttled_until_it_builds_one(engine
         assert lit.power_satisfaction > starved + 0.1, (
             f"power went {starved:.2f} -> {lit.power_satisfaction:.2f} after the "
             "reactors came online; building a grid should light the place up"
+        )
+
+
+def test_a_brownout_is_two_events_rather_than_one_a_tick(engine):
+    """The log is what an offline player reads, and it was mostly one line.
+
+    A brownout is a condition that *lasts*, and this logged it every tick it
+    lasted. Measured over a 60-day soak: 8,506 of 19,907 events -- 43% of
+    everything that happened in the game -- were eight homeworlds each writing
+    "still at 50% power" fourteen hundred times, burying the 141 terraform
+    completions and 95 life-support failures underneath.
+
+    What a player needs is the pair a blockade already gives them: the lights
+    went out, and later they came back on.
+    """
+    universe_id = new_universe(
+        engine, seed=7304, civs=("Terrans",), seconds_per_tick=3600
+    )
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        take_manual_control(session, civ)
+        colony = home_colony(session, civ)
+        intents.set_labor(session, colony, {INDUSTRY: 1.0})
+        colony.stockpile = rich_stockpile(1e10)
+        _starve_of_power(colony)
+        session.flush()
+        colony_id = colony.id
+
+    run_ticks(engine, universe_id, 20)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert colony.power_satisfaction < 0.9, "the fixture needs a real, lasting brownout"
+        shortfalls = session.scalars(
+            select(Event).where(Event.kind == "power_shortfall")
+        ).all()
+        assert len(shortfalls) == 1, (
+            f"twenty ticks of one continuous brownout produced {len(shortfalls)} "
+            "events; a standing condition is not news"
+        )
+
+        # And the other edge: give it the grid it was missing.
+        session.add(
+            Building(
+                colony_id=colony_id,
+                kind="fusion_plant",
+                level=800,
+                work_remaining=0.0,
+                completed_tick=0,
+            )
+        )
+        stock = dict(colony.stockpile)
+        stock[HELIUM3] = 1.0e12
+        colony.stockpile = stock
+
+    run_ticks(engine, universe_id, 10)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert colony.power_satisfaction >= 0.999, "the fixture needs the lights back on"
+        restored = session.scalars(
+            select(Event).where(Event.kind == "power_restored")
+        ).all()
+        assert len(restored) == 1, (
+            f"coming back to full power should be one event, not {len(restored)}"
         )
 
 

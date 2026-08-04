@@ -32,7 +32,16 @@ from galaxysim.materials import ELECTRONICS, IRON, MATERIALS, STEEL, WATER
 from galaxysim.engine import intents
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
-from galaxysim.model.entities import Building, Colony, Event, Fleet, IntentStatus, World
+from galaxysim.model.entities import (
+    Building,
+    Colony,
+    Event,
+    Fleet,
+    Intent,
+    IntentKind,
+    IntentStatus,
+    World,
+)
 from tests.conftest import (
     civ_by_name,
     clone_world,
@@ -869,6 +878,138 @@ def test_a_governor_develops_a_colony_over_time():
         colony = session.get(Colony, colony_id)
         assert len(colony.buildings) > buildings_before
         assert any(b.is_complete for b in colony.buildings), "and finish at least one"
+
+
+def test_a_finished_building_finishes_the_order_that_asked_for_it():
+    """The order that nothing ever closed.
+
+    ``BUILD_STRUCTURE`` appeared exactly once in the production resolver: the
+    place that charged for it, laid the foundations and set it ``IN_PROGRESS``.
+    Nothing completed it, ever. The building went up, ``construction_completed``
+    was logged, and the order stayed open for the rest of the game -- which a
+    player saw as a build that had been finished for weeks still sitting in
+    ``galaxysim orders``.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=828, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = _outpost(session, civ, habitability=0.9, stockpile=rich_stockpile(2.0e5))
+        intents.build_structure(session, civ, colony.id, "mine")
+        colony_id = colony.id
+
+    run_ticks(engine, universe_id, 400)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        mine = next(b for b in colony.buildings if b.kind == "mine")
+        assert mine.is_complete, "the fixture needs the building to actually finish"
+
+        order = session.scalar(
+            select(Intent).where(
+                Intent.civ_id == colony.civ_id, Intent.kind == IntentKind.BUILD_STRUCTURE.value
+            )
+        )
+        assert order.status == IntentStatus.COMPLETED.value, (
+            f"the mine is built and its order is still {order.status!r}"
+        )
+        assert order.resolved_tick is not None
+
+
+def test_a_governor_builds_a_second_thing_after_the_first_one_lands():
+    """The consequence, and the reason the open order mattered so much.
+
+    ``governor._maybe_build`` returns early when the colony is already building
+    something, and it learns that from the *orders*, not the buildings. An order
+    that never closed meant every governed colony in the game built exactly one
+    structure and then stopped, permanently -- eighty-five colonies produced
+    sixteen buildings in a sixty-day soak, and every homeworld sat at half power
+    for the whole run because it could never build another reactor.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=829, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        # The homeworld, not an outpost. Fifty thousand colonists can staff
+        # exactly one industry level, so an outpost cannot build a second thing
+        # however long it runs -- it would pass this test for the wrong reason,
+        # or fail it for one. A capital has the people and the ground.
+        colony = home_colony(session, civ)
+        colony.stockpile = rich_stockpile(1.0e9)
+        give_deposits(
+            colony.world, iron=0.03, silicon=0.03, calcium=0.02, carbon=0.01, water_ice=0.02
+        )
+        assert max_total_levels(colony.population, colony.world.land_area_km2) > levels_in_use(
+            colony.buildings
+        ) + 2, "the fixture needs room to build more than one thing"
+        intents.set_management(session, colony, governed=True, policy="extraction")
+        colony_id = colony.id
+        # Levels, not buildings. A developed capital already has one of most
+        # things, so what it does with a second order is *deepen* an industry --
+        # the building count is unchanged and the levels are what move.
+        before = levels_in_use(colony.buildings)
+
+    run_ticks(engine, universe_id, 900)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        orders = session.scalars(
+            select(Intent).where(
+                Intent.civ_id == colony.civ_id, Intent.kind == IntentKind.BUILD_STRUCTURE.value
+            )
+        ).all()
+        assert len(orders) > 1, (
+            f"the governor queued {len(orders)} structure(s) and then stopped for good"
+        )
+        assert sum(o.status == IntentStatus.COMPLETED.value for o in orders) > 1, (
+            "and more than one of them has to have finished"
+        )
+        assert levels_in_use(colony.buildings) > before + 1, (
+            "so the colony is measurably deeper than it was"
+        )
+
+
+def test_a_captured_colony_does_not_leave_its_old_owner_an_open_order():
+    """An order that can never finish is the same bug wearing a different hat.
+
+    Worlds change hands now, and a capture reassigns the colony under whatever
+    was rising on it. Left open, that order would jam the *new* owner's governor
+    exactly the way the missing completion jammed everybody's -- a colony that
+    can never build again, for a reason nothing in the game displays.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(
+        engine, seed=830, civs=("Terrans", "Rivals"), seconds_per_tick=3600
+    )
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        rival = civ_by_name(session, universe_id, "Rivals")
+        colony = _outpost(session, civ, habitability=0.9, stockpile=rich_stockpile(2.0e5))
+        intents.build_structure(session, civ, colony.id, "mine")
+        colony_id, rival_id = colony.id, rival.id
+
+    run_ticks(engine, universe_id, 1)  # the order starts and the foundations go in
+
+    with open_session(engine) as session:
+        order = session.scalar(
+            select(Intent).where(Intent.kind == IntentKind.BUILD_STRUCTURE.value)
+        )
+        assert order.status == IntentStatus.IN_PROGRESS.value, "the fixture needs it under way"
+        session.get(Colony, colony_id).civ_id = rival_id  # the world is taken
+
+    run_ticks(engine, universe_id, 2)
+
+    with open_session(engine) as session:
+        order = session.scalar(
+            select(Intent).where(Intent.kind == IntentKind.BUILD_STRUCTURE.value)
+        )
+        assert order.status == IntentStatus.FAILED.value, (
+            f"the colony belongs to somebody else and the order is still {order.status!r}"
+        )
+        assert "no longer belongs" in (order.result or "")
 
 
 def test_a_governor_makes_what_the_colony_is_short_of():
