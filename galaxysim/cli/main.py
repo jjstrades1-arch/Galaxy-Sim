@@ -294,6 +294,86 @@ def status() -> None:
 
 
 @app.command()
+def empire() -> None:
+    """Where your industry actually is, and what is holding each world back.
+
+    The question this exists for is "is my expansion paying off", and until now
+    the game could not answer it. ``status`` lists what you own and ``colony``
+    opens one world at a time; working out which of your colonies is actually
+    carrying the economy meant reading every one of them and doing the
+    arithmetic by hand.
+
+    That mattered more than a missing convenience. A capital opens with 55% of
+    its world's industry already built and everything you settle afterwards
+    starts at zero, so the centre of gravity of an empire barely moves for
+    months -- and there was no way to see that happening, let alone judge
+    whether it should.
+
+    The industry figure is :func:`galaxysim.engine.resolvers.terraform.
+    construction_per_hour`, which is the same estimate the opponent plans
+    against and the terraforming readout quotes. It is what the workforce
+    *could* do; what it will actually do runs through the brownout, which is why
+    power is its own column rather than folded in silently.
+    """
+    from galaxysim.engine.resolvers.terraform import construction_per_hour
+
+    with open_session(_engine()) as session:
+        universe = _require_universe(session)
+        civ = _require_player(session, universe)
+        colonies = session.scalars(
+            select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
+        ).all()
+        if not colonies:
+            console.print("[dim]No colonies.[/dim]")
+            return
+
+        output = {colony.id: construction_per_hour(colony) for colony in colonies}
+        total = sum(output.values())
+
+        table = Table(
+            "id", "colony", "pop", "ind/h", "share", "levels", "limited by", "power",
+            title="Empire",
+        )
+        for colony in sorted(colonies, key=lambda c: -output[c.id]):
+            used = levels_in_use(colony.buildings)
+            ceiling = max_total_levels(colony.population, colony.world.land_area_km2)
+            power = colony.power_satisfaction or 1.0
+            # Whichever is taking the bigger bite. A colony at 50% power is
+            # losing more than one at 90% of its level ceiling, and saying
+            # "ground" there would send a player to widen a limit that is not
+            # the one costing them anything.
+            limit = binding_limit(colony.population, colony.world.land_area_km2)
+            if power < 0.999 and (1.0 - power) > (1.0 - used / max(ceiling, 1)):
+                limit = "power"
+            table.add_row(
+                str(colony.id),
+                colony.name,
+                format_count(colony.population),
+                format_count(output[colony.id]),
+                f"{output[colony.id] / total:.0%}" if total > 0 else "-",
+                f"{used}/{ceiling}",
+                limit,
+                f"{power:.0%}" if power >= 0.999 else f"[yellow]{power:.0%}[/yellow]",
+            )
+        console.print(table)
+
+        # The line the command exists for. One number for "has expanding moved
+        # anything", which no readout in this game has ever shown.
+        largest = max(colonies, key=lambda c: output[c.id])
+        share = (output[largest.id] / total) if total > 0 else 1.0
+        rest = len(colonies) - 1
+        console.print(
+            f"[bold]{largest.name}[/bold] is {share:.0%} of your industry"
+            + (
+                f"; the other {rest} colon{'y holds' if rest == 1 else 'ies hold'} "
+                f"{1 - share:.0%}."
+                if rest
+                else " -- it is the only world you have."
+            )
+        )
+
+
+@app.command()
 def systems(
     limit: int = typer.Option(20, "--limit", help="How many to list."),
 ) -> None:

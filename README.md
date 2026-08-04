@@ -21,6 +21,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/galaxysim new Deep --difficulty driven   # ...or opponents who play
 .venv/bin/galaxysim new Edge --region core     # ...or start somewhere harder
 .venv/bin/galaxysim status                     # your civ
+.venv/bin/galaxysim empire                     # where your industry actually is
 .venv/bin/galaxysim systems                    # what you have charted
 .venv/bin/galaxysim chart --radius 60          # ...and what is out there
 .venv/bin/galaxysim planet 12                  # full survey, incl. what powers it
