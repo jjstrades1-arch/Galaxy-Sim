@@ -85,6 +85,7 @@ from galaxysim.materials import (
 )
 from galaxysim.core.space import distance
 from galaxysim.engine.context import TickContext
+from galaxysim.engine.rates import DEFAULT_RATES, Rates
 from galaxysim.engine.resolvers import queries
 from galaxysim.model.entities import Building, Civ, Colony, Fleet, IntentKind, IntentStatus
 
@@ -873,6 +874,50 @@ def construction_output(ctx: TickContext, colony: Colony) -> float:
     return industry_output(ctx, colony) * (1.0 - ctx.rates.refining_share_of_industry)
 
 
+def industry_per_hour(
+    colony: Colony,
+    *,
+    productivity_multiplier: float,
+    sector_bonus: float,
+    rates: Rates = DEFAULT_RATES,
+) -> float:
+    """Industry-work per real hour, given this colony's two multipliers.
+
+    The arithmetic, once. Both multipliers are passed in rather than looked up
+    because inside a tick they are memoized per colony and outside one there is
+    nothing to memoize against -- and the alternative, a second copy of the
+    formula for callers who have no :class:`TickContext`, is the mistake this
+    project has now made twice. A readout that recomputes an engine number
+    drifts from it, and nothing fails until a player acts on the difference.
+
+    **It drifted here by a factor of eleven.** The terraforming readout used
+    ``workers x rate`` with neither multiplier, while the resolver feeding the
+    project used both, so a campaign was quoted at eleven times its real length
+    on a developed capital.
+    """
+    workers = workers_in(colony.population, normalize(colony.labor), INDUSTRY)
+    if workers <= 0:
+        return 0.0
+    return (
+        rates.industry_per_worker_per_hour * workers * productivity_multiplier * sector_bonus
+    )
+
+
+def industry_per_hour_of(colony: Colony, *, rates: Rates = DEFAULT_RATES) -> float:
+    """:func:`industry_per_hour` for a caller standing outside a tick.
+
+    Everything it needs is a pure function of the colony -- ``development_of``,
+    ``productivity`` and ``colony_effects`` all are -- so a readout can have the
+    engine's own figure without a :class:`TickContext` to memoize against.
+    """
+    return industry_per_hour(
+        colony,
+        productivity_multiplier=productivity(development_of(colony)),
+        sector_bonus=colony_effects(colony).sector(INDUSTRY),
+        rates=rates,
+    )
+
+
 def industry_capacity_per_hour(ctx: TickContext, colony: Colony) -> float:
     """Industry-work per real hour at full power.
 
@@ -880,15 +925,11 @@ def industry_capacity_per_hour(ctx: TickContext, colony: Colony) -> float:
     generation is authored per hour throughout
     :mod:`galaxysim.colony.energy`. See :func:`_run_power`.
     """
-    allocation = normalize(colony.labor)
-    workers = workers_in(colony.population, allocation, INDUSTRY)
-    if workers <= 0:
-        return 0.0
-    return (
-        ctx.rates.industry_per_worker_per_hour
-        * workers
-        * productivity_of(ctx, colony)
-        * effects_for(ctx, colony).sector(INDUSTRY)
+    return industry_per_hour(
+        colony,
+        productivity_multiplier=productivity_of(ctx, colony),
+        sector_bonus=effects_for(ctx, colony).sector(INDUSTRY),
+        rates=ctx.rates,
     )
 
 

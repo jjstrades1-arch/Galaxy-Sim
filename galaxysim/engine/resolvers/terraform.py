@@ -31,7 +31,11 @@ from galaxysim.engine.context import TickContext
 from galaxysim.colony.labor import INDUSTRY, normalize
 from galaxysim.engine.rates import DEFAULT_RATES
 from galaxysim.engine.resolvers import queries
-from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY, construction_output
+from galaxysim.engine.resolvers.production import (
+    SUPPLY_RANGE_LY,
+    construction_output,
+    industry_per_hour_of,
+)
 from galaxysim.model.entities import Colony, IntentKind, IntentStatus
 from galaxysim.terraform.apply import apply_project
 from galaxysim.terraform.projects import (
@@ -201,22 +205,30 @@ def _reach(distance_ly: float) -> float:
 
 
 def construction_per_hour(colony: Colony) -> float:
-    """A colony's construction output per real hour, estimated.
+    """A colony's construction output per real hour, before the brownout.
 
-    An estimate on purpose, and the distinction matters. The tick's true figure
-    is :func:`production.construction_output`, which needs a
-    :class:`TickContext` because it runs through last hour's brownout and takes
-    the refining share off the top -- neither of which anybody standing outside
-    a tick can know. This is what the workers could do, which is the right shape
-    for a plan and for a readout.
+    **This used to be ``workers x rate`` and nothing else**, while
+    :func:`_advance` -- the resolver actually feeding the project -- used
+    :func:`production.construction_output`, which carries the colony's
+    productivity multiplier and its industry-level bonus. On a developed capital
+    those two together are worth about elevenfold, so the campaign readout and
+    the landing day in ``orders`` were quoting eleven times the real duration.
+    The docstring even claimed it said "what the engine will really do": it
+    matched the engine's distance weighting and not its arithmetic, which is a
+    worse kind of wrong than being obviously an estimate.
 
-    Extracted so the estimate exists once. The AI was computing it inline while
-    deciding what to reshape, and the moment a second caller wanted the same
-    number the two could drift -- with the player being told one thing and the
-    engine doing another.
+    It now goes through :func:`production.industry_per_hour`, the same formula
+    the tick uses, and takes the refining share off the top the way
+    ``construction_output`` does.
+
+    One thing is still deliberately left out: **power**. What a brownout does to
+    this figure depends on last tick's grid, and a plan quoted at the throttled
+    rate would promise a schedule that improves the moment somebody builds a
+    reactor. So this is what the colony could do with the lights on, and the
+    ``empire`` readout shows power as its own column rather than folding it in
+    silently.
     """
-    workers = colony.population * normalize(colony.labor).get(INDUSTRY, 0.0)
-    return workers * DEFAULT_RATES.industry_per_worker_per_hour
+    return industry_per_hour_of(colony) * (1.0 - DEFAULT_RATES.refining_share_of_industry)
 
 
 def pooled_construction_per_hour(colonies: list[Colony], target) -> float:

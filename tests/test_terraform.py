@@ -595,6 +595,43 @@ def test_the_campaign_is_the_same_walk_the_finishability_answer_comes_from():
     )
 
 
+def test_the_campaign_readout_quotes_what_the_resolver_actually_feeds_it(engine):
+    """The readout said "what the engine will really do". It was out by elevenfold.
+
+    ``construction_per_hour`` was ``workers x rate`` and nothing else, while
+    ``_advance`` -- the resolver that actually feeds a running project -- used
+    ``production.construction_output``, which carries the colony's productivity
+    multiplier and its industry-level bonus. On a developed capital those are
+    worth about eleven times, so ``terraform`` quoted a campaign at eleven times
+    its real length and ``orders`` named a landing day to match.
+
+    Matching the engine's *distance weighting* while missing its arithmetic is a
+    worse kind of wrong than being visibly an estimate, because the docstring
+    said so and nobody had reason to check.
+    """
+    from galaxysim.engine.context import TickContext
+    from galaxysim.engine.rates import CADENCE_HOURLY, DEFAULT_RATES
+    from galaxysim.engine.resolvers.production import construction_output
+    from galaxysim.engine.resolvers.terraform import construction_per_hour
+    from galaxysim.model.entities import Universe
+
+    universe_id = new_universe(engine, seed=915, civs=("Terrans",), seconds_per_tick=3600)
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = home_colony(session, civ)
+        ctx = TickContext.build(session, universe, CADENCE_HOURLY, DEFAULT_RATES)
+
+        # A capital, so both multipliers are far from 1.0 and a readout that
+        # dropped them would be obviously wrong rather than marginally so.
+        engine_figure = construction_output(ctx, colony)
+        assert engine_figure > 0
+
+        assert construction_per_hour(colony) == pytest.approx(engine_figure, rel=1e-9), (
+            "the campaign readout and the resolver feeding the project disagree"
+        )
+
+
 def _greedy(survey):
     """The obvious planner: never make the world worse, otherwise take the best.
 
