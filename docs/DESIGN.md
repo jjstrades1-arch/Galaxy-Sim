@@ -2,8 +2,16 @@
 
 > The approved architecture plan, kept in the repo as the reference for what is
 > being built and why. Written before any code existed; the "Still open"
-> section at the end is the live list. Build-order steps 1–3 are now
-> implemented — see the README for what is placeholder.
+> section at the end is the live list. Build-order steps 1–4 are implemented —
+> see the README for what is placeholder.
+>
+> **Read this as the plan, not as a description of the code.** It is deliberately
+> not updated as the implementation moves, because its value is being the record
+> of what was intended and why. Where the two differ, the code is right and the
+> README is the current account of it. The largest divergence so far is the tick
+> pipeline: §4 lists six steps and the engine now runs nine, having grown
+> logistics, a governor pass, siege and terraforming — each of which earned its
+> place for a reason `galaxysim/engine/tick.py` states at the point of ordering.
 
 ## Context
 

@@ -6,11 +6,11 @@ tech space, and build up civilizations over weeks of real time.
 
 The core loop works end to end and the world underneath it is real: planets
 generated from physics, an economy made of actual elements, populations counted
-in billions, terraforming that rewrites a planet's numbers, and a hundred
-thousand light-years of spiral galaxy that costs nothing until somebody flies
-into it. Procedural tech generation, conflict resolution and the species
-pipeline are next. [`docs/DESIGN.md`](docs/DESIGN.md) is the architecture
-reference; the notes below say what is deliberately placeholder.
+in billions, terraforming that rewrites a planet's numbers, wars that end with a
+world changing hands, and a hundred thousand light-years of spiral galaxy that
+costs nothing until somebody flies into it. Procedural tech generation and the
+species pipeline are next. [`docs/DESIGN.md`](docs/DESIGN.md) is the
+architecture reference; the notes below say what is deliberately placeholder.
 
 ## Try it
 
@@ -33,6 +33,10 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/galaxysim colonize 1 60 --preview    # what would settling cost?
 .venv/bin/galaxysim colonize 1 60 --stores 200 # send an expedition
 .venv/bin/galaxysim route 2 --from 1 --to 3 --carry water:50
+.venv/bin/galaxysim terraform 1                # the whole campaign, and its bill
+.venv/bin/galaxysim terraform 1 magnetic_shield # commit to a rung
+.venv/bin/galaxysim civs                       # who else is out there
+.venv/bin/galaxysim attack 3                   # ...and pick a fight with one
 .venv/bin/galaxysim scrap 4                    # break up a hull, stop its upkeep
 .venv/bin/galaxysim tick 24                    # advance a day
 .venv/bin/galaxysim log                        # what happened
@@ -117,7 +121,7 @@ objective rather than a preference.
 
 **Refining is where specialisation lives.** Ore is nearly useless: buildings are
 priced in steel and construction materials, ships in alloys and electronics,
-life support in water. Twelve chains convert one into the other, mass is
+life support in water. Thirteen chains convert one into the other, mass is
 conserved minus tailings, and **nothing substitutes**. Alloys and fissiles each
 have a fallback route so geology can never lock a civ out of a whole tier;
 electronics deliberately has one, needing copper, rare earths and silicon
@@ -302,11 +306,68 @@ hold becomes a world of sixteen billion. It is the only thing in the game that
 produces a four-order-of-magnitude change, and it is why reshaping a planet is
 worth a civilization's entire surplus.
 
-**It requires trade.** Costs are hundreds of megatonnes, and in practice the
-binding constraint is not ore but *electronics* — the one refining chain with a
-single route, needing copper, rare earths and silicon together. A single-colony
-civ six weeks in has billions of tonnes of ceramics and zero electronics. That
-is the materials economy doing what it was built to do.
+**It has to be priced in what the economy actually makes**, and for a long time
+it was not. This file used to say the binding constraint was electronics and
+call that the materials economy working as designed. It was a defect wearing the
+costume of one. The recipe asked for copper and silicon at four parts to six
+while the ground yields them at 0.02 to 0.75 — copper twenty-five times faster
+than any world produces it — so empires sat on twenty-one *thousand* megatonnes
+of silicon and a tenth of a megatonne of copper, and copper alone decided how
+many electronics existed anywhere. Fissiles were worse: enrichment needs uranium,
+uranium is in the ground on fifty-five worlds out of four hundred and fifty-seven,
+and `oxygenation` — the last step to every habitable world — was priced in it.
+Every civilization in every soak held exactly zero.
+
+Both are fixed at the source rather than by discounting the projects: the
+recipe is silicon-dominant now, which is what electronics are actually made of,
+and no project is priced in fissiles. Totals are unchanged. **A campaign is
+about fifteen projects and roughly a week of a developed neighbourhood's
+industry**, and the readout tells you the whole bill before you start it.
+
+**Two thirds of worlds cannot be finished at all.** An orbital shade cools by
+reflection and albedo saturates, so a world whose own air holds it above the
+growing band stays there whatever is spent. The ladder used to keep asking for
+another shade for ever — 1,295 worlds out of 1,966 in a sweep — and a
+civilization would pour 43.5 million work and sixty million tonnes into a
+project that provably could not alter the survey, then do it again. It now
+stops, and `World.terraform_finishable` says so *before* anything is spent,
+because a hopeless world still swallows nine real projects on the way to
+saturating, every one of which looks like progress.
+
+## War takes a frontier, never a heart
+
+Combat used to be fleets grinding each other down and nothing else: two
+civilizations could destroy each other's navies for a month and finish holding
+exactly the worlds they started with. Three ideas make it end in something, and
+each falls out of what already existed rather than adding a rule.
+
+**A blockade is just presence.** Hold more strength over somebody's colony than
+they do, while at war, and cargo stops moving — nothing loads or unloads at
+either end. That is not a new penalty; it is the design's existing dependence on
+supply lines finally being worth attacking. An outpost lives on its route, so
+cutting the route kills it, and the `life_support_failing` event tells an offline
+owner exactly what is happening.
+
+**A siege wears down what is actually there.** A colony's ability to hold out is
+its people and what they have built — nothing invented, nothing assigned. That
+one choice does all the balancing: a fifty-thousand-person outpost falls in
+hours, and a homeworld of eighteen billion cannot be taken from orbit in any
+practical time by any fleet a civilization could keep flying. So war takes a
+rival's frontier and never their heart, which is emergent rather than a rule, and
+it is what protects a player who is asleep.
+
+**Taking a world needs a colony pod.** Grinding the resistance to nothing leaves
+a colony besieged and suffering; somebody still has to land an administration.
+Annexation is therefore a real investment rather than a side effect of winning a
+battle, accidental capture is impossible, and blockade-without-annex — starving a
+rival rather than absorbing them — is a strategy that exists for free. What
+changes hands is a *developed* world, buildings and warehouses included, minus a
+quarter of its people. That is why capturing beats founding.
+
+Projecting force is expensive on purpose. Fleet upkeep is billed to the colonies
+near the *fleet*, and there is nothing to draw on past supply range, so a
+squadron parked deep in somebody else's space deserts within days. Besieging a
+world is something you have to be able to sustain.
 
 ## The galaxy is a function, not a map
 
@@ -527,10 +588,15 @@ Resolution order is fixed and meaningful (`galaxysim/engine/tick.py`):
 2. **Logistics** — a freighter that landed this tick unloads now, so supplies
    reach a starving colony before life support is computed against them
 3. **Combat** — a fleet that arrived this tick is immediately at risk
-4. **Governor** — governed colonies decide labor before production reads it
-5. **Production** — life support, then work, then construction
-6. **Research** — spends what production just banked
-7. **Colonization** — last, so a contested world is settled by whoever holds it
+4. **Siege** — what is left in orbit after the shooting decides whose supply
+   lines run, and whether a colony changes hands
+5. **Governor** — governed colonies decide labor before production reads it
+6. **Production** — life support, then work, then construction
+7. **Research** — spends what production just banked
+8. **Terraform** — after production, so a project draws on the industry made
+   this tick; before colonization, so a world finished this tick is settled as
+   the world it has become
+9. **Colonization** — last, so a contested world is settled by whoever holds it
 
 ## Layout
 
@@ -556,9 +622,10 @@ Named explicitly so nobody mistakes scaffolding for design:
   lineage of step 7 — genomes, a bounded effect grammar, and a frontier of
   candidate techs derived from what a civ already knows. The economics of
   paying for the next step will not change when it lands; only what you receive.
-- **Conflict has no resolution.** Combat destroys fleets and nothing else, so
-  colonies cannot change hands and there is no way to win anything. Blockade and
-  capture are the next phase.
+- **Diplomacy is not simulated.** A standing attack order is the entire
+  mechanical surface of "we are at war" — there is nothing to negotiate, ally
+  with or surrender to. In a shared universe players would do that among
+  themselves; in a solo game it means a war ends when somebody stops fighting.
 - **Species descriptions are stored but unused.** The extraction pipeline is
   step 6.
 - **Names are syllable soup.** Step 7 gives each civ phoneme banks derived from
@@ -625,48 +692,34 @@ region allows, so the region *is* the rival-proximity dial — the crowded Core
 against the empty Rim. A property of the sky rather than a gift, since the player
 lives under the same one.
 
-Measured over sixty days, same region so this isolates competence:
+There is a fifth dial, and it is the sharpest one because it is the only one
+that can take something away from you: **whether the opponent goes to war at
+all.** Dormant and Steady never do. Driven will blockade and annex your frontier
+the moment it has ships to spare, and Relentless does it with more. Nothing
+about the mechanic differs between them — the same siege, the same colony pod,
+the same supply problem — only the willingness to spend a fleet on it. Steady
+staying peaceful is deliberate: every price in the game is calibrated against a
+soak of Steady opponents, and one that starts annexing its neighbours is
+measuring something else.
 
-| | colonies | population | fleet | ms/tick |
-|---|---|---|---|---|
-| Dormant | 10 | 11.372 B | 14 | 57 |
-| Steady | 12 | 11.372 B | 30 | 140 |
-| Driven | 13 | **12.181 B** | 29 | 188 |
-| Relentless | 12 | 12.057 B | 26 | 175 |
+Measured across a 120-day run of eight Driven civs:
 
-The population column is the interesting one: it had been frozen at 11.37 B in
-every run at every setting, and terraforming earlier plus settling for geology
-moved it by 810 million people. That is the compounding loop beginning to turn,
-and it turns on habitability rather than on shipyards — a measurement that
-contradicted the expectation going in, which was that yards would dominate.
+```
+day        10    30    60    90   120
+colonies   21    50    90   124   157
+worlds ≥ 0.4 habitability:  8 → 37
+population:              88 B → 561 B
+```
+
+Population is the interesting column. It was frozen near 11.37 B per civ in
+every run at every setting for most of this project's life, and what moved it
+was not shipyards — it was worlds becoming places people can live. A terraformed
+world holds billions where a dead one holds a few hundred thousand, and once one
+converts it becomes the industry that converts its neighbours. The compounding
+turns on habitability, which contradicted the expectation going in.
 
 ## Known tuning gaps
 
-- **The fleet's late knock was an empty tank, and the tank is now filling.**
-  Strength used to climb to 164 by day 26 and fall to 86 by day 28. The cause
-  was not supply range and not upkeep pricing — upkeep sits comfortably inside
-  what a capital can make. It was that **nothing ever set `Colony.refining`**, so
-  every colony ran the even default plan; smelting ate the carbon supply (mined
-  at a seventh the rate of iron, and smelting takes one per ten iron) and fuel
-  synthesis, which wants two, got the remainder. An empire held 700 Mt of alloys
-  while making no fuel at all, flew for 26 days on its homeworld's opening bank,
-  and lost a third of its navy in the two days after it emptied. With governors
-  weighting chains toward what a colony is short of, fuel now *rises* every day
-  of a soak instead of falling every day. The 28-day endpoint has not been
-  re-measured since — see the next item for why.
-- **A tick's cost grows with the empire, and that is the ceiling now.** 550 ms
-  at 8 civs and ~240 colonies; the same run averaged 1,179 ms/tick over 28 days
-  and 2,193 ms before the phase-7 batching. The query count is flat in universe
-  size and tested to stay that way, so this is honest per-row cost rather than
-  the quadratic shape fixed two phases ago — but it decides how large a shared
-  universe can be, since a five-minute cadence resolves 288 ticks a day.
-
-  Fixing the fuel economy made this *more* visible rather than less: an empire
-  that no longer collapses on day 26 keeps growing, and the tail of a 28-day
-  soak now runs long enough that it is the practical limit on measuring one.
-  That is a real trade and it is the right way round — a simulation that runs
-  correctly and slowly beats one that runs fast because its economy died — but
-  the next performance pass is no longer optional.
 - **Supply routes over-deliver.** A standing route ships its full manifest every
   trip whether or not the destination needs it, so a well-supplied outpost banks
   months of surplus. A route that tops up to a target level would be better.
@@ -674,32 +727,54 @@ contradicted the expectation going in, which was that yards would dominate.
   pool, so construction runs at half the rate it did. That is the intended
   shape — ore has to become steel before it can become a hull — but the split is
   a first-pass number that wants a play session, not a spreadsheet.
-- **The AI terraforms one planet at a time and never re-plans.** It picks a dead
-  world with a developed neighbourhood and works the sequence, which is the
-  right shape, but it will not abandon a bad target or run two campaigns at
-  once even when it could afford both.
-- **Terraforming has never once run in an actual game.** Not a mechanism
-  failure — a price one. Six AI civs over forty-five simulated days, fifty-four
-  colonies between them, and *zero* projects started: every order sat for ever
-  reporting insufficient resources. One Orbital Shade wants 125 million tonnes of
-  electronics against a capital's ~64,000 t/hr, so a single project is about
-  three months of an entire capital's electronics output, and a full
-  transformation is fourteen projects. Deliberately checked whether paying for it
-  *over time* was the missing piece: it is not. Letting projects gather made
-  expansion collapse from 54 colonies to 12, because an order that can never
-  complete becomes a permanent sink for the empire's steel. The prices want
-  measuring against real output the way ships and buildings already are
-  (`tests/test_prices.py`), and until they are, the rest of this list has no fix.
-- **Almost every colony is a dead rock, and that is the ceiling on everything.**
-  Four AI civs holding thirty-one colonies between them had *four* worlds above
-  0.4 habitability — one each, their homeworlds. So population barely moves, a
-  wider empire is not a stronger one, growth is linear rather than compounding,
-  and the several-shipyards difficulty lever cannot fire because an industrial
-  centre has to be somewhere people can live. Terraforming is the only way out
-  of all four at once, which makes it the most valuable thing to work on next.
-- **Nobody has played a core start for long.** Neighbours 1.4 ly apart is a very
-  different game from neighbours 10 ly apart, and the difference is currently a
-  claim backed by density arithmetic rather than a session.
+- **A war is one raid, and it does not reinforce.** The AI commits a force once,
+  holds the cordon and lands a pod when it can. It will not send a second wave
+  if the first is ground down, and it has no notion of making peace — the attack
+  order stands until somebody cancels it. Of two sieges in a 120-day run, one
+  converted and one lifted.
+- **Nobody has played a core start for long.** Neighbours a fraction of a
+  light-year apart is a very different game, and the difference is still
+  arithmetic rather than a session.
+- **A world can be terraformed *worse* on the way up.** Thickening the air of a
+  warm world raises its greenhouse forcing, so the ladder sometimes spends a
+  project undoing the last one — measured, one world went 0.25 → 0.12 → 0.23
+  across two projects. That is the physics being honest and the *sequencing*
+  being naive; a planner that looked one rung ahead would not do it.
+- **The tail of a long soak is where the cost is.** A 28-day run sits near
+  100 ms/tick at 8 civs; a 120-day run averages roughly three times that, and
+  the profile is dominated by galaxy *generation* — `systems_in_sector` and
+  distance arithmetic — which grows as exploration proceeds. The query count is
+  flat in universe size and tested to stay that way, so this is honest per-row
+  cost rather than a shape bug, but it is what decides how large a shared
+  universe can be.
+
+## What was on this list and is not any more
+
+Kept because the fixes are the most useful thing in the file: each was a number
+or a proxy that had stopped meaning anything, and none of them looked like a bug
+from the inside.
+
+- **"Terraforming has never once run in an actual game."** It runs 370 projects
+  in 120 days now and converts 21 worlds past 0.4 habitability, twelve of them
+  to 1.000 — a dead rock becoming a world of twenty billion people. Three things
+  were wrong at once: the ladder dead-ended on two thirds of worlds, projects
+  were priced in materials the economy cannot make, and an order nobody could
+  pay for held a campaign slot for ever so a civilization could be frozen out of
+  a world it could have afforded that afternoon.
+- **"Almost every colony is a dead rock, and that is the ceiling on
+  everything."** It was, and terraforming was the way out of all of it at once.
+  Population over 120 days went from 156 B to 561 B once worlds started
+  converting, because a terraformed world holds billions where a dead one holds
+  a few hundred thousand.
+- **"Conflict has no resolution."** Blockade, siege and capture all run, and a
+  world changed hands unprompted in a soak for the first time at day 107.
+- **Neighbours were unreachable.** Civilizations were seated 113–141 ly apart
+  against a 25 ly supply reach, and expansion does not close it — an empire's
+  radius grows to about 13 ly and *stops*, because it settles the nearest world
+  and fills in its own neighbourhood. The frontier was being sized for a hundred
+  players however few were actually seated.
+- **The fleet's late knock.** Fuel is paid in full through a 120-day run now
+  and fleet strength quadruples over it.
 
 ## Tests
 
