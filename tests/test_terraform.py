@@ -26,7 +26,7 @@ from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Colony, Event, Intent, IntentStatus, World
 from galaxysim.terraform.apply import apply_project
-from galaxysim.terraform.plan import next_project
+from galaxysim.terraform.plan import LADDER_LIMIT, next_project
 from galaxysim.terraform.projects import (
     NEEDS_ATMOSPHERE,
     NEEDS_LIQUID_WATER,
@@ -592,4 +592,101 @@ def test_the_campaign_is_the_same_walk_the_finishability_answer_comes_from():
     assert finishable and unfinishable, (
         f"the sample needs both kinds to mean anything: {finishable} finishable, "
         f"{unfinishable} not"
+    )
+
+
+def _greedy(survey):
+    """The obvious planner: never make the world worse, otherwise take the best.
+
+    One rung of lookahead over the whole catalogue, which is what anybody
+    proposes on being shown a world losing habitability mid-campaign. It is a
+    fair opponent -- it sees every project the ladder does and it is allowed
+    sideways moves, so the shield and the first processors (which change nothing
+    about habitability) are open to it.
+    """
+    steps: list[str] = []
+    for _ in range(LADDER_LIMIT):
+        best: tuple[str, object] | None = None
+        for key, spec in sorted(PROJECTS.items()):
+            if unmet_requirements(survey, spec):
+                continue
+            after = apply_project(survey, spec)
+            if after == survey or after.habitability < survey.habitability:
+                continue
+            if best is None or after.habitability > best[1].habitability:
+                best = (key, after)
+        if best is None:
+            return steps, survey
+        steps.append(best[0])
+        survey = best[1]
+    return steps, survey
+
+
+def test_the_ladder_beats_the_obvious_alternative_on_every_world():
+    """Why a project is allowed to make a world *worse*, guarded.
+
+    The physics is honest about this: greenhouse forcing scales with pressure, so
+    thickening the air of a warm world heats it, and the ladder spends a rung
+    undoing the last one -- 0.25 to 0.12 to 0.23 on one measured world. From
+    outside that reads as naive sequencing, and this project's README said so in
+    as many words for an afternoon. It is wrong, and it is the kind of wrong that
+    gets "fixed": refusing the dip means never building the atmosphere everything
+    above it stands on, and the world is stranded half-done.
+
+    So the comparison is a test rather than a paragraph. ``_wanted`` is ordered
+    by what blocks what, and against a planner ordered by outcome it must never
+    lose -- not on length, and above all not on whether the world gets finished
+    at all.
+    """
+    from galaxysim.terraform.plan import campaign, is_finished
+
+    engine = create_engine_for("sqlite://")
+    with open_session(engine) as session:
+        worlds = _generated_worlds(session, engine)
+
+        shorter, stranded, sample, dips, avoidable = [], [], 0, 0, 0
+        for world in worlds:
+            survey = survey_from_json(world.survey)
+            ladder, ended = campaign(survey)
+            if not is_finished(ended):
+                continue  # nobody finishes these; not the question being asked
+            sample += 1
+
+            walk = survey
+            for step in ladder:
+                after = apply_project(walk, step)
+                if after.habitability < walk.habitability:
+                    dips += 1
+                    avoidable += any(
+                        other.key != step.key
+                        and not unmet_requirements(walk, other)
+                        and apply_project(walk, other) != walk
+                        and apply_project(walk, other).habitability >= walk.habitability
+                        for other in PROJECTS.values()
+                    )
+                walk = after
+
+            greedy_steps, greedy_ended = _greedy(survey)
+            if not is_finished(greedy_ended):
+                stranded.append(world.name)
+            elif len(greedy_steps) < len(ladder):
+                shorter.append((world.name, len(greedy_steps), len(ladder)))
+
+    assert sample > 100, f"only {sample} finishable worlds -- too small to conclude"
+    assert not shorter, (
+        f"the greedy planner finished {len(shorter)} worlds in fewer projects than "
+        f"the ladder, e.g. {shorter[:3]} -- the ordering is no longer paying for "
+        "itself and the comment on plan._wanted needs revisiting"
+    )
+    # The point of the whole thing: ordering by outcome loses worlds outright.
+    assert len(stranded) > sample // 2, (
+        f"the greedy planner stranded only {len(stranded)} of {sample} worlds. "
+        "That was 177 when this was written; if it is now competitive, either "
+        "the ladder or the physics has changed underneath this test"
+    )
+    # And the dips genuinely look avoidable one rung at a time, which is what
+    # makes the naive planner attractive in the first place.
+    assert dips and avoidable == dips, (
+        f"{avoidable} of {dips} habitability dips had a legal alternative -- the "
+        "trap this test describes has changed shape"
     )

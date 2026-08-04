@@ -306,6 +306,22 @@ hold becomes a world of sixteen billion. It is the only thing in the game that
 produces a four-order-of-magnitude change, and it is why reshaping a planet is
 worth a civilization's entire surplus.
 
+**Sometimes a world gets worse on the way up, and that is the ladder working.**
+Thickening the air of a warm world raises its greenhouse forcing, so a step can
+cost habitability — one world measured at 0.25 → 0.12 → 0.23 across two
+projects. This reads like a sequencing bug from outside, and this file used to
+call it one: *a planner that looked one rung ahead would not do it.* That was
+asserted without checking, and checking says the opposite. Across 211 finishable
+worlds, a planner that refuses any step lowering habitability and otherwise
+takes the best one available was **shorter on none of them, longer on 34, and
+failed to finish 177 outright** — five worlds in six stranded. Every one of the
+59 dips in the sample had a legal alternative that would not have dipped, which
+is exactly why the greedy planner looks attractive and exactly why it strands
+them: refusing to make a world temporarily worse means never building the
+atmosphere everything after it depends on. `plan._wanted` is ordered by *what
+blocks what*, not by outcome, and `tests/test_terraform.py` runs both planners
+over a generated galaxy so the next attempt to optimise it fails loudly.
+
 **It has to be priced in what the economy actually makes**, and for a long time
 it was not. This file used to say the binding constraint was electronics and
 call that the materials economy working as designed. It was a defect wearing the
@@ -735,11 +751,6 @@ turns on habitability, which contradicted the expectation going in.
 - **Nobody has played a core start for long.** Neighbours a fraction of a
   light-year apart is a very different game, and the difference is still
   arithmetic rather than a session.
-- **A world can be terraformed *worse* on the way up.** Thickening the air of a
-  warm world raises its greenhouse forcing, so the ladder sometimes spends a
-  project undoing the last one — measured, one world went 0.25 → 0.12 → 0.23
-  across two projects. That is the physics being honest and the *sequencing*
-  being naive; a planner that looked one rung ahead would not do it.
 - **The tail of a long soak is where the cost is.** A 28-day run sits near
   100 ms/tick at 8 civs; a 120-day run averages roughly three times that, and
   the profile is dominated by galaxy *generation* — `systems_in_sector` and
