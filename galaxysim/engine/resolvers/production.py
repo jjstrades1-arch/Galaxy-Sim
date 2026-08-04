@@ -420,6 +420,27 @@ def _run_power(
     return ctx.remember(_power_key(colony.id), met)
 
 
+def water_per_hour(colony: Colony, effects: ColonyEffects, *, rates: Rates = DEFAULT_RATES) -> float:
+    """Tonnes of water an hour this colony drinks to stay alive.
+
+    Zero on a world with oceans, which is what makes a marginally habitable but
+    *wet* world a far better place to be than a rich dry one, and zero on a
+    world habitable enough not to need sealing.
+
+    Written down once because four places were computing it: life support
+    itself, the governor deciding how many people to reserve, the colony
+    readout, and now the AI sizing a supply route. Four copies of a formula is
+    four chances to drift, and the readout is the one that gets believed.
+    """
+    if colony.population <= 0 or colony.world.surface_water:
+        return 0.0
+    hostility = 1.0 - effective_habitability(colony, effects)
+    if hostility <= 0:
+        return 0.0
+    need = colony.population * rates.life_support_per_pop_per_hour * hostility
+    return need * rates.water_per_life_support * (1.0 - effects.life_support_recycling)
+
+
 def _run_life_support(
     ctx: TickContext,
     colony: Colony,

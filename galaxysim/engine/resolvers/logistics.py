@@ -239,34 +239,63 @@ def _run_outbound_leg(
                     payload={"colony_id": origin.id},
                 )
 
-        wanted = {
-            resource: max(0.0, amount - fleet.cargo.get(resource, 0.0))
+        # **The manifest is a level to keep the destination at, not a quantity
+        # to ship.** It used to be the latter, so a route carried the same load
+        # whether the far end was empty or sitting on months of surplus -- the
+        # freighter could not respond to the one thing it existed to respond to.
+        # Reading the destination's warehouse from the origin is free because
+        # both ends belong to the same civilization; this is a supply clerk
+        # checking a number, not a scout.
+        # What the far end is short of, which is a different question from what
+        # the hold can carry.
+        needed = {
+            resource: max(0.0, amount - destination.stockpile.get(resource, 0.0))
             for resource, amount in manifest.items()
         }
-        outstanding = {r: a for r, a in wanted.items() if a > 1e-9}
+        outstanding = {
+            resource: amount - fleet.cargo.get(resource, 0.0)
+            for resource, amount in needed.items()
+            if amount - fleet.cargo.get(resource, 0.0) > 1e-9
+        }
 
         if outstanding and origin.stockpile:
             _load(fleet, origin, outstanding, ctx.per_tick(throughput_per_hour(origin)))
 
         short = {
-            resource: amount - fleet.cargo.get(resource, 0.0)
-            for resource, amount in manifest.items()
+            resource: amount
+            for resource, amount in needed.items()
             if fleet.cargo.get(resource, 0.0) + 1e-9 < amount
         }
-        # Keep loading while the origin still has what the manifest asks for.
-        # Departing on a part load sounds generous to a hungry outpost, and at
-        # small numbers it was -- one tick of throughput used to be most of a
+        # Keep loading while the origin still has what the destination is short
+        # of. Departing on a part load sounds generous to a hungry outpost, and
+        # at small numbers it was -- one tick of throughput used to be most of a
         # manifest. In tonnes it is a rounding error, and a route that leaves
         # four percent full delivers less than the destination drinks in transit.
         # So: go when the hold is full, or when the origin cannot fill it.
+        #
+        # **"Or when the hold is full" has to be checked explicitly** now that a
+        # manifest is a level rather than a quantity. It used to be implied: a
+        # manifest was a load, and a load fits in the ship carrying it. A level
+        # need not -- an outpost kept at three hundred thousand tonnes by a
+        # ten-thousand-tonne freighter is an ordinary standing order -- and
+        # without this the shortfall never clears, so the freighter loads to
+        # capacity and then sits on the pad for ever, which is exactly what it
+        # did the first time this ran.
         can_still_supply = any(
             origin.stockpile.get(resource, 0.0) > 1e-9 for resource in short
         )
-        if short and can_still_supply:
+        if short and can_still_supply and fleet.cargo_space > 1e-9:
             intent.result = f"loading at {origin.name} ({_describe(fleet.cargo)})"
             return
         if fleet.cargo_tonnage <= 0:
-            intent.result = f"waiting for cargo at {origin.name}"
+            # Either the origin has nothing to give or the far end needs
+            # nothing. They are different situations and a player reading this
+            # can act on only one of them.
+            intent.result = (
+                f"{destination.name} is stocked; holding at {origin.name}"
+                if not any(amount > 1e-9 for amount in needed.values())
+                else f"waiting for cargo at {origin.name}"
+            )
             return
 
         # What it leaves with is also what it is allowed to bring back; see

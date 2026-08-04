@@ -791,14 +791,6 @@ waiting to be tuned.
 
 ## Known tuning gaps
 
-- **A supply route ships a quantity, not a shortfall.** A standing route carries
-  its full manifest every trip whether or not the destination needs it. This used
-  to say the consequence was outposts banking months of surplus; measured over
-  sixty days and sixty routes, it is not — water at a routed outpost sits between
-  zero and four manifests, several are near empty and one dry world was at
-  nothing. What the manifest cannot do is *respond*, so a thirsty world and a
-  full one get the same delivery. A route that topped up to a level would be
-  better on both ends.
 - **Ships take about twice as long to build.** Refining takes half the industry
   pool, so construction runs at half the rate it did. That is the intended
   shape — ore has to become steel before it can become a hull — but the split is
@@ -837,6 +829,20 @@ Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
 
+- **A supply route shipped a quantity, not a shortfall.** A standing route
+  carried its full manifest every trip whether the far end was empty or
+  drowning — the one thing a supply run exists to respond to was the one thing
+  it could not see. This file used to say the consequence was outposts banking
+  months of surplus; measured, it was the opposite. A round trip took **140
+  hours**, the manifest was 12,000 tonnes of water, and a typical destination
+  drank 210 an hour, so a route replaced about **40%** of what its world
+  consumed between visits, and one outpost sat at zero after eighteen
+  deliveries. A manifest is now the **level to keep** at the destination, and
+  the AI sizes it from what that colony actually drinks rather than a constant.
+  Both halves were needed: a level frozen at the moment the order was placed is
+  a landing party's ration, and an outpost quadruples within weeks, so the
+  target is refreshed as the world grows. Import-dependent destinations under a
+  day of water went **3 → 1 of 63, and none are at zero**.
 - **The best world in the game had six factories.** A governor stopped walking
   its build order at the first entry it could not pay for — right while a colony
   is *accumulating*, and nothing checked whether it was. A terraformed garden of

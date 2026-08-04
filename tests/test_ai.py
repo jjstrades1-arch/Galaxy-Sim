@@ -775,6 +775,99 @@ def test_taking_the_world_ends_the_war_it_was_declared_for():
         assert _war_status(session, raider_id) == [IntentStatus.CANCELLED.value]
 
 
+def test_a_standing_route_grows_with_the_world_it_feeds():
+    """A number that was right when it was written and wrong ever after.
+
+    Route levels are decided when the order is placed, and an outpost is at its
+    smallest exactly then -- fifty thousand settlers. Within weeks it is a
+    quarter of a million people drinking four times as much, while the order
+    goes on asking for what suited the landing party.
+
+    Measured over sixty days, that stale number was the whole of the problem
+    once routes learned to top up rather than dump: destinations sat at about
+    seventy hours of cover against a round trip of about the same, so each ran
+    down to nothing just as its next delivery finished. Twenty-one of sixty-three
+    were under a day of water and two were at zero, with every freighter visibly
+    loading, flying and unloading. Nothing was stuck; the target was simply out
+    of date.
+    """
+    from galaxysim.ai.simple import _route_levels, take_turn
+    from galaxysim.engine import intents as intent_api
+    from galaxysim.materials import WATER
+    from galaxysim.model.entities import Fleet, Intent, IntentKind
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(
+        engine, seed=833, civs=("Terrans",), seconds_per_tick=3600
+    )
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        civ.is_ai = True
+        home = session.scalar(
+            select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
+        )
+        world = _free_world(session)
+        world.habitability = 0.0
+        outpost = Colony(
+            world=world,
+            civ_id=civ.id,
+            name="Deep Rock",
+            population=50_000.0,
+            infrastructure=1.0,
+            founded_tick=0,
+            stockpile={},
+            labor=dict(home.labor),
+        )
+        session.add(outpost)
+        session.add(
+            Fleet(
+                universe_id=universe_id,
+                civ_id=civ.id,
+                name="Hauler",
+                strength=0.5,
+                colony_pods=0,
+                speed_ly_per_hour=1.0,
+                cargo={},
+                cargo_capacity=50_000.0,
+                x=home.world.system.x,
+                y=home.world.system.y,
+                z=home.world.system.z,
+            )
+        )
+        session.flush()
+        intent_api.supply_route(
+            session, civ, session.scalars(select(Fleet)).first().id,
+            home.id, outpost.id, _route_levels(outpost),
+        )
+        session.flush()
+        opening = float(
+            session.scalar(
+                select(Intent).where(Intent.kind == IntentKind.SUPPLY_ROUTE.value)
+            ).payload["manifest"][WATER]
+        )
+        outpost_id = outpost.id
+
+    # The outpost fills out, as every outpost does.
+    with open_session(engine) as session:
+        session.get(Colony, outpost_id).population = 250_000.0
+
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, civ_by_name(session, universe_id, "Terrans"))
+        session.flush()
+        now = float(
+            session.scalar(
+                select(Intent).where(Intent.kind == IntentKind.SUPPLY_ROUTE.value)
+            ).payload["manifest"][WATER]
+        )
+
+    assert now > opening * 2, (
+        f"the world it feeds grew fivefold and the order still asks for "
+        f"{now:,.0f} against the original {opening:,.0f}"
+    )
+
+
 def test_the_player_and_the_opponent_see_the_same_galaxy():
     """The rule this whole module opens with, checked instead of asserted.
 

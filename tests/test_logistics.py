@@ -316,6 +316,92 @@ def test_a_route_runs_without_further_orders():
         assert len(deliveries) >= 3, f"expected repeated round trips, saw {len(deliveries)}"
 
 
+def test_a_route_carries_the_shortfall_rather_than_the_manifest():
+    """A manifest is a level to keep, not a quantity to ship.
+
+    It used to be the quantity, so a freighter arrived with the same load
+    whether the far end was empty or drowning -- the one thing a supply run
+    exists to respond to was the one thing it could not see. Measured over sixty
+    days before the change: a round trip took 140 hours, the manifest was twelve
+    thousand tonnes of water, and a typical destination drank 210 an hour, so a
+    route delivered about forty percent of what it was there to replace. One
+    outpost sat at zero after eighteen deliveries.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=911, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        take_manual_control(session, civ)
+        home = home_colony(session, civ)
+        home.world.habitability = 1.0
+        home.stockpile = {WATER: 100_000_000.0}
+        feed(home)
+        # Wet, so it drinks nothing and the arithmetic under test is the only
+        # thing moving its stockpile. Holding a quarter of its level.
+        outpost = _sibling_outpost(
+            session, civ, home, habitability=1.0, stockpile={WATER: 5_000.0}
+        )
+        fleet = _freighter(session, civ, home, capacity=100_000.0)
+        intents.supply_route(session, civ, fleet.id, home.id, outpost.id, {WATER: 20_000.0})
+        outpost_id = outpost.id
+
+    run_ticks(engine, universe_id, 120)
+
+    with open_session(engine) as session:
+        held = session.get(Colony, outpost_id).stockpile.get(WATER, 0.0)
+        assert held == pytest.approx(20_000.0, rel=0.01), (
+            "it should have been topped up to its level and left there; shipping "
+            f"the manifest instead would have piled 25,000 on -- found {held:,.0f}"
+        )
+
+
+def test_a_route_to_a_stocked_colony_carries_nothing_and_says_so():
+    """The other half, and the one that makes a route a decision.
+
+    A freighter shuttling full loads to a colony that needs none is a hull
+    drawing upkeep to move tonnage that was already there. Now it holds, and the
+    order says which of the two reasons it is holding for -- an origin with
+    nothing to give and a destination with nothing to want look identical from
+    the outside and want opposite responses.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=912, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        take_manual_control(session, civ)
+        home = home_colony(session, civ)
+        home.world.habitability = 1.0
+        home.stockpile = {WATER: 100_000_000.0}
+        feed(home)
+        # A wet world, so it drinks nothing and stays above its level.
+        outpost = _sibling_outpost(
+            session, civ, home, habitability=1.0, stockpile={WATER: 90_000.0}
+        )
+        fleet = _freighter(session, civ, home, capacity=100_000.0)
+        intents.supply_route(session, civ, fleet.id, home.id, outpost.id, {WATER: 20_000.0})
+        fleet_id = fleet.id
+        route_id = session.scalar(
+            select(intents.Intent).where(intents.Intent.kind == "supply_route")
+        ).id
+
+    run_ticks(engine, universe_id, 40)
+
+    with open_session(engine) as session:
+        assert session.get(Fleet, fleet_id).cargo_tonnage == pytest.approx(0.0), (
+            "the far end holds four times its level; nothing should have loaded"
+        )
+        assert not session.scalars(
+            select(Event).where(Event.kind == "supply_delivered")
+        ).all()
+        route = session.get(intents.Intent, route_id)
+        assert route.status == IntentStatus.IN_PROGRESS.value, "and the order still stands"
+        assert "stocked" in (route.result or ""), (
+            f"a player should be told why it is idle, not just that it is: {route.result!r}"
+        )
+
+
 # -------------------------------------------------------------- the backhaul
 
 

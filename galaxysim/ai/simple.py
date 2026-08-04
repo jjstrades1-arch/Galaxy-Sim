@@ -50,6 +50,7 @@ from galaxysim.engine.resolvers.production import (
     SUPPLY_RANGE_LY,
     colony_effects,
     effective_habitability,
+    water_per_hour,
 )
 from galaxysim.worldgen.galaxy import systems_near
 from galaxysim.model.entities import (
@@ -73,10 +74,25 @@ from galaxysim.model.entities import (
 SETTLERS = 50_000.0
 STORES_FOR_A_MONTH = 40_000.0
 
-#: What a standing route carries to a colony that cannot supply itself. Sized
-#: against what the settlers actually consume rather than what the freighter
-#: could hold, so the route tops the outpost up rather than burying it.
+#: The level a standing route keeps a supplied colony topped up to -- a *stock*
+#: to maintain, not a quantity to ship, which is what the manifest means since
+#: routes learned to read the far end's warehouse.
+#:
+#: Water is sized per colony from what it actually drinks; these are the floors
+#: for a colony that drinks nothing measurable, and the fixed levels for the two
+#: goods whose consumption the AI does not model.
 ROUTE_MANIFEST = {WATER: 12_000.0, FOOD: 1_500.0, FERTILISER: 500.0}
+
+#: Hours of its own consumption a route tries to keep standing at a destination.
+#:
+#: A round trip was **measured at 140 hours** across sixty days of soak, against
+#: a flat twelve-thousand-tonne water manifest and a typical outpost burning 210
+#: tonnes an hour -- so a route delivered about forty percent of what its
+#: destination drank between visits, and the shortfall was invisible because the
+#: number shipped never had anything to do with the number consumed. Two round
+#: trips of cover, so a single missed or slow trip is survivable rather than
+#: fatal.
+ROUTE_COVER_HOURS = 300.0
 
 BUILD_STRENGTH = 2.0
 BUILD_RESERVE = 2.0  # only build if it can afford this many such fleets
@@ -488,13 +504,14 @@ def _maybe_supply(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     # The capital -- biggest population -- is the only place with the surplus to
     # supply anybody.
     source = max(colonies, key=lambda c: c.population)
-    routed = {
-        intent.payload.get("dest_colony_id")
+    existing = {
+        intent.payload.get("dest_colony_id"): intent
         for intent in _all_routes(session, universe, civ)
     }
+    _refresh_route_levels(colonies, existing)
 
     for colony in colonies:
-        if colony.id == source.id or colony.id in routed:
+        if colony.id == source.id or colony.id in existing:
             continue
         # The promoted column, not the document. ``surface_water`` has existed
         # for exactly this since the columns were added; this call was reading
@@ -516,9 +533,62 @@ def _maybe_supply(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
                 return
             _order_freighter(session, civ, source, pending)
             return
-        intents.supply_route(session, civ, fleet.id, source.id, colony.id, dict(ROUTE_MANIFEST))
+        intents.supply_route(
+            session, civ, fleet.id, source.id, colony.id, _route_levels(colony)
+        )
         turn.claimed.add(fleet.id)
         return
+
+
+def _refresh_route_levels(colonies: list[Colony], existing: dict) -> None:
+    """Raise a standing route's target when the world at the end of it has grown.
+
+    A route's levels are decided once, when the order is placed, and an outpost
+    is smallest exactly then -- fifty thousand settlers. It grows to a quarter of
+    a million within weeks and drinks four times as much, while the order goes on
+    asking for the amount that suited the landing party.
+
+    Measured, that was the whole of the remaining problem. With the target frozen
+    at creation, destinations sat at roughly seventy hours of cover against a
+    round trip of about the same, so every one of them ran down to nothing just
+    as the next delivery finished -- twenty-one of sixty-three under a day of
+    water, two at zero, while their freighters were all visibly loading, flying
+    and unloading. Nothing was stuck. The number was simply stale.
+
+    Only ever upward. A colony that shrinks does not need its supply cut on the
+    same tick, and letting the target fall would make a dying world die faster.
+    """
+    by_id = {colony.id: colony for colony in colonies}
+    for colony_id, intent in existing.items():
+        colony = by_id.get(colony_id)
+        if colony is None:
+            continue
+        manifest = dict(intent.payload.get("manifest") or {})
+        wanted = _route_levels(colony)
+        raised = {
+            material: max(amount, manifest.get(material, 0.0))
+            for material, amount in wanted.items()
+        }
+        if any(raised[m] > manifest.get(m, 0.0) * 1.1 for m in raised):
+            intent.payload = {**intent.payload, "manifest": {**manifest, **raised}}
+
+
+def _route_levels(destination: Colony) -> dict[str, float]:
+    """What a route should keep standing at ``destination``.
+
+    Water against what this particular colony drinks, because that is the term
+    that varies by four orders of magnitude across an empire -- a fifty-thousand
+    person outpost on a mild world and a ten-billion-person world sealed against
+    vacuum are the same order in every other respect and nothing alike in this
+    one. The flat twelve thousand tonnes the AI used to ask for was a number
+    that had stopped meaning anything: measured, it covered about forty percent
+    of what a destination drank between visits.
+    """
+    levels = dict(ROUTE_MANIFEST)
+    burn = water_per_hour(destination, colony_effects(destination))
+    if burn > 0:
+        levels[WATER] = max(levels[WATER], burn * ROUTE_COVER_HOURS)
+    return levels
 
 
 def _order_freighter(

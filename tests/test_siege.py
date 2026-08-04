@@ -230,12 +230,14 @@ def test_lifting_the_blockade_lets_the_route_run_again():
         home.world.habitability = 1.0
         outpost = _outpost(session, terrans, home, stockpile={WATER: 200_000.0})
         hauler = _freighter(session, terrans, home, capacity=10_000.0)
-        # A small manifest so the round trip is short. An outpost with no
-        # spaceport handles 250 tonnes an hour, so a full freighter spends a
-        # week on the pad -- fine in play, and long enough here to hide whether
-        # the route resumed at all.
+        # A manifest is the level to *keep* at the far end, so it has to be
+        # above what the outpost already holds or the route has nothing to do
+        # and correctly stays on the pad. The freighter's ten-thousand-tonne
+        # hold is what bounds a single trip, which keeps the round trip short:
+        # an outpost with no spaceport handles 250 tonnes an hour, so a bigger
+        # load would spend a week unloading and hide whether the route resumed.
         intents.supply_route(
-            session, terrans, hauler.id, home.id, outpost.id, {WATER: 5_000.0}
+            session, terrans, hauler.id, home.id, outpost.id, {WATER: 500_000.0}
         )
         _forward_base(session, vex, outpost)
         blockader = _besieger(session, vex, outpost, strength=20.0)

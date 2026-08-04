@@ -62,7 +62,11 @@ from galaxysim.engine.rates import DEFAULT_RATES, Cadence
 from galaxysim.engine.resolvers import queries, siege
 from galaxysim.engine.resolvers.siege import BLOCKADE_RANGE_LY
 from galaxysim.engine.resolvers.governor import POLICIES
-from galaxysim.engine.resolvers.production import colony_effects, effective_habitability
+from galaxysim.engine.resolvers.production import (
+    colony_effects,
+    effective_habitability,
+    water_per_hour,
+)
 from galaxysim.cli.survey_view import format_count
 from galaxysim.cli.survey_view import render as render_survey
 from galaxysim.worldgen.galaxy import REGIONS, metallicity_at, systems_near
@@ -714,10 +718,9 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
                 "own water. No supply line required.[/green]"
             )
         else:
-            per_unit = DEFAULT_RATES.water_per_life_support * (
-                1.0 - effects.life_support_recycling
-            )
-            burn = need * per_unit
+            # The engine's own figure, so the days-of-air a player reads is the
+            # same number life support will actually consume.
+            burn = water_per_hour(colony, effects)
             stock = colony.stockpile.get(WATER, 0.0)
             hours = (stock / burn) if burn > 0 else None
             colour = "red" if hours is not None and hours < 48 else "yellow"
