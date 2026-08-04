@@ -308,6 +308,11 @@ def take_turn(
     if not pending.get(IntentKind.RESEARCH.value):
         intents.research(session, civ)
 
+    # Before anything reads the war: is there still one? A standing attack order
+    # outlives the fleet that was prosecuting it, and until this ran the answer
+    # was always yes, for ever. See :func:`_maybe_make_peace`.
+    _maybe_make_peace(turn, pending)
+
     # Which ships are already keeping a cordon, before anything decides they
     # look spare. See :func:`_besieging`.
     turn.on_station = _besieging(turn, pending)
@@ -646,6 +651,12 @@ def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
         return
     # One war at a time. The attack order is standing, so a second declaration
     # would not add anything except more enemies to be blockaded by.
+    #
+    # This reads "not currently prosecuting a war", not "has ever declared one".
+    # The difference is :func:`_maybe_make_peace`, which runs first and drops the
+    # order once nothing of this civ's is standing over anything of theirs --
+    # without it this guard was true for the rest of the game the moment it first
+    # came true, and every AI in every soak declared exactly one war, ever.
     if pending.get(IntentKind.ATTACK.value):
         return
 
@@ -744,6 +755,77 @@ def _besieging(turn: "_Turn", pending: dict[str, list[Intent]]) -> set[int]:
         if not fleet.in_transit
         and any(distance(fleet.position, where) <= BLOCKADE_RANGE_LY for where in besieged)
     }
+
+
+def _maybe_make_peace(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
+    """Drop a war nobody is fighting any more.
+
+    An attack order is standing by design -- a war must not lapse because
+    somebody was offline for a week -- and nothing in the engine ever completes
+    one. That is right for the *order*. It was wrong for the opponent, because
+    :func:`_maybe_raid` opens by refusing to declare while one is outstanding, so
+    the first war an AI ever declared was also its last. A civilization whose
+    raid was destroyed in the first week spent the remaining hundred and ten days
+    permanently hostile to somebody it was not fighting and unable to fight
+    anybody else. A 120-day soak produced two wars between eight civilizations,
+    one of which took a world, and both orders were still standing at the end.
+
+    So: **a war this civilization is not prosecuting is over.** Prosecuting means
+    a warship of its own standing over a colony of that rival, or on its way to
+    one -- the same cordon :func:`_besieging` reads and the same one the siege
+    resolver charges for, rather than a memory of an objective nobody recorded.
+    That one rule covers both endings without needing to tell them apart:
+
+    - **The raid is spent.** Its ships are gone, or they went home. Nobody is
+      standing over anything, and there is no fleet to reinforce with because the
+      AI does not send second waves.
+    - **The objective was taken.** The world its ships are parked over is *its
+      own* now, so it is no longer standing over a rival's colony at all.
+
+    Cancelling goes through :func:`galaxysim.engine.intents.cancel`, which is the
+    call a player has and the only one -- there is no separate ending-a-war
+    mechanism, and the README's claim that a standing attack order is the whole
+    surface of war stays true. What changes is only that the AI can now notice
+    the war is over, rebuild, and pick a fight it can win.
+
+    The order list is edited in place because every decision after this one reads
+    ``pending`` rather than the database: a raid cancelled here must be invisible
+    to :func:`_besieging` and :func:`_maybe_annex` on the same turn, or ships stay
+    pinned to a cordon for a war that has just ended.
+    """
+    orders = pending.get(IntentKind.ATTACK.value)
+    if not orders:
+        return
+
+    theirs: dict[int, list[Vec3]] = {}
+    for colony in queries.visible_rivals(turn.systems, turn.civ.id):
+        theirs.setdefault(colony.civ_id, []).append(colony.world.system.position)
+
+    standing: list[Intent] = []
+    for intent in orders:
+        target = intent.payload.get("target_civ_id")
+        if any(_prosecuting(turn, where) for where in theirs.get(target, ())):
+            standing.append(intent)
+            continue
+        intents.cancel(turn.session, intent)
+    pending[IntentKind.ATTACK.value] = standing
+
+
+def _prosecuting(turn: "_Turn", where: Vec3) -> bool:
+    """Whether this civ has a warship over ``where``, or one heading there.
+
+    In transit counts, and has to: the raid's ships are ordered to the target on
+    the same turn war is declared, so for the days they spend crossing there is
+    nobody standing over anything. Judging the war on presence alone would cancel
+    it the tick after it began.
+    """
+    for fleet in turn.fleets:
+        if fleet.strength <= 0:
+            continue  # a lander holds no cordon; only a fleet that can fight does
+        at = _destination(fleet) if fleet.in_transit else fleet.position
+        if at is not None and distance(at, where) <= BLOCKADE_RANGE_LY:
+            return True
+    return False
 
 
 def _maybe_annex(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:

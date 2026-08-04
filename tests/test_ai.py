@@ -624,6 +624,157 @@ def test_it_still_attacks_a_world_it_can_take():
         assert wars and wars[0].payload["target_civ_id"] == rival_id
 
 
+def _war_status(session, civ_id: int) -> list[str]:
+    return [intent.status for intent in _declared_wars(session, civ_id)]
+
+
+def test_a_war_nobody_is_fighting_any_more_is_dropped():
+    """Every AI in every soak declared exactly one war, ever.
+
+    Nothing in the engine completes an attack order -- deliberately, so a war
+    does not lapse while somebody is offline -- and ``_maybe_raid`` refuses to
+    declare while one is outstanding. Put together, the first war a civilization
+    started was the last thing it ever did about conflict: a raid ground down in
+    week one left it permanently hostile to a neighbour it was not fighting and
+    unable to go anywhere else for the next hundred and ten days.
+
+    What it now checks is the thing it can see about itself -- whether any ship
+    of its own is standing over, or heading toward, anything of theirs.
+    """
+    from galaxysim.model.entities import Fleet, IntentStatus
+
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, _ = _border_universe(
+        "driven", rival_population=50_000.0, warships=40.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        raider = session.get(Civ, raider_id)
+
+        take_turn(session, universe, raider)
+        session.flush()
+        assert _war_status(session, raider_id) == [IntentStatus.QUEUED.value]
+
+        # The raid does not survive the crossing. Nothing else changes: the
+        # rival's world is still there, still weakly held, still worth taking.
+        for fleet in session.scalars(select(Fleet).where(Fleet.civ_id == raider_id)):
+            session.delete(fleet)
+        session.flush()
+
+        take_turn(session, universe, raider)
+        session.flush()
+        assert _war_status(session, raider_id) == [IntentStatus.CANCELLED.value], (
+            "the war outlived every ship that was prosecuting it"
+        )
+
+
+def test_a_civilization_that_lost_a_war_can_start_another():
+    """The point of letting one end. Peace that leads nowhere is just defeat.
+
+    ``_maybe_raid``'s guard used to mean "has ever declared a war". It now means
+    "is currently fighting one", and this is the difference: rebuild a navy and
+    the civilization goes again, at the same rival or a better target.
+    """
+    from galaxysim.model.entities import Fleet, IntentStatus
+
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, rival_id = _border_universe(
+        "driven", rival_population=50_000.0, warships=40.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        raider = session.get(Civ, raider_id)
+        home = session.scalar(
+            select(Colony).where(Colony.civ_id == raider_id).order_by(Colony.id)
+        )
+
+        take_turn(session, universe, raider)
+        session.flush()
+        for fleet in session.scalars(select(Fleet).where(Fleet.civ_id == raider_id)):
+            session.delete(fleet)
+        session.flush()
+        take_turn(session, universe, raider)  # notices, and stands down
+        session.flush()
+
+        session.add(
+            Fleet(
+                universe_id=universe_id,
+                civ_id=raider_id,
+                name="Second Squadron",
+                strength=40.0,
+                colony_pods=1,
+                speed_ly_per_hour=1.0,
+                cargo={},
+                cargo_capacity=40.0,
+                x=home.world.system.x,
+                y=home.world.system.y,
+                z=home.world.system.z,
+            )
+        )
+        session.flush()
+
+        take_turn(session, universe, raider)
+        session.flush()
+
+        wars = _declared_wars(session, raider_id)
+        assert len(wars) == 2, f"it never declared again: {_war_status(session, raider_id)}"
+        assert wars[-1].status == IntentStatus.QUEUED.value
+        assert wars[-1].payload["target_civ_id"] == rival_id
+
+
+def test_taking_the_world_ends_the_war_it_was_declared_for():
+    """The other way a war finishes, and it needs no separate rule.
+
+    Once the colony is this civilization's own, its fleet is no longer standing
+    over anything belonging to the rival -- so the same "am I prosecuting
+    anything" question answers no, and the order goes. No objective has to be
+    recorded anywhere, which matters because nothing records one.
+    """
+    from galaxysim.model.entities import Fleet, IntentStatus
+
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, rival_id = _border_universe(
+        "driven", rival_population=50_000.0, warships=40.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        raider = session.get(Civ, raider_id)
+
+        take_turn(session, universe, raider)
+        session.flush()
+        assert _war_status(session, raider_id) == [IntentStatus.QUEUED.value]
+
+        taken = session.scalar(
+            select(Colony).where(Colony.civ_id == rival_id).order_by(Colony.id)
+        )
+        where = taken.world.system
+        # The fleet arrives and holds station, the way the siege resolver leaves
+        # it -- and then the capture lands.
+        for fleet in session.scalars(select(Fleet).where(Fleet.civ_id == raider_id)):
+            fleet.x, fleet.y, fleet.z = where.x, where.y, where.z
+            fleet.origin_x = fleet.origin_y = fleet.origin_z = None
+            fleet.dest_x = fleet.dest_y = fleet.dest_z = None
+            fleet.departed_tick = fleet.arrival_tick = None
+        session.flush()
+
+        # Still at war while the world is theirs and the cordon is up.
+        take_turn(session, universe, raider)
+        session.flush()
+        assert _war_status(session, raider_id) == [IntentStatus.QUEUED.value], (
+            "it gave up while its fleet was sitting on the objective"
+        )
+
+        taken.civ_id = raider_id
+        session.flush()
+
+        take_turn(session, universe, raider)
+        session.flush()
+        assert _war_status(session, raider_id) == [IntentStatus.CANCELLED.value]
+
+
 def test_the_player_and_the_opponent_see_the_same_galaxy():
     """The rule this whole module opens with, checked instead of asserted.
 
