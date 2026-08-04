@@ -395,7 +395,17 @@ def orders() -> None:
 
         table = Table("id", "order", "status", "detail", title="Orders")
         for intent in pending:
-            detail = intent.result or ", ".join(f"{k}={v}" for k, v in sorted(intent.payload.items()))
+            # A terraforming order's payload is a work figure in the tens of
+            # millions, which tells a player nothing they can act on. What they
+            # want is how far along it is and when it lands.
+            detail = None
+            if intent.kind == "terraform":
+                colony = session.get(Colony, intent.payload.get("colony_id", -1))
+                if colony is not None:
+                    detail = _terraform_progress(session, civ, colony)
+            detail = detail or intent.result or ", ".join(
+                f"{k}={v}" for k, v in sorted(intent.payload.items())
+            )
             table.add_row(str(intent.id), intent.kind, intent.status, detail)
         console.print(table)
 
@@ -519,6 +529,16 @@ def planet(world_id: int = typer.Argument(..., help="World to survey.")) -> None
                 f"[dim]Settled: {world.colony.name}, "
                 f"population {format_count(world.colony.population)}[/dim]"
             )
+        # Whether this world could ever be made somewhere people live, which is
+        # the question that decides whether it is worth settling at all. Two
+        # thirds of worlds cannot: a hopeless one still swallows nine real
+        # projects, each looking like progress, before the ladder stalls.
+        if world.terraform_next:
+            console.print(
+                "[green]Terraforming could finish this world.[/green]"
+                if world.terraform_finishable
+                else "[red]This world cannot be terraformed to habitability.[/red]"
+            )
 
 
 @app.command()
@@ -586,6 +606,7 @@ def colony(colony_id: int = typer.Argument(..., help="Colony to inspect.")) -> N
             )
 
         _print_siege(colony)
+        _print_terraform_progress(session, civ, colony)
         _print_power(colony, effects)
 
         allocation = normalize(colony.labor)
@@ -777,19 +798,27 @@ def terraform(
         survey = survey_from_json(colony.world.survey)
 
         if project is None:
-            console.print(
-                f"[bold]{colony.world.name}[/bold] - habitability "
-                f"{survey.habitability:.2f}, capacity "
-                f"{format_count(colony.world.carrying_capacity)}\n"
-            )
+            # What the *civilization* holds, not what this colony holds.
+            #
+            # Stockpiles are local and nothing may usually spend across them --
+            # but terraforming is the documented exception, and the reason is on
+            # ``terraform._reach``: work attenuates with distance because an
+            # engineering corps far away is no help this month, while materials
+            # do not, because freight goes anywhere given time. The resolver
+            # pools every colony the civ owns. Checking this colony's warehouse
+            # told a player they were short of electronics for a project their
+            # empire could pay for twice over, and they would not order it.
+            purse = queries.total_stockpile(session, civ.id)
+
+            _print_campaign(colony, survey, purse)
             table = Table("project", "state", "cost", "work")
             for spec in PROJECTS.values():
                 unmet = unmet_requirements(survey, spec)
                 if unmet:
                     state = f"[yellow]needs {unmet[0]}[/]"
-                elif not can_afford(colony.stockpile, spec.cost):
+                elif not can_afford(purse, spec.cost):
                     short = ", ".join(
-                        MATERIALS[k].name for k in sorted(shortfalls(colony.stockpile, spec.cost))
+                        MATERIALS[k].name for k in sorted(shortfalls(purse, spec.cost))
                     )
                     state = f"[yellow]short of {short}[/]"
                 else:
@@ -1238,6 +1267,117 @@ def log(
 ) -> None:
     """Show what happened while you were away."""
     _print_log(_engine(), since=since, limit=limit)
+
+
+def _terraform_progress(session, civ, colony) -> str | None:
+    """How far a running project on this colony has got, and when it lands.
+
+    The estimate is the resolver's own arithmetic --
+    :func:`terraform.pooled_construction_per_hour` -- so the day it names is the
+    day the engine is actually working toward, rather than a second guess that
+    can drift away from it.
+
+    Honest about what it cannot know: the true per-tick figure runs through the
+    brownout and the refining share, so this is what the workers could do. It
+    reads as "about", because it is.
+    """
+    from galaxysim.engine.resolvers.terraform import pooled_construction_per_hour
+
+    running = [
+        intent
+        for intent in intents.pending(session, civ)
+        if intent.kind == "terraform"
+        and intent.payload.get("colony_id") == colony.id
+        and intent.payload.get("work_remaining") is not None
+    ]
+    if not running:
+        return None
+
+    intent = running[0]
+    spec = PROJECTS.get(str(intent.payload.get("project", "")))
+    left = float(intent.payload["work_remaining"])
+    done = (1.0 - left / spec.work) if spec and spec.work > 0 else 0.0
+
+    rate = pooled_construction_per_hour(
+        queries.colonies_of(session, civ.id), colony.world.system.position
+    )
+    name = spec.name if spec else intent.payload.get("project", "a project")
+    if rate <= 0:
+        return f"{name}: {done:.0%} done, and nothing is working on it"
+    return f"{name}: {done:.0%} done, about {left / rate / 24:.1f} days left"
+
+
+def _print_terraform_progress(session, civ, colony) -> None:
+    note = _terraform_progress(session, civ, colony)
+    if note:
+        console.print(f"[cyan]Terraforming - {note}[/cyan]")
+
+
+def _print_campaign(colony, survey, purse: dict) -> None:
+    """What it would take to make this world liveable, and whether it can be.
+
+    The interface used to show what was possible *right now* and nothing else,
+    which answers the small question. A campaign is fifteen projects; the one
+    worth asking is whether the whole sequence is worth a civilization's surplus,
+    and that needs the total and the destination.
+
+    And whether there is a destination at all. Two thirds of generated worlds
+    cannot be finished -- their own air holds them above the growing band and an
+    orbital shade saturates -- and a hopeless one still swallows nine real
+    projects, every one of which looks like progress, before the ladder stalls.
+    """
+    from galaxysim.terraform.plan import campaign
+
+    world = colony.world
+    console.print(
+        f"[bold]{world.name}[/bold] - habitability {survey.habitability:.2f}, "
+        f"capacity {format_count(world.carrying_capacity)}"
+    )
+
+    steps, finished = campaign(survey)
+    if not steps:
+        console.print("[green]Nothing left worth doing to this world.[/green]\n")
+        return
+
+    if not world.terraform_finishable:
+        console.print(
+            f"[red]This world cannot be finished.[/red] {len(steps)} project(s) "
+            "would still leave it uninhabitable: what stops it is physics rather "
+            "than money, and no amount of industry changes that.\n"
+            "[dim]Usually a thick atmosphere holding the surface above the "
+            "growing band -- an orbital shade reflects only so much light, and "
+            "past that the heat stays.[/dim]\n"
+        )
+        return
+
+    work = sum(step.work for step in steps)
+    materials: dict[str, float] = {}
+    for step in steps:
+        for name, amount in step.cost.items():
+            materials[name] = materials.get(name, 0.0) + amount
+    short = sorted(shortfalls(purse, materials))
+
+    console.print(
+        f"[bold]{len(steps)} projects[/bold] to a liveable world: "
+        + " -> ".join(step.name for step in steps)
+    )
+    console.print(
+        f"Total {format_count(work)} work and "
+        + ", ".join(
+            f"{format_count(v)}t {MATERIALS[k].name}" for k, v in sorted(materials.items())
+        )
+    )
+    console.print(
+        f"Ends at habitability [green]{finished.habitability:.2f}[/green], "
+        f"capacity [green]{format_count(finished.carrying_capacity)}[/green]"
+        + (
+            f" [yellow](short of {', '.join(MATERIALS[k].name for k in short)} "
+            "for the whole campaign)[/]"
+            if short
+            else ""
+        )
+        + "\n"
+    )
 
 
 def _resistance_note(colony) -> str:

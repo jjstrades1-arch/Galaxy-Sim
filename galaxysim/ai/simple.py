@@ -27,7 +27,6 @@ from sqlalchemy.orm import Session, selectinload
 
 from galaxysim.ai.doctrine import doctrine as doctrine_for
 from galaxysim.colony.expedition import Loadout
-from galaxysim.colony.labor import INDUSTRY, normalize
 from galaxysim.colony.population import capacity
 from galaxysim.materials import (
     FERTILISER,
@@ -45,7 +44,7 @@ from galaxysim.colony.buildings import FLEET_CONSTRUCTION
 from galaxysim.engine import intents
 from galaxysim.engine.resolvers import governor, queries
 from galaxysim.engine.resolvers.siege import BLOCKADE_RANGE_LY
-from galaxysim.engine.rates import DEFAULT_RATES
+from galaxysim.engine.resolvers.terraform import construction_per_hour
 from galaxysim.engine.resolvers.production import (
     DOCKING_TOLERANCE_LY,
     SUPPLY_RANGE_LY,
@@ -1152,12 +1151,17 @@ def _maybe_terraform(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
         neighbourhood = queries.sorted_by_distance(
             colonies, colony.world.system.position, within_ly=SUPPLY_RANGE_LY
         )
-        muscle = sum(
-            helper.population
-            * normalize(helper.labor).get(INDUSTRY, 0.0)
-            * DEFAULT_RATES.industry_per_worker_per_hour
-            for helper in neighbourhood
-        )
+        # The shared per-colony estimate, summed the AI's own way.
+        #
+        # Deliberately *not* the distance-weighted pool the resolver feeds a
+        # project (:func:`terraform.pooled_construction_per_hour`), which is what
+        # the player's readout uses because it is what will really happen. This
+        # is a cheaper question -- "is there enough industry near this rock to
+        # bother" -- and the doctrine thresholds it compares against were
+        # measured against exactly this sum over exactly this radius. Swapping in
+        # the weighted figure would silently move every difficulty level's
+        # appetite for terraforming, which is a balance change and not a tidy-up.
+        muscle = sum(construction_per_hour(helper) for helper in neighbourhood)
         if muscle < turn.doctrine.terraform_minimum_neighbourhood_work:
             continue
 

@@ -28,6 +28,8 @@ import math
 from galaxysim.core.space import distance
 from galaxysim.materials import can_afford
 from galaxysim.engine.context import TickContext
+from galaxysim.colony.labor import INDUSTRY, normalize
+from galaxysim.engine.rates import DEFAULT_RATES
 from galaxysim.engine.resolvers import queries
 from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY, construction_output
 from galaxysim.model.entities import Colony, IntentKind, IntentStatus
@@ -196,6 +198,40 @@ def _neighbourhood(ctx: TickContext, colony: Colony) -> list[Colony]:
 #: reach.
 def _reach(distance_ly: float) -> float:
     return math.exp(-max(0.0, distance_ly) / SUPPLY_RANGE_LY)
+
+
+def construction_per_hour(colony: Colony) -> float:
+    """A colony's construction output per real hour, estimated.
+
+    An estimate on purpose, and the distinction matters. The tick's true figure
+    is :func:`production.construction_output`, which needs a
+    :class:`TickContext` because it runs through last hour's brownout and takes
+    the refining share off the top -- neither of which anybody standing outside
+    a tick can know. This is what the workers could do, which is the right shape
+    for a plan and for a readout.
+
+    Extracted so the estimate exists once. The AI was computing it inline while
+    deciding what to reshape, and the moment a second caller wanted the same
+    number the two could drift -- with the player being told one thing and the
+    engine doing another.
+    """
+    workers = colony.population * normalize(colony.labor).get(INDUSTRY, 0.0)
+    return workers * DEFAULT_RATES.industry_per_worker_per_hour
+
+
+def pooled_construction_per_hour(colonies: list[Colony], target) -> float:
+    """What a project at ``target`` would actually be fed, per real hour.
+
+    The same distance weighting :func:`_advance` applies, over the same set --
+    every colony the civilization owns, attenuated by :func:`_reach` rather than
+    cut off. So a readout built on this says what the engine will really do,
+    which is the whole point of showing it.
+    """
+    return sum(
+        construction_per_hour(colony)
+        * _reach(distance(target, colony.world.system.position))
+        for colony in colonies
+    )
 
 
 def _draw_from(suppliers: list[Colony], cost: dict[str, float]) -> bool:

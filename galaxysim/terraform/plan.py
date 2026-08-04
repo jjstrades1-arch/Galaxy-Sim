@@ -72,13 +72,32 @@ def next_project(survey) -> str | None:
     return key if apply_project(survey, project(key)) != survey else None
 
 
-def is_finishable(survey) -> bool:
-    """Whether this world could ever be made somewhere people live.
+def campaign(survey) -> tuple[list[Project], object]:
+    """Every project this world still needs, in order, and how it ends up.
 
     Walks the ladder to its end against a copy of the world. Terraforming is a
-    pure function of the survey, so this is the real answer rather than an
-    estimate -- the projects it would actually run, in the order it would
-    actually run them, with every interaction they actually have.
+    pure function of the survey, so this is the real sequence rather than an
+    estimate -- the projects that would actually run, in the order they would
+    actually run, with every interaction they actually have. The returned survey
+    is the world as it would then be, which is what makes "is this worth a
+    civilization's surplus" answerable with numbers instead of prose.
+
+    Whether the walk *ends* somewhere liveable is :func:`is_finishable`; this is
+    the same journey, reported rather than judged.
+    """
+    steps: list[Project] = []
+    for _ in range(LADDER_LIMIT):
+        key = next_project(survey)
+        if key is None:
+            return steps, survey
+        step = project(key)
+        steps.append(step)
+        survey = apply_project(survey, step)
+    return steps, survey
+
+
+def is_finishable(survey) -> bool:
+    """Whether this world could ever be made somewhere people live.
 
     Worth knowing *before* committing, which is the whole point. Stopping at a
     dead rung stops the infinite sink, but a hopeless world still absorbs nine
@@ -86,12 +105,8 @@ def is_finishable(survey) -> bool:
     genuinely changes the survey. Neither a player nor the AI had any way to see
     that coming, and both spent accordingly.
     """
-    for _ in range(LADDER_LIMIT):
-        key = next_project(survey)
-        if key is None:
-            return _wanted(survey) is None
-        survey = apply_project(survey, project(key))
-    return False
+    _, ended = campaign(survey)
+    return _wanted(ended) is None
 
 
 def _wanted(survey) -> str | None:

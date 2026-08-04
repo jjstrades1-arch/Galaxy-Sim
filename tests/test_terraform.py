@@ -554,3 +554,42 @@ def test_the_promoted_columns_survive_a_homeworld_being_reseeded():
                     f"{world.name}.{field} is {stored!r} but its survey says "
                     f"{value!r} -- a derived column was left behind by a rewrite"
                 )
+
+
+def test_the_campaign_is_the_same_walk_the_finishability_answer_comes_from():
+    """One ladder walk, two questions asked of it.
+
+    ``is_finishable`` and the campaign readout used to be at risk of walking
+    separately and disagreeing -- the player told a world takes nine projects
+    while the column that decides whether the AI touches it says otherwise. They
+    now share the walk, and this says so rather than trusting it.
+    """
+    from galaxysim.terraform.plan import campaign, is_finishable, is_finished
+
+    engine = create_engine_for("sqlite://")
+    with open_session(engine) as session:
+        worlds = _generated_worlds(session, engine, seeds=(1,))
+        finishable = unfinishable = 0
+        for world in worlds:
+            survey = survey_from_json(world.survey)
+            steps, ended = campaign(survey)
+
+            # The walk ends where the ladder stops, either way.
+            assert next_project(ended) is None, (
+                f"{world.name}: the campaign stopped with work still to do"
+            )
+            assert is_finishable(survey) == is_finished(ended), (
+                f"{world.name}: the campaign and the finishability answer disagree"
+            )
+            if is_finished(ended):
+                finishable += 1
+                assert steps or is_finished(survey), (
+                    f"{world.name}: finishable but no projects proposed"
+                )
+            else:
+                unfinishable += 1
+
+    assert finishable and unfinishable, (
+        f"the sample needs both kinds to mean anything: {finishable} finishable, "
+        f"{unfinishable} not"
+    )
