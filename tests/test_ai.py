@@ -27,7 +27,6 @@ from sqlalchemy import select
 
 from galaxysim.ai import simple
 from galaxysim.ai.doctrine import (
-    BEST,
     DEFAULT_DOCTRINE,
     DOCTRINES,
     DRIVEN,
@@ -389,7 +388,9 @@ def test_every_named_difficulty_can_actually_run():
 # --- the dial that can take a world off you -----------------------------------
 
 
-def _border_universe(difficulty: str, *, rival_population: float, warships: float):
+def _border_universe(
+    difficulty: str, *, rival_population: float, warships: float, defenders: float = 0.0
+):
     """An AI civ with a rival's colony one system over, and ships to spare.
 
     Staged rather than grown, because growing it is not possible in a test and
@@ -450,6 +451,22 @@ def _border_universe(difficulty: str, *, rival_population: float, warships: floa
                 z=home.world.system.z,
             )
         )
+        if defenders:
+            session.add(
+                Fleet(
+                    universe_id=universe_id,
+                    civ_id=rival.id,
+                    name="Home Guard",
+                    strength=defenders,
+                    colony_pods=0,
+                    speed_ly_per_hour=1.0,
+                    cargo={},
+                    cargo_capacity=40.0,
+                    x=world.system.x,
+                    y=world.system.y,
+                    z=world.system.z,
+                )
+            )
         session.flush()
         return engine, universe_id, raider.id, rival.id
 
@@ -539,3 +556,49 @@ def test_it_will_not_raid_itself_defenceless():
         assert not _declared_wars(session, raider_id), (
             "committing the entire navy is not a surplus"
         )
+
+
+def test_it_does_not_send_a_raid_at_a_world_it_cannot_outweigh():
+    """Picking a fight you lose is not difficulty, it is incompetence.
+
+    A blockade is *more* strength over a world than its owner has. A raid that
+    arrives outweighed never cuts a single supply line -- it just grinds itself
+    down against the defenders until it is gone. The target used to be chosen on
+    distance and population alone, so a driven opponent would send twelve points
+    of strength at a world guarded by thirty and lose them.
+
+    What it reads off is where ships are standing, which is what a scout is for
+    and what anybody in the system can see. Not intentions, and not anything
+    about the planet that a survey would be needed for.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, _ = _border_universe(
+        "driven", rival_population=50_000.0, warships=40.0, defenders=500.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+        assert not _declared_wars(session, raider_id), (
+            "it committed to a siege it could never have held"
+        )
+
+
+def test_it_still_attacks_a_world_it_can_take():
+    """The other half, and the one that matters more.
+
+    Caution that never attacks anything is the same bug as recklessness, wearing
+    better clothes. A garrison it outweighs must not put it off.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, rival_id = _border_universe(
+        "driven", rival_population=50_000.0, warships=40.0, defenders=2.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+        wars = _declared_wars(session, raider_id)
+        assert wars and wars[0].payload["target_civ_id"] == rival_id

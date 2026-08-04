@@ -202,6 +202,31 @@ class _Turn:
         return self._shared["charted"]
 
     @property
+    def garrisons(self) -> list[tuple[Vec3, int, float]]:
+        """Where every fleet in the galaxy is standing, and whose it is.
+
+        Position, owner and strength -- nothing else, because nothing else is
+        needed and a fleet's cargo is not the AI's business. Read once per tick
+        and shared between civilizations, like the star charts and for the same
+        reason: eight opponents each re-reading the same picture is eight times
+        the same query.
+
+        Fair game to look at. A fleet is a physical object sitting in a charted
+        system, which is exactly what a scout is for; the guard in
+        ``tests/test_ai.py`` is about a planet's *interior*, which cannot be seen
+        without surveying it. What this is not allowed to become is a way to read
+        somebody's intentions -- only where their ships are, which anyone
+        standing there can see too.
+        """
+        if "garrisons" not in self._shared:
+            self._shared["garrisons"] = [
+                (fleet.position, fleet.civ_id, fleet.strength)
+                for fleet in queries.fleets(self.session, self.universe.id)
+                if not fleet.in_transit and fleet.strength > 0
+            ]
+        return self._shared["garrisons"]
+
+    @property
     def systems(self) -> list[StarSystem]:
         """Every charted system, with its worlds and their owners loaded.
 
@@ -662,7 +687,7 @@ def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     if strength < doctrine.raid_strength:
         return
 
-    target = _raidable_colony(turn)
+    target = _raidable_colony(turn, strength)
     if target is None:
         return
 
@@ -686,6 +711,20 @@ def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
         turn.claimed.add(fleet.id)
         if distance(fleet.position, system.position) > DOCKING_TOLERANCE_LY:
             intents.move_fleet_to_system(session, civ, fleet.id, system)
+
+
+def _defenders(turn: "_Turn", where: Vec3, owner: int) -> float:
+    """Strength the owner of a world has standing over it.
+
+    Only the owner's own ships. A third civilization's fleet passing through is
+    not defending anything, and counting it would talk this opponent out of
+    attacks it would have won.
+    """
+    return sum(
+        strength
+        for position, civ_id, strength in turn.garrisons
+        if civ_id == owner and distance(position, where) <= BLOCKADE_RANGE_LY
+    )
 
 
 def _besieging(turn: "_Turn", pending: dict[str, list[Intent]]) -> set[int]:
@@ -803,7 +842,7 @@ def _destination(fleet: Fleet) -> Vec3 | None:
     return Vec3(fleet.dest_x, fleet.dest_y, fleet.dest_z)
 
 
-def _raidable_colony(turn: "_Turn") -> Colony | None:
+def _raidable_colony(turn: "_Turn", committing: float) -> Colony | None:
     """A rival's frontier world this civ could plausibly besiege and hold.
 
     Read off the star charts the AI already has loaded, so a war costs the tick
@@ -834,6 +873,21 @@ def _raidable_colony(turn: "_Turn") -> Colony | None:
     for position, colony in candidates:
         reach = min(distance(home, position) for home in mine)
         if reach > SUPPLY_RANGE_LY:
+            continue
+        # Somewhere the force being sent could actually hold.
+        #
+        # A blockade is *more* strength over the world than its owner has, so a
+        # raid that arrives outweighed does not merely fail -- it never cuts a
+        # single supply line, and it grinds itself down against the defenders
+        # for as long as it survives. The target used to be chosen on distance
+        # and population alone, which meant a driven opponent would send twelve
+        # points of strength at a world guarded by thirty and lose them.
+        #
+        # An opponent that throws fleets away is not a difficult opponent, it is
+        # a stupid one. Same reasoning as the population ceiling above: rarity
+        # and hopelessness are fine things for a *player* to walk into, and a
+        # bad look on an AI that had every chance to check.
+        if _defenders(turn, position, colony.civ_id) >= committing:
             continue
         # Closest first, ties by id: a determined choice, and the one a player
         # would recognise as the obvious target.
