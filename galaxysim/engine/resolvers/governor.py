@@ -83,10 +83,19 @@ FOOD_MARGIN = 1.5
 #: What each policy tries to build, in order of preference. Domes and
 #: hydroponics come first everywhere they are needed -- a colony that cannot
 #: breathe has no use for a laboratory.
+#:
+#: **The industry order used to have no refinery**, which made it the only
+#: policy in the game that could not turn its own ore into anything. Factories,
+#: shipyards and spaceports are all priced in *steel*, steel is refined from
+#: iron, and a refinery is what puts a colony's industry behind that conversion
+#: -- so the one policy dedicated to being an empire's workshop was the one
+#: guaranteed to run out of the material every entry on its list needs. Measured
+#: at day 60: a world holding 10.9 million tonnes of iron and 777 thousand
+#: tonnes of steel, wanting a factory priced at 1.62 million.
 _BUILD_ORDER: dict[str, tuple[str, ...]] = {
     BALANCED: ("mine", "factory", "laboratory", "spaceport", "collector", "refinery", "granary"),
     EXTRACTION_POLICY: ("mine", "refinery", "collector", "factory", "spaceport", "granary"),
-    INDUSTRY_POLICY: ("factory", "mine", "shipyard", "spaceport", "collector"),
+    INDUSTRY_POLICY: ("factory", "refinery", "mine", "shipyard", "spaceport", "collector"),
     RESEARCH_POLICY: ("laboratory", "factory", "mine", "spaceport", "collector"),
     SURVIVAL: ("hydroponics", "dome", "granary", "mine", "spaceport"),
 }
@@ -314,13 +323,33 @@ def _worthwhile_power(colony: Colony) -> tuple[str, ...]:
 def _maybe_build(
     ctx: TickContext, civ, colony: Colony, pending_kinds: set[str]
 ) -> None:
-    """Queue the next thing this colony's policy wants, if it can pay.
+    """Queue the best thing this colony's policy wants that it can actually pay for.
 
     Industries are deepened as readily as they are started: a governor walks its
-    build order and takes the first entry it can afford the *next level* of. On a
-    young colony that means founding new industries; on a developed one it means
-    growing the ones that matter to its policy, which is the same decision a
-    player makes and the same one the economy prices.
+    build order and takes the highest-priority entry it can afford the *next
+    level* of. On a young colony that means founding new industries; on a
+    developed one it means growing the ones that matter to its policy, which is
+    the same decision a player makes and the same one the economy prices.
+
+    **"That it can afford" used to mean "stop here".** The walk returned at the
+    first entry the colony could not pay for, on the reasoning that saving up for
+    the thing the policy wants most beats always building the cheapest shed
+    available. That is sound when a colony is *accumulating*, and a deadlock when
+    it is not -- and nothing checked which it was. Measured at day 60: the most
+    populous world in the game, a terraformed garden holding **24.8 billion
+    people with room for 7,122 industry levels, had six**. It wanted a factory
+    priced at 1.62 million tonnes of steel, held 777 thousand, and was earning
+    almost none because a refinery is what puts industry behind that conversion
+    and it had never built one. A mine and a refinery were both affordable that
+    afternoon, at thirty thousand tonnes each. It built neither, every tick, for
+    two months.
+
+    So an entry it cannot afford is skipped rather than fatal, and the same rule
+    now covers the policy list and the power list -- there is one rule here, not
+    two. The quadratic cost curve is what keeps this from being a licence to
+    build tat: anything a developed colony can still afford is something it has
+    *neglected*, and the order still decides priority among whatever is actually
+    open.
 
     One at a time: industry capacity is split across active projects, so queueing
     everything at once would leave a colony with five half-built things and no
@@ -353,8 +382,6 @@ def _maybe_build(
         # Nothing else this colony could queue is worth as much as ending the
         # brownout, so this jumps the queue rather than joining it.
         order = _worthwhile_power(colony)
-        # And these are *alternatives*, not preferences -- see the loop below.
-        interchangeable = True
     elif pending_kinds:
         return  # already building something, and the lights are on
     else:
@@ -362,25 +389,13 @@ def _maybe_build(
         order = _BUILD_ORDER[policy]
         if effective_habitability(colony, effects_for(ctx, colony)) < HOSTILE_THRESHOLD:
             order = _BUILD_ORDER[SURVIVAL] + order
-        interchangeable = False
 
     for kind in order:
         spec = BUILDING_TYPES_BY_KIND[kind]
         level = existing.get(kind, 0) + 1
         if not can_afford(colony.stockpile, cost_of_level(spec.cost, level)):
-            if not interchangeable:
-                # A policy order is a ranking of things that do *different*
-                # jobs, so saving up for the mine it actually wants beats
-                # always building the cheapest shed available.
-                return
-            # A power order is not. Fusion, fission, ground heat and sunlight
-            # are four ways to buy the same commodity, and stopping at the
-            # dearest one a colony cannot afford yet leaves it sitting in the
-            # dark next to a plant it could pay for today. Measured on the four
-            # capitals still browning out after construction orders were fixed:
-            # every one of them could afford a geothermal plant, and every one
-            # of them was stopping at a fusion plant twenty levels deep.
-            continue
+            continue  # take the best thing it *can* buy -- see the docstring
+
         intents.build_structure(ctx.session, civ, colony.id, kind)
         ctx.log(
             "governor_building",

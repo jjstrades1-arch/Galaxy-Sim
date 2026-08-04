@@ -166,7 +166,25 @@ def _statements_per_tick(
     with_ai: bool = False,
     routes: bool = True,
     war: bool = False,
+    reads_only: bool = False,
 ) -> float:
+    """Statements a tick emits, averaged over five ticks.
+
+    ``reads_only`` is the distinction the *shape* guards below need, and it is
+    not a loophole -- it is what those guards have always been about. The failure
+    mode they exist to catch is a resolver asking a question inside a loop, which
+    is a SELECT. Writes are a different quantity: they are proportional to what
+    actually *happened*, so a tick in which more colonies built something costs
+    more INSERTs and should.
+
+    That distinction only started to matter when governors stopped stalling. A
+    colony that could not afford the head of its build order used to build
+    nothing at all; now it takes the best thing it can afford, and in this
+    fixture every civ's capital finishes a cheap building every tick. Eight
+    capitals doing eight capitals' worth of work is not the bug these tests are
+    for, and counting it as one would have meant either weakening a real guard or
+    reverting a real fix.
+    """
     engine = create_engine_for("sqlite://")
     universe_id = new_universe(
         engine,
@@ -187,6 +205,8 @@ def _statements_per_tick(
 
     def count(conn, cursor, statement, parameters, context, executemany):
         nonlocal counted
+        if reads_only and not statement.lstrip().upper().startswith("SELECT"):
+            return
         counted += 1
 
     event.listen(engine, "before_cursor_execute", count)
@@ -205,8 +225,8 @@ def test_a_tick_does_not_query_more_as_the_game_grows():
     loop over colonies -- and the fix is to hoist the query out and group the
     result, not to raise the bound here.
     """
-    small = _statements_per_tick(civs=2, colonies_each=5)
-    large = _statements_per_tick(civs=4, colonies_each=20)
+    small = _statements_per_tick(civs=2, colonies_each=5, reads_only=True)
+    large = _statements_per_tick(civs=4, colonies_each=20, reads_only=True)
 
     assert large < small * 1.6, (
         f"queries per tick grew from {small:.0f} at 10 colonies to {large:.0f} at 80. "
@@ -223,8 +243,8 @@ def test_a_tick_does_not_query_more_as_players_join():
     and then costs a hundred extra round trips a tick in a shared universe with
     a hundred players, which is precisely where it matters most.
     """
-    few = _statements_per_tick(civs=2, colonies_each=21)
-    many = _statements_per_tick(civs=8, colonies_each=6)
+    few = _statements_per_tick(civs=2, colonies_each=21, reads_only=True)
+    many = _statements_per_tick(civs=8, colonies_each=6, reads_only=True)
 
     assert many < few * 1.5, (
         f"queries per tick grew from {few:.0f} with 2 civs to {many:.0f} with 8, "

@@ -14,6 +14,7 @@ from sqlalchemy import select
 from galaxysim.colony.buildings import building_type
 from galaxysim.colony.industry import (
     KM2_PER_LEVEL,
+    cost_of_level,
     binding_limit,
     levels_in_use,
     max_total_levels,
@@ -28,7 +29,16 @@ from galaxysim.colony.labor import (
     balanced_allocation,
     normalize,
 )
-from galaxysim.materials import ELECTRONICS, IRON, MATERIALS, STEEL, WATER
+from galaxysim.materials import (
+    CERAMICS,
+    CONSTRUCTION,
+    ELECTRONICS,
+    IRON,
+    MATERIALS,
+    STEEL,
+    WATER,
+    can_afford,
+)
 from galaxysim.engine import intents
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
@@ -1010,6 +1020,89 @@ def test_a_captured_colony_does_not_leave_its_old_owner_an_open_order():
             f"the colony belongs to somebody else and the order is still {order.status!r}"
         )
         assert "no longer belongs" in (order.result or "")
+
+
+def test_a_governor_builds_what_it_can_afford_rather_than_nothing():
+    """The rule that left the best world in the game with six factories.
+
+    A governor used to stop walking its build order at the first entry it could
+    not pay for, on the reasoning that saving up for the thing its policy wants
+    most beats always building the cheapest shed. That holds while a colony is
+    *accumulating*, and nothing checked whether it was. Measured at day 60: a
+    terraformed garden of 24.8 billion people with room for 7,122 industry levels
+    had six, waiting on a factory priced at 1.62 million tonnes of steel while
+    holding 777 thousand — and a mine and a refinery it could have paid for that
+    afternoon went unbuilt for two months.
+    """
+    from galaxysim.engine.resolvers.governor import _BUILD_ORDER, INDUSTRY_POLICY
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=831, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = _outpost(session, civ, habitability=0.9, stockpile={})
+        # Enough for a mine, not for the factory that heads the industry order
+        # and not for the refinery behind it.
+        colony.stockpile = {STEEL: 35_000.0, CONSTRUCTION: 28_000.0}
+        assert not can_afford(
+            colony.stockpile, cost_of_level(building_type("factory").cost, 1)
+        ), "the fixture needs the head of the order to be out of reach"
+        assert can_afford(
+            colony.stockpile, cost_of_level(building_type("mine").cost, 1)
+        ), "and something further down it to be within reach"
+        assert _BUILD_ORDER[INDUSTRY_POLICY].index("factory") < _BUILD_ORDER[
+            INDUSTRY_POLICY
+        ].index("mine"), "the fixture assumes the factory is ahead of the mine"
+        intents.set_management(session, colony, governed=True, policy=INDUSTRY_POLICY)
+        colony_id = colony.id
+
+    run_ticks(engine, universe_id, 3)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert [b.kind for b in colony.buildings] == ["mine"], (
+            "it could not afford a factory and built nothing at all, rather than "
+            f"the mine it could pay for; built {[b.kind for b in colony.buildings]}"
+        )
+
+
+def test_an_industry_world_can_refine_its_own_ore():
+    """The one policy that could not make the material everything it builds needs.
+
+    Factories, shipyards and spaceports are all priced in steel; steel is refined
+    from iron; a refinery is what puts a colony's industry behind that
+    conversion. The industry build order had no refinery in it, so the policy
+    dedicated to being an empire's workshop was the only one guaranteed to run
+    out of the one material every entry on its own list is priced in — measured,
+    a world sitting on 10.9 million tonnes of iron and 777 thousand of steel.
+    """
+    from galaxysim.engine.resolvers.governor import INDUSTRY_POLICY
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=832, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = _outpost(session, civ, habitability=0.9, stockpile={})
+        # Enough for a refinery and for nothing else on the list: the factory
+        # ahead of it wants construction and electronics, the mine behind it
+        # wants construction.
+        colony.stockpile = {STEEL: 35_000.0, CERAMICS: 20_000.0}
+        assert can_afford(
+            colony.stockpile, cost_of_level(building_type("refinery").cost, 1)
+        )
+        intents.set_management(session, colony, governed=True, policy=INDUSTRY_POLICY)
+        colony_id = colony.id
+
+    run_ticks(engine, universe_id, 3)
+
+    with open_session(engine) as session:
+        colony = session.get(Colony, colony_id)
+        assert [b.kind for b in colony.buildings] == ["refinery"], (
+            "an industry world should be able to build the thing that turns its "
+            f"ore into steel; built {[b.kind for b in colony.buildings]}"
+        )
 
 
 def test_a_governor_makes_what_the_colony_is_short_of():
