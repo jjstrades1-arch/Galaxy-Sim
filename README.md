@@ -424,14 +424,23 @@ nothing among them worth having on its own terms: under 1% of worlds are
 liveable at all and breathable ones number in the low tens against a hundred
 civs. What makes a world valuable is what is in it and where it sits.
 
-**Where you start is a decision.** Density and metallicity run the same
-direction, so you cannot have distant neighbours *and* good ore:
+**Where you start is a decision**, and the decision is how much is within reach.
+Density and metallicity run the same direction, so you cannot have an empty sky
+*and* good ore:
 
-| | Neighbours | Metallicity |
-|---|---|---|
-| **Core** | 1–2 ly away, on top of you from the first week | [Fe/H] +0.34 |
-| **Arm** | a handful of ly, company soon enough | [Fe/H] ≈ 0 |
-| **Rim** | 10+ ly, long journeys, nobody finds you | [Fe/H] −0.40 |
+| | Stars apart | Systems within supply range | Metallicity |
+|---|---|---|---|
+| **Core** | 1–2 ly | ~7,600 | [Fe/H] +0.34 |
+| **Arm** | a handful of ly | ~520 | [Fe/H] ≈ 0 |
+| **Rim** | 10+ ly | ~85 | [Fe/H] −0.40 |
+
+What region does *not* change is your neighbours. Seating is spaced in
+light-years from the player count, never from density, so at eight players the
+nearest rival sits 48–51 ly away in all three — outside the 25 ly supply range
+in all three. A ninetyfold denser sky is ninety times more to settle, not a
+rival on your doorstep, and the core's first war arrives on the same schedule as
+the rim's. The region text used to say the core put your neighbours on top of
+you from the first week; that was star spacing wearing a rival's coat.
 
 Those figures are printed by `galaxysim chart`, which lists every star within
 reach whether or not anyone has been there. You get the star and where it is,
@@ -812,16 +821,23 @@ waiting to be tuned.
   deeper than the rest of its stack. That may well be the intended pressure — it
   is what makes power a decision — but the number has never been chosen on
   purpose, and it wants a play session rather than another sweep.
-- **Nobody has played a core start for long.** Neighbours a fraction of a
-  light-year apart is a very different game, and the difference is still
-  arithmetic rather than a session.
-- **The tail of a long soak is where the cost is.** A 28-day run sits near
-  100 ms/tick at 8 civs; a 120-day run averages roughly three times that, and
-  the profile is dominated by galaxy *generation* — `systems_in_sector` and
-  distance arithmetic — which grows as exploration proceeds. The query count is
-  flat in universe size and tested to stay that way, so this is honest per-row
-  cost rather than a shape bug, but it is what decides how large a shared
-  universe can be.
+- **The core plays exactly like the arm, and that is the open question.** It has
+  now been run: 28 days at 8 civs in both regions gives 7 colonies and 4.7
+  days/world in each, the same wars on the same schedule. Ninety times the stars
+  and half a dex more metal changed nothing a player would feel, because a civ
+  settles what it can reach and afford, and neither is what the core is generous
+  with. Whether region *should* be a difficulty dial is a design question, but
+  today it is a sky, not a game.
+- **The tail of a long soak is where the cost is, and it is rows now.** A 28-day
+  run sits near 100 ms/tick at 8 civs and a 120-day run at 212, so the tail
+  roughly doubles rather than tripling — galaxy generation used to be most of it
+  and is now absent from the profile entirely. What is left is loading: at 60
+  days the tick spends its time in SQLAlchemy turning 2.07 million rows into
+  objects. The *query* count is flat in universe size and tested to stay that
+  way; the rows those queries return are not, because a bigger empire is more
+  colonies, more fleets and more standing orders to resolve. That is honest
+  per-row cost rather than a shape bug, but it is what decides how large a
+  universe can get before a tick stops being cheap.
 
 ## What was on this list and is not any more
 

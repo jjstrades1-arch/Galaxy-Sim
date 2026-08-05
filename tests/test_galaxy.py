@@ -26,6 +26,7 @@ from sqlalchemy import select
 from galaxysim.bootstrap import STARTING_CHARTED_SYSTEMS, add_civ, create_universe
 from galaxysim.core.seeds import rng_for
 from galaxysim.core.space import Vec3, distance
+from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY
 from galaxysim.model.base import create_engine_for, open_session
 from galaxysim.model.entities import Colony, StarSystem, Universe, World
 from galaxysim.worldgen.materialize import existing_system, materialize
@@ -35,6 +36,7 @@ from galaxysim.worldgen.galaxy import (
     DESIGN_POPULATION,
     REGIONS,
     RIM,
+    SECTOR_LY,
     SOLAR_RADIUS_LY,
     TARGET_SPACING_LY,
     arm_enhancement,
@@ -168,6 +170,74 @@ def test_a_bounded_chart_does_not_pay_for_the_whole_core():
     ]
 
 
+def _every_system_near(seed: int, position: Vec3, radius_ly: float) -> list:
+    """The obvious, slow answer: look in every cube and sort what is in range.
+
+    Deliberately written the naive way. It is the definition ``systems_near``
+    has to meet, and it shares no code with the thing it checks.
+    """
+    reach = int(math.ceil(radius_ly / SECTOR_LY))
+    origin = sector_of(position)
+    found = [
+        stub
+        for di in range(-reach, reach + 1)
+        for dj in range(-reach, reach + 1)
+        for dk in range(-reach, reach + 1)
+        for stub in systems_in_sector(seed, (origin[0] + di, origin[1] + dj, origin[2] + dk))
+        if distance(stub.position, position) <= radius_ly
+    ]
+    found.sort(key=lambda s: (distance(s.position, position), s.key))
+    return found
+
+
+def test_a_bounded_query_is_the_slow_answer_cut_short():
+    """The stopping rule is an optimisation, so it must change nothing.
+
+    ``systems_near`` walks cubes nearest-first and keeps only the best ``limit``
+    in a heap so it can quit early. That is worth roughly nothing if it returns a
+    different galaxy than looking everywhere would: this is a seeded map, and
+    where a scout goes decides what gets charted, so a reordering here is a
+    different game from the same seed. So: check it against the definition, at
+    every limit that has ever mattered -- none, one, fewer than are there, and
+    more.
+    """
+    places = [
+        (Vec3(CORE.radius_ly, 12.5, -3.25), "core"),
+        (Vec3(ARM.radius_ly, -40.0, 18.0), "arm"),
+        (Vec3(RIM.radius_ly, 900.0, 40.0), "rim"),
+    ]
+    for seed in (1, 7, 4242):
+        for position, where in places:
+            for radius in (4.0, 11.0, 25.0):
+                reference = _every_system_near(seed, position, radius)
+                for limit in (None, 1, 3, 20, 200, 100_000):
+                    expected = reference if limit is None else reference[:limit]
+                    actual = systems_near(seed, position, radius, limit=limit)
+                    assert [s.key for s in actual] == [s.key for s in expected], (
+                        f"{where} seed {seed} radius {radius} limit {limit}"
+                    )
+
+
+def test_a_cube_is_generated_once_and_remembered():
+    """Memoisation, not state: forgetting must not change the galaxy.
+
+    The same cubes are asked for over and over -- twenty days in the core touched
+    twenty-three distinct sectors sixteen thousand times -- and generating a
+    thousand stars each time was most of a tick. Caching that is only safe while
+    the cache cannot be told apart from the work it skips.
+    """
+    sector = (299, 18, 6)
+    systems_in_sector.cache_clear()
+    fresh = systems_in_sector(4242, sector)
+    assert systems_in_sector.cache_info().hits == 0
+
+    assert systems_in_sector(4242, sector) is fresh
+    assert systems_in_sector.cache_info().hits == 1
+
+    systems_in_sector.cache_clear()
+    assert systems_in_sector(4242, sector) == fresh
+
+
 # --- the settlement frontier -------------------------------------------------
 
 
@@ -237,6 +307,38 @@ def test_the_target_is_delivered_at_every_size_a_game_is_played_at():
         f"{TARGET_SPACING_LY:.0f} ly between neighbours; got "
         + ", ".join(f"{gap:.1f} ly at {n}" for n, gap in sorted(loose.items()))
     )
+
+
+def test_where_you_start_changes_the_sky_and_not_the_neighbours():
+    """The measurement the region descriptions have to keep telling the truth about.
+
+    ``CORE.description`` used to say your neighbours were on top of you from the
+    first week. They are not, and never were: seating is spaced in light-years
+    from the player count and never consults density, so a rival sits the same
+    distance away in a sky ninety times fuller. What that density buys is real
+    and large -- it is the whole decision -- but it is worlds within reach, not a
+    rival at the door, and naming it the wrong thing made region read as a
+    difficulty dial nothing implements.
+    """
+    seated = {r.key: _seat(8, region=r, sized_for=8) for r in (CORE, ARM, RIM)}
+    gaps = {key: _median_gap(taken) for key, taken in seated.items()}
+
+    assert max(gaps.values()) - min(gaps.values()) < 10.0, (
+        "region must not move the neighbours: "
+        + ", ".join(f"{key} {gap:.1f} ly" for key, gap in gaps.items())
+    )
+    assert min(gaps.values()) > SUPPLY_RANGE_LY, (
+        "and in none of them does a rival start inside supply range"
+    )
+
+    # What it does change, by two orders of magnitude, is what is in reach.
+    reach = {
+        key: len(systems_near(7, taken[0], SUPPLY_RANGE_LY))
+        for key, taken in seated.items()
+    }
+    where = ", ".join(f"{key} {n} systems" for key, n in reach.items())
+    assert reach["core"] > 10 * reach["arm"], f"the sky is the decision: {where}"
+    assert reach["arm"] > 5 * reach["rim"], f"the sky is the decision: {where}"
 
 
 def test_pressure_rises_with_population_on_its_own():
