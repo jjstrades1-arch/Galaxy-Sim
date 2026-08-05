@@ -1264,19 +1264,35 @@ def _maybe_scrap(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
 
     # Freighters are never candidates: an outpost dies without its route, so a
     # civ short of fuel must not balance its books by cutting the supply line.
+    #
+    # Surplus is the *only* trigger. Insolvency used to be a second one -- the
+    # argument being that a hull you cannot pay for is lost either way, and
+    # scrapping at least returns a third of the materials while desertion returns
+    # nothing. Sound, and measured it was a liquidation spiral: any shortfall at
+    # all, however small, made every docked warship a candidate at one hull per
+    # decision, which for a driven opponent is hourly. Over 120 days five of eight
+    # civilizations lost most of their navy that way -- one shed **45.6 strength
+    # to desertion and sixteen hulls to scrapping inside a fortnight**, then
+    # rebuilt twelve points of it eight days later, which is what says the
+    # shortage was a dip rather than a verdict.
+    #
+    # The salvage does not even answer the shortage. Upkeep is fuel and alloys;
+    # breaking a hull returns alloys, steel and electronics. A civ short of fuel
+    # sells its navy and is still short of fuel, having paid a third of build
+    # cost for the privilege. Desertion prices that failure well enough on its
+    # own; this decision now only sheds what the empire was not trying to keep.
     garrison = len(colonies) * turn.doctrine.garrison_per_colony
     over = sum(f.strength for f in warships) - garrison
-    solvent = civ.upkeep_paid >= 1.0 - 1e-9
-    if over <= 0 and solvent:
+    if over <= 0:
         return
 
     # A hull is only surplus in peacetime. While a war is on, the ships above the
     # garrison are the second wave -- :func:`_maybe_reinforce` spends exactly that
     # margin -- and this function was breaking them up for materials while the
-    # first wave was being ground down at the cordon. Insolvency still overrides:
-    # a civ that cannot pay its crews loses these ships either way, and desertion
-    # returns nothing.
-    if solvent and pending.get(IntentKind.ATTACK.value):
+    # first wave was being ground down at the cordon. A civ that cannot pay its
+    # crews still sheds: those hulls are surplus to the garrison either way, and
+    # the bill is the more urgent problem.
+    if civ.upkeep_paid >= 1.0 - 1e-9 and pending.get(IntentKind.ATTACK.value):
         return
 
     # Out of the orders already in hand rather than a fresh query: a decision

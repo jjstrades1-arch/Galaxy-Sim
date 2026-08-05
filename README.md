@@ -813,34 +813,43 @@ waiting to be tuned.
   pool, so construction runs at half the rate it did. That is the intended
   shape — ore has to become steel before it can become a hull — but the split is
   a first-pass number that wants a play session, not a spreadsheet.
-- **A navy keeps up with the garrison for eighty days and then falls off a
-  cliff.** Doctrine asks for `garrison_per_colony` strength per colony held — 2.5
-  for a driven opponent — and `_maybe_build` stops building warships at that line
-  while `_maybe_scrap` sheds above it. Measured over 120 days, median warship
-  strength against the line it is aiming at:
+- **A navy is not built down, it is starved down, and nothing yet says why the
+  famine comes.** The build rule works beautifully: per civilization, per
+  fortnight, warship strength sits within a point of `garrison_per_colony ×
+  colonies` for as long as nothing goes wrong. Then it falls off a cliff and
+  climbs back. One civilization, its whole run:
 
   ```
-  day        14    28    42    56    70    84    98   112   120
-  warships  9.0  17.0  23.0  29.0  39.0  43.0  30.3  19.0  28.1
-  the line 10.0  17.5  25.0  35.0  45.0  50.0  60.0  65.0  65.0
-  colonies    4     7    10    14    18    20    24    26    26
+  day        14   28   42   56   70   84    98   112   120
+  warships  9.0 19.0 29.0 39.0 49.0 59.0  63.6  12.2  28.2
+  the line 10.0 20.0 30.0 40.0 50.0 60.0  70.0  80.0  85.0
+  deserted   —    —    —    —    —    —     —   60.4    —
   ```
 
-  It tracks closely to day 84 and then **collapses from 43 to 19 while the line
-  keeps climbing** — and that half is unexplained. Wars fall in that window,
-  upkeep desertion is in there too, and nothing distinguishes them yet.
+  Five of eight civilizations had one of these, at different times, which is why
+  the *median* looked like a decline after day 84 — four happened to be in a bust
+  at once. They recover: one fell from 27.6 to 4.6 at day 70 and was back to 55
+  by day 120.
 
-  What is *not* the story: the garrison is a live cap rather than a dead number.
-  Instrumented over the same run, `_maybe_build` reached the warship test 367
-  times and the cap turned it away 284 of them. But the cap is a minor
-  constraint next to the queue — **85% of all 23,040 build decisions end at
-  `build_queue_depth`**, before anything about garrisons is asked, and the run
-  laid down 179 settlers against 83 warships. The yard, not the doctrine, is what
-  sizes this navy.
+  Accounted flow by flow, **desertion is the whole story.** Combat is nearly nil
+  — 8.2 strength in one fortnight across the run's worst engagement — and
+  scrapping was a second-order amplifier since removed (below). What destroys a
+  navy is the upkeep bill going unpaid for days: upkeep is fuel and alloys, fuel
+  is synthesised from ice and carbon and competes with the fissile chain, and
+  when it runs short every crew in the fleet deserts at once.
 
-  An earlier version of this bullet said the garrison was permanently bigger than
-  the navy and inferred a structural mismatch. That came from one sample of a
-  different population and it was wrong; the table above replaces it.
+  **What is still open is the famine itself.** The crises are shorter than a
+  fortnight — `upkeep_paid` reads 1.00 at almost every sample and 0.85 at the one
+  that caught a civilization mid-collapse — so nothing here distinguishes a
+  routing failure from a refining one from the intended cost of a fleet. That is
+  the next question, and it wants tick-resolution sampling rather than another
+  inference.
+
+  The garrison itself is a live cap, not a dead number: `_maybe_build` reached
+  the warship test 367 times and the cap turned it away 284 of them. But it is a
+  minor constraint next to the queue — **85% of all 23,040 build decisions end at
+  `build_queue_depth`** before garrisons are asked about, and the run laid down
+  179 settlers against 83 warships.
 - **A capital cannot generate what it demands, and that is now a real question
   rather than a bug.** Two defects were hiding this: governors could not build at
   all, and the brownout rule abandoned any plant it could not immediately afford.
@@ -875,6 +884,45 @@ waiting to be tuned.
 Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
+
+- **A bad week cost a civilization its navy.** Scrapping had two triggers:
+  strength above the garrison, and *insolvency*. The second had a good argument
+  — a hull you cannot pay for is lost either way, and scrapping returns a third
+  of the materials while desertion returns nothing — and measured over 120 days
+  it was a liquidation spiral. Any shortfall at all, however small, made every
+  docked warship a candidate at one hull per decision, which for a driven
+  opponent is hourly. One civilization shed **45.6 strength to desertion and
+  sixteen hulls to scrapping inside a fortnight**, then rebuilt twelve points of
+  it eight days later — the shortage was weather, and it had sold the fleet.
+
+  The salvage does not even answer the shortage. Upkeep is **fuel and alloys**;
+  breaking a hull returns **alloys, steel and electronics**. A civ short of fuel
+  sells its navy and is still short of fuel, having paid a third of build cost
+  for the privilege. Surplus is the only trigger now.
+
+  It is not free: the hulls that used to be scrapped now desert instead, so the
+  desertion column rises. It is still a large net gain, because desertion is
+  proportional and scrapping was not — aggregate warship strength at day 120 goes
+  **239 → 281**, and the two worst-hit civilizations end at **29.3 and 30.1
+  instead of 4.7 and 18.1**.
+
+  A navy that survives its bad weeks is a navy that finishes sieges. Over 150
+  days at eight driven opponents, old rule against new:
+
+  | | before | after |
+  |---|---|---|
+  | wars declared | 6 | **9** |
+  | blockades established | 13 | 14 |
+  | worlds subdued | 10 | **13** |
+  | blockades abandoned | 7 | **5** |
+  | **worlds captured** | **10** | **14** |
+
+  Population is unmoved — 97.553 B against 97.542 B median — so this is the same
+  economy fighting harder rather than a different one. **At 120 days the same
+  comparison read 6 captures against 4 and looked like a regression**; the run
+  simply ended mid-campaign, with two wars still standing and three subdued
+  worlds not yet taken. Worth recording, because a soak cut off at the wrong day
+  argues the opposite of the truth.
 
 - **A war was one raid, and everything after it sat at home.** The AI dispatched
   every ship it would ever send at the moment war was declared, and `_maybe_raid`

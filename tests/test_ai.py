@@ -1056,6 +1056,67 @@ def test_it_does_not_scrap_the_second_wave():
                 )
 
 
+def test_a_bad_week_does_not_cost_a_civilization_its_navy():
+    """Insolvency used to be a second licence to scrap, and it was a spiral.
+
+    The argument for it was good: a hull you cannot pay for is lost either way,
+    and scrapping returns a third of the materials while desertion returns
+    nothing. Measured over 120 days, what it actually did was liquidate. Any
+    shortfall at all made every docked warship a candidate at one hull per
+    decision -- hourly, for a driven opponent -- so five of eight civilizations
+    lost most of their navy to a dip. One shed 45.6 strength to desertion *and*
+    sixteen hulls to scrapping inside a fortnight, then rebuilt twelve points
+    eight days later, which is what says the shortage was weather rather than
+    climate.
+
+    The salvage does not even answer the shortage: upkeep is fuel and alloys,
+    and breaking a hull returns alloys, steel and electronics. A civ short of
+    fuel sells its fleet and is still short of fuel.
+
+    So surplus is the only trigger now, and this is the case that used to be the
+    exception: under the garrison line, unpaid, and nothing to sell.
+    """
+    from galaxysim.model.entities import Intent, IntentKind
+
+    from galaxysim.ai.doctrine import DRIVEN
+
+    def sold(session, civ_id) -> list:
+        return session.scalars(
+            select(Intent).where(
+                Intent.civ_id == civ_id, Intent.kind == IntentKind.DECOMMISSION.value
+            )
+        ).all()
+
+    # One pure warship, docked at the colony, and under the line: a driven civ
+    # with one colony wants 2.5 points and this is 1.0 of it. The reserve fleet
+    # is the pure warship -- the line squadron carries a pod, so it was never a
+    # scrapping candidate, which is what made the first draft of this test pass
+    # for the wrong reason.
+    assert DRIVEN.garrison_per_colony > 1.0, "the fixture needs to sit under the line"
+    for paid in (0.5, 1.0):
+        engine, universe_id, raider_id, _ = _siege_underway(
+            cordon=1.0,
+            defenders=0.0,
+            reserve=1.0,
+            reserve_offset_ly=0.0,
+            strip_starting_fleet=True,
+        )
+        with open_session(engine) as session:
+            universe = session.get(Universe, universe_id)
+            civ = session.get(Civ, raider_id)
+            civ.upkeep_paid = paid
+            session.flush()
+
+            pending = simple._pending_by_kind(session, civ)
+            pending.pop("attack", None)  # peacetime, so only solvency is in play
+            simple._maybe_scrap(simple._Turn(session, universe, civ), pending)
+            session.flush()
+
+            assert not sold(session, raider_id), (
+                f"at upkeep_paid={paid} it sold a hull it was trying to keep"
+            )
+
+
 def test_a_standing_route_grows_with_the_world_it_feeds():
     """A number that was right when it was written and wrong ever after.
 
