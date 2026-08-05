@@ -813,16 +813,34 @@ waiting to be tuned.
   pool, so construction runs at half the rate it did. That is the intended
   shape — ore has to become steel before it can become a hull — but the split is
   a first-pass number that wants a play session, not a spreadsheet.
-- **A civilization's garrison is bigger than its navy, permanently.** Doctrine
-  asks for `garrison_per_colony` strength per colony held — 2.5 for a driven
-  opponent — and that line grows with the empire while the fleet does not. At day
-  120 a driven civ has **62 points of warship against a 28-colony garrison line
-  of 70**, and is under it for the rest of the game. Nothing enforces the
-  garrison, so nothing breaks; but any decision written against it is dead on
-  arrival, which is how it was found. `_maybe_raid` quietly ignores the number
-  and spends against its own rule instead. Either the garrison is the wrong
-  shape — it should probably scale with *frontier*, not with colony count — or
-  the standing navy is priced too low. It has never been chosen on purpose.
+- **A navy keeps up with the garrison for eighty days and then falls off a
+  cliff.** Doctrine asks for `garrison_per_colony` strength per colony held — 2.5
+  for a driven opponent — and `_maybe_build` stops building warships at that line
+  while `_maybe_scrap` sheds above it. Measured over 120 days, median warship
+  strength against the line it is aiming at:
+
+  ```
+  day        14    28    42    56    70    84    98   112   120
+  warships  9.0  17.0  23.0  29.0  39.0  43.0  30.3  19.0  28.1
+  the line 10.0  17.5  25.0  35.0  45.0  50.0  60.0  65.0  65.0
+  colonies    4     7    10    14    18    20    24    26    26
+  ```
+
+  It tracks closely to day 84 and then **collapses from 43 to 19 while the line
+  keeps climbing** — and that half is unexplained. Wars fall in that window,
+  upkeep desertion is in there too, and nothing distinguishes them yet.
+
+  What is *not* the story: the garrison is a live cap rather than a dead number.
+  Instrumented over the same run, `_maybe_build` reached the warship test 367
+  times and the cap turned it away 284 of them. But the cap is a minor
+  constraint next to the queue — **85% of all 23,040 build decisions end at
+  `build_queue_depth`**, before anything about garrisons is asked, and the run
+  laid down 179 settlers against 83 warships. The yard, not the doctrine, is what
+  sizes this navy.
+
+  An earlier version of this bullet said the garrison was permanently bigger than
+  the navy and inferred a structural mismatch. That came from one sample of a
+  different population and it was wrong; the table above replaces it.
 - **A capital cannot generate what it demands, and that is now a real question
   rather than a bug.** Two defects were hiding this: governors could not build at
   all, and the brownout rule abandoned any plant it could not immediately afford.

@@ -979,9 +979,9 @@ def test_it_will_not_empty_its_home_systems_into_a_war():
     rather than two.
 
     It is emphatically *not* the doctrine garrison, which is the trap the first
-    version of this fell into. ``garrison_per_colony`` times colonies grows with
-    the empire while the navy does not, so a developed civ sits permanently under
-    its own garrison line and would never reinforce anything, ever -- while
+    version of this fell into. A driven civ's warship strength falls away from
+    that line after about eighty days -- exactly the window its wars fall in --
+    so reinforcement gated on it would never dispatch anything, while
     ``_maybe_raid``, reading a different number on the same turn, cheerfully
     declares a fresh war.
     """

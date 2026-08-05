@@ -99,6 +99,10 @@ BUILD_RESERVE = 2.0  # only build if it can afford this many such fleets
 
 #: A freighter is a hull built with almost no weapons and a great deal of hold.
 FREIGHTER_STRENGTH = 0.5
+#: Hold above which a hull is a freighter rather than a fighting ship. Every
+#: warship carries a few dozen tonnes incidentally; a route ship carries
+#: thousands, so there is a wide gap and nothing sits in it.
+FREIGHTER_HOLD_TONNES = 100.0
 #: Manifests of slack in the hold, so one ship can run a route without the
 #: destination drinking the delivery faster than the round trip.
 FREIGHTER_TRIPS_OF_SLACK = 2.0
@@ -744,7 +748,7 @@ def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     warships = [
         fleet
         for fleet in turn.fleets
-        if fleet.cargo_capacity <= 100.0
+        if _is_fighting_hull(fleet)
         and not fleet.in_transit
         and fleet.id not in busy
         and fleet.strength > 0
@@ -1048,7 +1052,7 @@ def _maybe_reinforce(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     warships = [
         fleet
         for fleet in turn.fleets
-        if fleet.cargo_capacity <= 100.0
+        if _is_fighting_hull(fleet)
         and not fleet.in_transit
         and fleet.id not in busy
         and fleet.strength > 0
@@ -1062,12 +1066,16 @@ def _maybe_reinforce(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     # answer to "what will this opponent spend on a war" rather than two.
     #
     # It is deliberately *not* the doctrine garrison, and that is measured rather
-    # than argued. The garrison is ``garrison_per_colony`` times colonies held,
-    # which grows with the empire while the navy does not: at 120 days a driven
-    # civ has 62 points of warship against a 28-colony garrison line of 70, and is
-    # permanently under it. Reinforcement gated on that floor bailed on 708 of the
-    # 730 turns it ran and dispatched nothing, ever -- while ``_maybe_raid``, on
-    # the same turns, was perfectly willing to declare a new war.
+    # than argued: reinforcement gated on that floor bailed on 708 of the 730
+    # turns it ran and dispatched nothing, ever -- while ``_maybe_raid``, on the
+    # same turns, was perfectly willing to declare a new war. Two answers to the
+    # same question, and the stricter one was unreachable.
+    #
+    # The reason it is unreachable is that a driven civ's warship strength falls
+    # away from the garrison line after about eighty days -- 43 against 50 at day
+    # 84, then 19 against 65 at day 112 -- which is exactly the window its wars
+    # fall in. Why it collapses is an open question and a gap bullet in the
+    # README; that it does is enough to keep this decision off that number.
     free = sum(fleet.strength for fleet in warships)
     sendable = free - turn.doctrine.raid_strength
     if sendable <= 0:
@@ -1131,6 +1139,40 @@ def _destination(fleet: Fleet) -> Vec3 | None:
     if fleet.dest_x is None or fleet.dest_y is None or fleet.dest_z is None:
         return None
     return Vec3(fleet.dest_x, fleet.dest_y, fleet.dest_z)
+
+
+def _is_fighting_hull(fleet: Fleet) -> bool:
+    """Anything that is not a freighter. Includes settlers.
+
+    The AI builds most of its hulls with a colony pod attached, so the ship that
+    plants a flag is usually also the ship that holds a cordon. This population
+    answers "what could I send at a war": it is what :func:`_maybe_raid` commits
+    from and what :func:`_maybe_reinforce` reserves against.
+    """
+    return fleet.cargo_capacity <= FREIGHTER_HOLD_TONNES
+
+
+def _is_only_a_warship(fleet: Fleet) -> bool:
+    """A fighting hull with no pod aboard: nothing to do but fight or scout.
+
+    The *other* population, and the distinction is load-bearing rather than
+    tidy. A hull that has landed its pod becomes one of these, which is why they
+    accumulate. The standing-navy line in :func:`_maybe_build` and the surplus in
+    :func:`_maybe_scrap` are both drawn across this set, and :func:`_maybe_scout`
+    picks from it because a settler and a freighter each already have somewhere
+    to be.
+
+    Measuring one of these two against the other's threshold is a mistake this
+    module invited for a long time: the filters were written inline at five call
+    sites and neither had a name, so a 120-day reading of "the navy" against the
+    garrison line compared settlers-included strength to a warships-only cap and
+    drew exactly the wrong conclusion.
+
+    Neither predicate asks about damage. Whether a hull is a warship is a fact
+    about how it was built; whether it is any use is a separate question, and the
+    callers that care add ``strength > 0`` themselves.
+    """
+    return _is_fighting_hull(fleet) and fleet.colony_pods <= 0
 
 
 def _raidable_colony(turn: "_Turn", committing: float) -> Colony | None:
@@ -1215,7 +1257,7 @@ def _maybe_scrap(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     warships = [
         fleet
         for fleet in turn.fleets
-        if fleet.colony_pods <= 0 and fleet.cargo_capacity <= 100.0
+        if _is_only_a_warship(fleet)
     ]
     if not warships:
         return
@@ -1587,9 +1629,8 @@ def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     idle = [
         fleet
         for fleet in turn.fleets
-        if not fleet.in_transit
-        and fleet.colony_pods <= 0
-        and fleet.cargo_capacity <= 100.0
+        if _is_only_a_warship(fleet)
+        and not fleet.in_transit
         and fleet.id not in turn.on_station
     ]
     if not idle:
@@ -1703,7 +1744,7 @@ def _maybe_build(turn: "_Turn", pending: dict[str, list[Intent]], rng) -> None:
 
     # Otherwise a warship, and only up to what this many colonies is worth
     # garrisoning. Hulls with nothing to do still cost upkeep every hour.
-    warships = sum(f.strength for f in fleets if f.colony_pods <= 0 and f.cargo_capacity <= 100.0)
+    warships = sum(f.strength for f in fleets if _is_only_a_warship(f))
     if warships + BUILD_STRENGTH > len(colonies) * turn.doctrine.garrison_per_colony:
         return
 
