@@ -775,6 +775,287 @@ def test_taking_the_world_ends_the_war_it_was_declared_for():
         assert _war_status(session, raider_id) == [IntentStatus.CANCELLED.value]
 
 
+def _siege_underway(
+    *,
+    cordon: float,
+    defenders: float,
+    reserve,
+    reserve_offset_ly: float = 5.0,
+    strip_starting_fleet: bool = False,
+):
+    """A war already being fought: a cordon up, and hulls waiting behind it.
+
+    Staged rather than played out, for the reason ``_border_universe`` gives --
+    a border takes months. What is under test is the turn *after* the raid
+    arrived, which is the turn that until now did nothing at all.
+
+    ``reserve_offset_ly`` is load-bearing. A blockade is half a light-year wide
+    and ``_border_universe`` stages the contested world in the raider's *own home
+    system*, so anything parked at the colony is inside the cordon by accident.
+    Pushing the rest of the navy a few light-years back is what makes the cordon
+    exactly ``cordon`` and the reserve a genuine second wave. Pass ``0.0`` when
+    the point is a ship idling at a colony instead.
+
+    ``reserve`` is a strength or a list of them. More than one hull matters:
+    what may be spent is what is free *minus a raid's worth kept at home*, so a
+    civilization whose entire reserve is one ship can never send it -- correctly,
+    and not what most of these tests are about.
+    """
+    from galaxysim.engine import intents as intent_api
+    from galaxysim.model.entities import Fleet
+
+    engine, universe_id, raider_id, rival_id = _border_universe(
+        "driven", rival_population=50_000.0, warships=cordon, defenders=defenders
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        raider = session.get(Civ, raider_id)
+        home = session.scalar(
+            select(Colony).where(Colony.civ_id == raider_id).order_by(Colony.id)
+        )
+        target = session.scalar(select(Colony).where(Colony.name == "Contested"))
+        where = target.world.system
+
+        for fleet in session.scalars(select(Fleet).where(Fleet.civ_id == raider_id)):
+            if fleet.name == "Line Squadron":
+                # Arrived and holding station, the way the siege resolver leaves it.
+                fleet.x, fleet.y, fleet.z = where.x, where.y, where.z
+            elif strip_starting_fleet:
+                # A civ whose whole navy is its garrison, which is the only way
+                # to have nothing spare at all.
+                session.delete(fleet)
+            else:
+                fleet.x = home.world.system.x + reserve_offset_ly
+                fleet.y, fleet.z = home.world.system.y, home.world.system.z
+        intent_api.attack(session, raider, rival_id)
+
+        hulls = (reserve,) if isinstance(reserve, (int, float)) else tuple(reserve)
+        for index, strength in enumerate(h for h in hulls if h):
+            session.add(
+                Fleet(
+                    universe_id=universe_id,
+                    civ_id=raider_id,
+                    name=f"Reserve Squadron {index + 1}",
+                    strength=strength,
+                    colony_pods=0,  # a warship, so expansion leaves it alone
+                    speed_ly_per_hour=1.0,
+                    cargo={},
+                    cargo_capacity=40.0,
+                    x=home.world.system.x + reserve_offset_ly,
+                    y=home.world.system.y,
+                    z=home.world.system.z,
+                )
+            )
+        session.flush()
+    return engine, universe_id, raider_id, rival_id
+
+
+def _reinforcements(session, civ_id: int, system) -> list:
+    """Move orders issued this turn for ships heading to ``system``."""
+    from galaxysim.model.entities import Intent, IntentKind
+
+    return [
+        intent
+        for intent in session.scalars(
+            select(Intent).where(
+                Intent.civ_id == civ_id, Intent.kind == IntentKind.MOVE_FLEET.value
+            )
+        )
+        if intent.payload.get("x") == system.x and intent.payload.get("y") == system.y
+    ]
+
+
+def test_a_cordon_being_outweighed_gets_a_second_wave():
+    """A war used to be a coin flip resolved on the day it was declared.
+
+    ``_maybe_raid`` sends everything it will ever send at the moment of the
+    declaration, and then refuses to declare again while the order stands -- so
+    nothing in this AI ever sent a warship at an enemy twice. A player who won
+    the opening engagement had won the war, permanently, with nothing further to
+    answer.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, rival_id = _siege_underway(
+        cordon=10.0, defenders=30.0, reserve=(40.0, 12.0)
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        target = session.scalar(select(Colony).where(Colony.name == "Contested"))
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+
+        assert _reinforcements(session, raider_id, target.world.system), (
+            "the reserve sat at home while the cordon was ground down"
+        )
+
+
+def test_a_cordon_worn_thin_is_topped_back_up():
+    """The case that actually happens, and the first version of this missed it.
+
+    Nothing shoots at a blockade. What kills one is *time*: upkeep is billed to
+    colonies near a fleet and there is nothing to draw on in somebody else's
+    space, so a cordon deserts away hour by hour. Measured over 120 days of eight
+    driven opponents, the cordon was outweighed by defenders exactly zero times
+    -- a frontier outpost has no fleet at all -- while fifteen blockades were
+    established and only eight ever ground their world down.
+
+    So the question is not "am I losing" but "is there still enough here to
+    finish", and the answer is the doctrine's ``raid_strength``: what this
+    opponent thinks an objective is worth.
+    """
+    from galaxysim.ai.doctrine import DRIVEN
+    from galaxysim.ai.simple import take_turn
+
+    assert DRIVEN.raid_strength > 2.0, "the fixture below needs a thin cordon"
+    engine, universe_id, raider_id, rival_id = _siege_underway(
+        cordon=2.0, defenders=0.0, reserve=(40.0, 12.0)
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        target = session.scalar(select(Colony).where(Colony.name == "Contested"))
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+
+        assert _reinforcements(session, raider_id, target.world.system), (
+            "a blockade whittled down to nothing was left to expire"
+        )
+
+
+def test_a_blockade_that_is_working_is_left_alone():
+    """Reinforcement answers a question, and the answer here is no.
+
+    A cordon that outweighs the garrison *and* is at the strength the doctrine
+    commits to an objective is cutting the supply lines it was sent to cut.
+    Sending more is not caution or aggression, it is a fleet doing nothing
+    somewhere it could have been doing something.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, rival_id = _siege_underway(
+        cordon=40.0, defenders=2.0, reserve=40.0
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        target = session.scalar(select(Colony).where(Colony.name == "Contested"))
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+
+        assert not _reinforcements(session, raider_id, target.world.system)
+
+
+def test_it_will_not_feed_a_war_it_cannot_win():
+    """The failure mode this feature invents, and the one that has to be shut.
+
+    An opponent that throws its navy away one hull at a time is not difficult,
+    it is the same incompetence ``_raidable_colony`` already refuses -- arriving
+    outweighed, cutting nothing, grinding down against the defenders until it is
+    gone. If the reserve cannot take the cordon *past* the garrison, it stays
+    home and the war is stood down instead.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, rival_id = _siege_underway(
+        cordon=10.0, defenders=300.0, reserve=(40.0, 12.0)
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        target = session.scalar(select(Colony).where(Colony.name == "Contested"))
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+
+        assert not _reinforcements(session, raider_id, target.world.system), (
+            "it sent good hulls after bad"
+        )
+
+
+def test_it_will_not_empty_its_home_systems_into_a_war():
+    """The same surplus rule the raid opens with, applied to the second wave.
+
+    ``_maybe_raid``'s own docstring: an opponent that empties its home systems to
+    take an outpost has not become harder to play against. It commits a raid only
+    while holding twice one free, so it always leaves a raid's worth at home, and
+    this leaves the same -- one answer to what a civilization will spend on a war
+    rather than two.
+
+    It is emphatically *not* the doctrine garrison, which is the trap the first
+    version of this fell into. ``garrison_per_colony`` times colonies grows with
+    the empire while the navy does not, so a developed civ sits permanently under
+    its own garrison line and would never reinforce anything, ever -- while
+    ``_maybe_raid``, reading a different number on the same turn, cheerfully
+    declares a fresh war.
+    """
+    from galaxysim.ai.doctrine import DRIVEN
+    from galaxysim.ai.simple import take_turn
+
+    # Everything free is inside the raid it must keep at home, so there is
+    # nothing spare -- even though the cordon is losing and one hull would win.
+    engine, universe_id, raider_id, rival_id = _siege_underway(
+        cordon=1.0,
+        defenders=1.5,
+        reserve=DRIVEN.raid_strength - 1.0,
+        strip_starting_fleet=True,
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        target = session.scalar(select(Colony).where(Colony.name == "Contested"))
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+
+        assert not _reinforcements(session, raider_id, target.world.system)
+
+
+def test_it_does_not_scrap_the_second_wave():
+    """The reserve and the surplus were the same ships.
+
+    ``_maybe_scrap`` counts strength above the garrison as surplus and breaks up
+    the smallest of it -- which, during a war, is exactly the hull
+    ``_maybe_reinforce`` is holding for the next wave. A civilization at war and
+    still paying its crews has a reserve, not a surplus.
+    """
+    from galaxysim.model.entities import Intent, IntentKind
+
+    def scrapped(session, civ_id) -> list:
+        return session.scalars(
+            select(Intent).where(
+                Intent.civ_id == civ_id, Intent.kind == IntentKind.DECOMMISSION.value
+            )
+        ).all()
+
+    # ``_maybe_scrap`` on its own, both ways round -- rather than a whole turn,
+    # because a turn with no war on sends the same hull off to start one, and a
+    # ship claimed for a raid was never scrappable anyway. What is under test is
+    # this decision's own rule.
+    #
+    # A cordon that is winning, so nothing is reinforced and the reserve is idle
+    # at a colony -- which is exactly when this used to sell it.
+    for at_war in (True, False):
+        engine, universe_id, raider_id, _ = _siege_underway(
+            cordon=40.0, defenders=2.0, reserve=40.0, reserve_offset_ly=0.0
+        )
+        with open_session(engine) as session:
+            universe = session.get(Universe, universe_id)
+            raider = session.get(Civ, raider_id)
+            pending = simple._pending_by_kind(session, raider)
+            if not at_war:
+                pending.pop("attack", None)
+
+            simple._maybe_scrap(simple._Turn(session, universe, raider), pending)
+            session.flush()
+
+            if at_war:
+                assert not scrapped(session, raider_id), (
+                    "it sold the second wave while the war was on"
+                )
+            else:
+                # The other half: with no war on, the same hull is surplus and
+                # does get broken up -- so the guard is what is doing the work
+                # here rather than the fixture.
+                assert scrapped(session, raider_id), (
+                    "in peacetime a hull above the garrison is still surplus"
+                )
+
+
 def test_a_standing_route_grows_with_the_world_it_feeds():
     """A number that was right when it was written and wrong ever after.
 

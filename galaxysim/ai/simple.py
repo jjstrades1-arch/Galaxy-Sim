@@ -343,6 +343,9 @@ def take_turn(
     # holding an enemy world under blockade commits to finishing that before it
     # sends the remainder off to plant flags on rocks.
     _maybe_annex(turn, pending)
+    # And the warships, for the same reason and in the same place: a war already
+    # being fought comes before one being started. See :func:`_maybe_reinforce`.
+    _maybe_reinforce(turn, pending)
     _maybe_raid(turn, pending)
     _maybe_expand(turn, pending)
     _maybe_supply(turn, pending)
@@ -973,6 +976,156 @@ def _maybe_annex(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             return
 
 
+def _maybe_reinforce(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
+    """Send a second wave to a cordon that is being outweighed.
+
+    The other half of :func:`_maybe_annex`, and missing for the same reason it
+    was: a raid dispatched every ship it would ever send at the moment war was
+    declared, and :func:`_maybe_raid` refuses to declare while an attack order
+    stands, so *nothing in this AI ever sent a warship at an enemy again*. For
+    the whole length of a war every hull the civilization built sat at home --
+    and :func:`_maybe_scrap`, which counts strength above the garrison as
+    surplus, would break up the very ships that should have been the second wave
+    while the first was being ground down.
+
+    That made a war a coin flip resolved on the day it was declared. Win the
+    opening engagement and there was nothing further to answer.
+
+    **What a cordon actually loses to is time, not battle.** The first version of
+    this topped a cordon up when the defenders outweighed it, and across 120 days
+    of eight driven opponents it fired *zero times*: sampled daily over every
+    standing war and every colony of its target, the cordon was winning 28 times,
+    crossing 18, and outweighed never. It cannot be otherwise --
+    :func:`_raidable_colony` only picks worlds it already outweighs, and a
+    frontier outpost has no fleet over it at all, so the defenders are usually
+    nothing.
+
+    What does happen is that the blockade *expires*. Upkeep is billed to colonies
+    near a fleet and there is nothing to draw on in somebody else's space, so a
+    cordon deserts away hour by hour -- and of fifteen blockades established, only
+    eight ever ground their world down. So the question is not "am I being
+    outweighed" but "is there still enough here to finish", and the strength that
+    answers it is :attr:`~galaxysim.ai.doctrine.Doctrine.raid_strength`: what this
+    opponent thinks an objective is worth committing. A cordon below that gets
+    topped back up to it.
+
+    Two limits, and they are the whole design, because the failure mode this
+    invents is worse than the one it fixes:
+
+    **It never empties the home systems.** It keeps back what :func:`_maybe_raid`
+    keeps back -- a raid's worth of strength, free, at home -- because an opponent
+    that spends everything to hold an outpost has not become harder to play
+    against, it has become easier.
+
+    **It never feeds a fight it cannot win.** Whatever goes in must leave the
+    cordon *past* the defenders standing over that world -- the same judgement
+    :func:`_raidable_colony` makes before picking a target at all. Half a wave is
+    worth nothing: a blockade that does not outweigh the garrison cuts no supply
+    line and grinds itself down for as long as it lasts, so a civ that cannot tip
+    the balance sends nobody and lets :func:`_maybe_make_peace` stand the war
+    down. That case is rare against this AI and routine against a player, who can
+    park a defence fleet over a world they can see is threatened.
+
+    Both numbers come off ``turn.garrisons``, which is where a fleet is standing
+    and whose it is -- the same picture a player gets by looking, and the same one
+    the raid reads before it commits.
+    """
+    session, civ = turn.session, turn.civ
+    at_war = {
+        intent.payload.get("target_civ_id")
+        for intent in pending.get(IntentKind.ATTACK.value, [])
+    }
+    if not at_war:
+        return
+
+    colonies = turn.colonies
+    if not colonies:
+        return
+
+    busy = {
+        intent.payload.get("fleet_id") for group in pending.values() for intent in group
+    } | turn.claimed | turn.on_station
+    warships = [
+        fleet
+        for fleet in turn.fleets
+        if fleet.cargo_capacity <= 100.0
+        and not fleet.in_transit
+        and fleet.id not in busy
+        and fleet.strength > 0
+    ]
+    if not warships:
+        return
+
+    # What it may spend, by the raid's own standard: :func:`_maybe_raid` commits
+    # ``raid_strength`` only when it holds twice that free, so it always leaves a
+    # raid's worth at home. This leaves the same, because there must be one
+    # answer to "what will this opponent spend on a war" rather than two.
+    #
+    # It is deliberately *not* the doctrine garrison, and that is measured rather
+    # than argued. The garrison is ``garrison_per_colony`` times colonies held,
+    # which grows with the empire while the navy does not: at 120 days a driven
+    # civ has 62 points of warship against a 28-colony garrison line of 70, and is
+    # permanently under it. Reinforcement gated on that floor bailed on 708 of the
+    # 730 turns it ran and dispatched nothing, ever -- while ``_maybe_raid``, on
+    # the same turns, was perfectly willing to declare a new war.
+    free = sum(fleet.strength for fleet in warships)
+    sendable = free - turn.doctrine.raid_strength
+    if sendable <= 0:
+        return
+
+    for system in turn.systems:
+        for world in system.worlds:
+            colony = world.colony
+            if colony is None or colony.civ_id not in at_war:
+                continue
+
+            where = system.position
+            cordon = queries.strength_at(turn.garrisons, where, civ.id, BLOCKADE_RANGE_LY)
+            # Ships already crossing count, or a civ sends a fresh wave every
+            # tick of the week they spend in flight and arrives with its whole
+            # navy at a world it needed two hulls for.
+            inbound = sum(
+                fleet.strength
+                for fleet in turn.fleets
+                if fleet.in_transit
+                and fleet.strength > 0
+                and _destination(fleet) is not None
+                and distance(_destination(fleet), where) <= BLOCKADE_RANGE_LY
+            )
+            holding = cordon + inbound
+            if holding <= 0.0:
+                continue  # not an objective of ours; nothing to reinforce
+
+            defenders = _defenders(turn, where, colony.civ_id)
+            # Enough to outweigh whoever is defending, and enough to finish the
+            # job -- the commitment this opponent thinks an objective is worth.
+            wanted = max(turn.doctrine.raid_strength, defenders)
+            if holding > defenders and holding >= wanted:
+                continue  # the blockade is up and deep enough; it needs nothing
+
+            # Heaviest first, and skip anything that would not fit under the
+            # garrison line rather than stopping at it -- a wing too big to spare
+            # must not shut out the frigate that would have tipped the balance.
+            committed: list[Fleet] = []
+            spent = 0.0
+            strength = holding
+            for fleet in sorted(warships, key=lambda f: (-f.strength, f.id)):
+                if spent + fleet.strength > sendable:
+                    continue
+                committed.append(fleet)
+                spent += fleet.strength
+                strength += fleet.strength
+                if strength > defenders and strength >= wanted:
+                    break
+            if strength <= defenders or not committed:
+                return  # cannot tip it; do not feed it
+
+            for fleet in committed:
+                turn.claimed.add(fleet.id)
+                intents.move_fleet_to_system(session, civ, fleet.id, system)
+            return
+
+
 def _destination(fleet: Fleet) -> Vec3 | None:
     """Where a fleet in transit is headed, if it is going anywhere."""
     if fleet.dest_x is None or fleet.dest_y is None or fleet.dest_z is None:
@@ -1071,7 +1224,17 @@ def _maybe_scrap(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     # civ short of fuel must not balance its books by cutting the supply line.
     garrison = len(colonies) * turn.doctrine.garrison_per_colony
     over = sum(f.strength for f in warships) - garrison
-    if over <= 0 and civ.upkeep_paid >= 1.0 - 1e-9:
+    solvent = civ.upkeep_paid >= 1.0 - 1e-9
+    if over <= 0 and solvent:
+        return
+
+    # A hull is only surplus in peacetime. While a war is on, the ships above the
+    # garrison are the second wave -- :func:`_maybe_reinforce` spends exactly that
+    # margin -- and this function was breaking them up for materials while the
+    # first wave was being ground down at the cordon. Insolvency still overrides:
+    # a civ that cannot pay its crews loses these ships either way, and desertion
+    # returns nothing.
+    if solvent and pending.get(IntentKind.ATTACK.value):
         return
 
     # Out of the orders already in hand rather than a fresh query: a decision

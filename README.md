@@ -737,6 +737,15 @@ staying peaceful is deliberate: every price in the game is calibrated against a
 soak of Steady opponents, and one that starts annexing its neighbours is
 measuring something else.
 
+A war it starts is one it keeps feeding. Nothing shoots at a blockade — what
+ends one is upkeep, since a fleet draws on colonies near it and there are none in
+your space — so a cordon quietly deserts away, and the opponent tops it back up
+to the strength it thinks the objective is worth. It will not strip its home
+systems to do it: it keeps a raid's worth free at home, the same reserve it
+demanded before declaring. Over 120 days at eight Driven civs that means eight
+sieges rather than fifteen, five abandoned rather than twelve, and the same six
+worlds taken. Beating the first wave no longer wins the war.
+
 Measured across a 120-day run of eight Driven civs:
 
 ```
@@ -804,12 +813,16 @@ waiting to be tuned.
   pool, so construction runs at half the rate it did. That is the intended
   shape — ore has to become steel before it can become a hull — but the split is
   a first-pass number that wants a play session, not a spreadsheet.
-- **A war is one raid, and it does not reinforce.** The AI commits a force once,
-  holds the cordon and lands a pod when it can. If that force is ground down it
-  will not send a second wave at the same objective — it stands the war down and
-  rebuilds instead. Over 120 days: seven wars declared, six of them ended, four
-  worlds changed hands, and two civilizations fought three and four wars each.
-  What is missing is reinforcement, not resolution.
+- **A civilization's garrison is bigger than its navy, permanently.** Doctrine
+  asks for `garrison_per_colony` strength per colony held — 2.5 for a driven
+  opponent — and that line grows with the empire while the fleet does not. At day
+  120 a driven civ has **62 points of warship against a 28-colony garrison line
+  of 70**, and is under it for the rest of the game. Nothing enforces the
+  garrison, so nothing breaks; but any decision written against it is dead on
+  arrival, which is how it was found. `_maybe_raid` quietly ignores the number
+  and spends against its own rule instead. Either the garrison is the wrong
+  shape — it should probably scale with *frontier*, not with colony count — or
+  the standing navy is priced too low. It has never been chosen on purpose.
 - **A capital cannot generate what it demands, and that is now a real question
   rather than a bug.** Two defects were hiding this: governors could not build at
   all, and the brownout rule abandoned any plant it could not immediately afford.
@@ -844,6 +857,33 @@ waiting to be tuned.
 Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
+
+- **A war was one raid, and everything after it sat at home.** The AI dispatched
+  every ship it would ever send at the moment war was declared, and `_maybe_raid`
+  refuses to declare while an attack order stands — so nothing in the AI ever
+  sent a warship at an enemy twice. Win the opening engagement and the war was
+  over. Worse, `_maybe_scrap` counts strength above the garrison as surplus, so
+  it broke up the very hulls that should have been the second wave.
+
+  Two wrong diagnoses before the right one, each killed by measuring. This file
+  said the raid gets *ground down* — nothing shoots at a blockade; what kills one
+  is upkeep, billed to colonies near a fleet, of which there are none in somebody
+  else's space. So the first version topped a cordon up when the defenders
+  outweighed it, and across 120 days that fired **zero times**: sampled daily
+  over every war and every colony of its target, the cordon was winning 28 times,
+  crossing 18, outweighed never — the AI only picks worlds it already outweighs,
+  and a frontier outpost has no fleet at all. The second version topped a worn
+  cordon back up to `raid_strength` and *also* fired zero times, because it was
+  gated on the doctrine garrison, which a developed civ is permanently under (the
+  gap bullet above). Instrumented, it bailed on **708 of the 730 turns it ran**.
+
+  What it does now is spend by the raid's own standard — keep a raid's worth free
+  at home, commit the rest — because there must be one answer to what a
+  civilization will spend on a war rather than two. Over 120 days at eight driven
+  opponents that halves the number of sieges and finishes them instead: blockades
+  **15 → 8**, lifted before finishing **12 → 5**, worlds subdued 8 → 7, and the
+  **same six worlds captured** off six wars instead of nine. Fewer sieges,
+  heavier ones, and they finish.
 
 - **A supply route shipped a quantity, not a shortfall.** A standing route
   carried its full manifest every trip whether the far end was empty or
