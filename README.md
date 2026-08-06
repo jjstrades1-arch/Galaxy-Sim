@@ -872,11 +872,46 @@ how a list like this turns into a backlog nobody can prioritise.
   that produced the previous phase.
 
   Not fixed by undoing the industry correction, which stopped half a capital's
-  output evaporating and was right. The question is whether upkeep should scale
-  with distance rather than with strength alone, whether the AI should stop
-  buying hulls it cannot supply, or whether supply range itself is the number
-  that has stopped meaning anything. All three are guesses; none has been
-  measured.
+  output evaporating and was right.
+
+  **Measured rather than guessed, and two of three theories died.** Sampling
+  every shortfall across days 60–80:
+
+  ```
+  shortfall situations                     3,470
+    no colony within supply range            237   (6.8%)
+    colonies in range but too poor         3,233  (93.2%)
+    colonies in range, median                  6
+  ```
+
+  So not distance — the stranded 6.8% are 25.6 ly from help against a 25 ly
+  line. Not production either: in-range output at day 70 runs to many times a
+  fleet's hourly bill. And not payment order across the tick — upkeep is charged
+  at the end of `_produce`, *before* new buildings and new hulls are charged, so
+  a standing bill already has first claim on fresh production.
+
+  What was actually wrong is **how a shared depot was divided**. The biller
+  walked `for fleet in fleets`, and that list is ordered by `Fleet.id` — age —
+  with each fleet emptying the warehouses before the next one asked. A
+  neighbourhood covering four fifths of what was asked of it paid its four
+  oldest squadrons in full and left the fifth with nothing. Since the newest
+  hulls are the ones an expanding civilization has just built, **its own growth
+  starved them on arrival**, and it quietly undid the proportional desertion
+  rule from the phase before: scaling attrition to how short a fleet is buys
+  nothing when the shortage is concentrated on a few fleets at 100%.
+
+  A shared warehouse is now split by weight, from the stock as it stood before
+  anyone drew, with a second pass handing whatever nobody claimed to fleets
+  still short — the same two-pass shape `refine` uses, for the same reason. The
+  28-day pace gate is byte-identical, which is the point: rationing costs
+  nothing where a neighbourhood has enough, so it can only touch the case that
+  was broken.
+
+  **The 120-day verdict is not in yet.** If the day-70 cliff flattens while the
+  227 colonies stay, this is the whole fix. If civilizations still collapse,
+  the depots genuinely cannot carry a navy sized by `len(colonies) ×
+  garrison_per_colony` — an empire-wide count setting a bill that is paid
+  locally — and that is the next change rather than one stacked on this.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of

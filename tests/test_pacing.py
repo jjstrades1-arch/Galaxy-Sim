@@ -283,6 +283,127 @@ def test_fleet_upkeep_is_charged_and_unpaid_fleets_desert():
         ).all()
 
 
+def _two_fleets_on_one_depot(seed: int, *, half_rations: bool, big_first: bool):
+    """Two fleets sharing one colony, and what each has left after an hour.
+
+    ``half_rations`` stocks the warehouse with half of what the pair jointly ask
+    for, so the shortage has to be divided between them somehow. ``big_first``
+    flips which fleet was created first, because creation order is what the
+    biller used to ration by and a test that only ever builds them one way round
+    cannot see that.
+    """
+    from galaxysim.colony.labor import LIFE_SUPPORT
+    from galaxysim.materials import FLEET_UPKEEP_PER_STRENGTH
+    from tests.conftest import take_manual_control
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=seed, civs=("Terrans",), seconds_per_tick=3600)
+
+    strengths = (40.0, 10.0) if big_first else (10.0, 40.0)
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        take_manual_control(session, civ)
+        home = home_colony(session, civ)
+        for fleet in session.scalars(select(Fleet).where(Fleet.civ_id == civ.id)).all():
+            session.delete(fleet)
+        session.flush()
+
+        made = []
+        for index, strength in enumerate(strengths):
+            fleet = Fleet(
+                universe_id=universe_id,
+                civ_id=civ.id,
+                name=f"Squadron {index}",
+                strength=strength,
+                colony_pods=0,
+                speed_ly_per_hour=1.0,
+                cargo={},
+                cargo_capacity=0.0,
+                x=home.world.system.x,
+                y=home.world.system.y,
+                z=home.world.system.z,
+            )
+            session.add(fleet)
+            session.flush()
+            made.append((fleet.id, strength))
+
+        # Exactly half of the hour's joint bill, and nothing else in the
+        # warehouse that could be mistaken for it.
+        total = sum(strengths)
+        home.stockpile = {
+            material: per * total * (0.5 if half_rations else 4.0)
+            for material, per in FLEET_UPKEEP_PER_STRENGTH.items()
+        }
+        # No industry to top the warehouse back up mid-tick, so what is there is
+        # the whole of what the fleets can be paid from.
+        intents.set_labor(session, home, {LIFE_SUPPORT: 1.0})
+        ids = [fleet_id for fleet_id, _ in made]
+
+    run_ticks(engine, universe_id, 1)
+
+    with open_session(engine) as session:
+        return {
+            fleet_id: (session.get(Fleet, fleet_id).strength / strength)
+            for (fleet_id, strength) in made
+        }
+
+
+def test_a_shared_depot_is_split_by_weight_rather_than_by_who_asked_first():
+    """A shortage falls on everybody, not on whoever happens to be newest.
+
+    The biller used to walk fleets in ``Fleet.id`` order and let each empty the
+    warehouse before the next asked, so a depot covering four fifths of what was
+    asked of it paid its four oldest squadrons in full and starved the fifth
+    outright. Since the newest hulls are the ones an expanding civilization has
+    just built, its own growth was starving them on arrival -- and it made the
+    proportional desertion rule pointless, because the shortage arrived
+    concentrated at 100% rather than spread thin.
+    """
+    kept = _two_fleets_on_one_depot(5160, half_rations=True, big_first=True)
+    fractions = sorted(kept.values())
+
+    assert all(f < 1.0 for f in fractions), (
+        "half rations should cost both fleets something; if one is untouched the "
+        "warehouse is still being handed to whoever asked first"
+    )
+    assert fractions[-1] - fractions[0] < 0.01, (
+        f"the two fleets kept {fractions[0]:.4f} and {fractions[-1]:.4f} of "
+        "themselves out of the same half-empty depot; a shared shortage is "
+        "supposed to be shared"
+    )
+
+
+def test_which_fleet_was_built_first_does_not_decide_who_starves():
+    """The same shortage, with the squadrons created in the opposite order.
+
+    ``queries.fleets`` orders by ``Fleet.id``, so before the split was made
+    proportional this was the whole of the rationing rule. Asserting the outcome
+    is identical both ways round is what stops it creeping back.
+    """
+    big_first = _two_fleets_on_one_depot(5161, half_rations=True, big_first=True)
+    small_first = _two_fleets_on_one_depot(5161, half_rations=True, big_first=False)
+
+    assert sorted(big_first.values()) == pytest.approx(
+        sorted(small_first.values()), rel=1e-6
+    ), (
+        "building the large squadron first changed who survived the shortage; "
+        "creation order is deciding rations again"
+    )
+
+
+def test_a_depot_with_enough_pays_everyone_in_full():
+    """The counterpart: rationing must not cost anything when there is plenty.
+
+    Without this the phase could 'fix' the collapse by making every fleet a
+    little short all the time, which is a worse game and would not show up in
+    any of the assertions above.
+    """
+    kept = _two_fleets_on_one_depot(5162, half_rations=False, big_first=True)
+    assert all(f == pytest.approx(1.0) for f in kept.values()), (
+        f"fleets lost strength beside a full warehouse: {kept}"
+    )
+
+
 def test_being_short_of_one_material_costs_a_share_and_not_the_fleet():
     """Desertion tracks the unpaid share of the whole bill, not its worst line.
 

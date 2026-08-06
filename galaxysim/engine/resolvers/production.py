@@ -1057,21 +1057,101 @@ def _charge_fleet_upkeep(
     it is paid. Past :data:`SUPPLY_RANGE_LY` there is nothing to draw on, and
     *that* is what makes projecting force far from home expensive -- distance,
     rather than an accident of which rock the fleet happens to be sitting over.
+
+    **A shared warehouse is split by weight, not handed to whoever asks first.**
+    This used to walk the fleets in order and let each empty the depots before
+    the next one asked -- and that order is ``Fleet.id``, which is to say age. A
+    neighbourhood that could cover four fifths of what was asked of it paid its
+    four oldest squadrons in full and left the fifth with nothing, so a partial
+    shortage arrived as a total one for whichever fleets happened to be newest.
+    Since the newest hulls are the ones an expanding civilization has just built,
+    its own growth starved them on arrival.
+
+    Measured, that is what turned a 47% larger galaxy into a navy that peaked on
+    day seventy and lost a fifth of itself in the fortnight after. It also
+    quietly undid the rule directly above: desertion is scaled to the unpaid
+    share of a fleet's bill precisely so that being a little short costs a little
+    strength, which is worth nothing if the shortage is concentrated onto a few
+    fleets at 100%.
+
+    Two passes now, the same shape :func:`galaxysim.materials.refining.refine`
+    uses for the same reason. The first gives every fleet its weighted share of
+    each warehouse it can reach, measured against the stock as it stood before
+    anyone drew -- so the split does not depend on who is visited first. The
+    second lets fleets that are still short take what nobody claimed, in distance
+    order, so a proportional rule does not leave usable material sitting in a
+    depot.
     """
     civ.upkeep_paid = 1.0
     if not fleets:
         return
 
-    billed = 0.0
-    settled = 0.0
-
+    # What everyone is owed, and which warehouses each can reach.
+    demands: list[tuple[Fleet, list[Colony], dict[str, float]]] = []
     for fleet in fleets:
         if fleet.strength <= 0:
             continue
-
+        owed = {}
+        for resource, per_strength in sorted(FLEET_UPKEEP_PER_STRENGTH.items()):
+            amount = ctx.per_tick(per_strength * fleet.strength)
+            if amount > 0:
+                owed[resource] = amount
+        if not owed:
+            continue
         suppliers = queries.sorted_by_distance(
             colonies, fleet.position, within_ly=SUPPLY_RANGE_LY
         )
+        demands.append((fleet, suppliers, owed))
+
+    if not demands:
+        return
+
+    # The total claim on each warehouse, and its opening position. Both are
+    # taken before a single tonne moves, which is what makes the split
+    # independent of the order fleets are walked in.
+    claims: dict[tuple[int, str], float] = {}
+    opening: dict[tuple[int, str], float] = {}
+    for _, suppliers, owed in demands:
+        for supplier in suppliers:
+            for resource, amount in owed.items():
+                key = (supplier.id, resource)
+                claims[key] = claims.get(key, 0.0) + amount
+                opening[key] = supplier.stockpile.get(resource, 0.0)
+
+    outstanding = [dict(owed) for _, _, owed in demands]
+
+    def _draw(index: int, supplier: Colony, resource: str, limit: float) -> None:
+        short = outstanding[index].get(resource, 0.0)
+        if short <= 1e-12 or limit <= 0:
+            return
+        available = supplier.stockpile.get(resource, 0.0)
+        taken = min(short, limit, available)
+        if taken > 0:
+            supplier.stockpile[resource] = available - taken
+            outstanding[index][resource] = short - taken
+
+    # Pass one: each fleet's weighted share of every depot in reach.
+    for index, (_, suppliers, owed) in enumerate(demands):
+        for supplier in suppliers:
+            for resource in sorted(owed):
+                key = (supplier.id, resource)
+                claim = claims.get(key, 0.0)
+                if claim <= 0:
+                    continue
+                _draw(index, supplier, resource, opening[key] * (owed[resource] / claim))
+
+    # Pass two: whatever nobody claimed, to whoever is still short.
+    for index, (_, suppliers, owed) in enumerate(demands):
+        for resource in sorted(owed):
+            for supplier in suppliers:
+                if outstanding[index].get(resource, 0.0) <= 1e-12:
+                    break
+                _draw(index, supplier, resource, float("inf"))
+
+    billed = 0.0
+    settled = 0.0
+
+    for index, (fleet, suppliers, owed) in enumerate(demands):
         # Scaled to the unpaid share of the *whole* bill, in tonnes, rather than
         # to its worst line. Taking the maximum meant the narrowest chain in the
         # basket decided the fate of the fleet: measured, a civ that covered
@@ -1081,25 +1161,10 @@ def _charge_fleet_upkeep(
         # geology into a cliff rather than a decision, and it is why upkeep could
         # never be spread across more than one material without making a navy
         # more fragile with every material added.
-        owed_here = 0.0
-        unpaid_here = 0.0
-        for resource, per_strength in sorted(FLEET_UPKEEP_PER_STRENGTH.items()):
-            owed = ctx.per_tick(per_strength * fleet.strength)
-            if owed <= 0:
-                continue
-            outstanding = owed
-            for supplier in suppliers:
-                if outstanding <= 1e-12:
-                    break
-                available = supplier.stockpile.get(resource, 0.0)
-                paid = min(outstanding, available)
-                if paid > 0:
-                    supplier.stockpile[resource] = available - paid
-                    outstanding -= paid
-            owed_here += owed
-            unpaid_here += outstanding
-            billed += owed
-            settled += owed - outstanding
+        owed_here = sum(owed.values())
+        unpaid_here = sum(outstanding[index].values())
+        billed += owed_here
+        settled += owed_here - unpaid_here
 
         shortfall = unpaid_here / owed_here if owed_here > 0 else 0.0
         if shortfall <= 1e-9:
@@ -1112,7 +1177,8 @@ def _charge_fleet_upkeep(
             "upkeep_shortfall",
             f"{fleet.name} went {shortfall * 100:.0f}% unsupplied"
             + (
-                f" from {len(suppliers)} colonies in range"
+                f" from {len(suppliers)} colonies in range shared with "
+                f"{len(demands) - 1} other fleets"
                 if suppliers
                 else f" (nothing within {SUPPLY_RANGE_LY:.0f} ly)"
             )
