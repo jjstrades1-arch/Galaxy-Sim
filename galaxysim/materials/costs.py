@@ -138,9 +138,16 @@ FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {
 #: The **work** is what binds. Materials a capital replaces in an hour; a
 #: shipyard cannot be hurried, and that is the honest constraint on expansion.
 #: Calibrated in ``tests/test_prices.py`` against a measured capital so it says
-#: what it means: about five to six days for a fresh civilization's first built
-#: world, and faster as its industry deepens -- so the frontier accelerates
-#: because the empire got stronger, not because a rule let go.
+#: what it means: **about four days a world** for a young civilization, and
+#: faster as its industry deepens -- so the frontier accelerates because the
+#: empire got stronger, not because a rule let go.
+#:
+#: That figure was five days until construction started receiving the industry
+#: refining could not spend, which is worth recording because the temptation was
+#: to price this constant up by a fifth and put the curve back where it was. The
+#: pacing property is the *shape* of the curve rather than any number in it, and
+#: hiding a corrected economy behind a re-tuned price is the mistake this file
+#: keeps documenting.
 COLONY_POD_COST: dict[str, float] = {
     STEEL: 1_200_000.0,
     ALLOYS: 450_000.0,

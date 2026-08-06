@@ -783,12 +783,19 @@ def _refine(ctx: TickContext, colony: Colony, stock: dict[str, float]) -> None:
     # No efficiency multiplier here: industry_output already carries the
     # colony's factory bonus, and applying it twice would let one building
     # compound against itself.
-    refine(
+    spent, _ = refine(
         stock,
         budget,
         ctx.cadence.hours_per_tick,
         priorities=colony.refining or None,
     )
+    # Published for :func:`construction_output`, which is owed the difference.
+    # Refining is limited by ore in the warehouse rather than by labour, so most
+    # of this budget is usually not spendable -- see that function for what the
+    # gap was costing. Stored as well as remembered, so anyone asking outside a
+    # tick gets the engine's own last answer instead of a guess.
+    colony.refining_spent = spent
+    ctx.remember(_refining_key(colony.id), spent)
 
 
 def _research_output(
@@ -890,9 +897,54 @@ def productivity_of(ctx: TickContext, colony: Colony) -> float:
     )
 
 
+#: Cache key under which the industry-work a colony's chains actually consumed
+#: is published for the rest of the tick to read.
+def _refining_key(colony_id: int) -> tuple[str, int]:
+    return ("refining_spent", colony_id)
+
+
 def construction_output(ctx: TickContext, colony: Colony) -> float:
-    """Industry-work left for building things after refining has taken its cut."""
-    return industry_output(ctx, colony) * (1.0 - ctx.rates.refining_share_of_industry)
+    """Industry-work left for building things after refining has taken its cut.
+
+    **What refining actually took, not what it was offered.** This returned
+    ``industry_output x (1 - refining_share_of_industry)`` -- a flat fraction --
+    while the pipeline at the top of this file has always said construction
+    spends *whatever refining left*. The two are not the same thing, because
+    refining is limited by ore in the warehouse rather than by labour: measured
+    by wrapping :func:`refine` over a real simulated day of a developed capital's
+    chains, it spent **21.6 M of the 368.1 M** industry-work it was handed, and
+    ``_refine`` discarded the rest. So a capital was losing **47% of its total
+    industry every tick** to a reservation it could not use, and the docstring
+    describing the intended behaviour had been sitting above the code that did
+    not implement it.
+
+    The floor is deliberate. Construction never gets *less* than the old flat
+    fraction, so every price calibrated against that figure still holds, and a
+    colony whose refinery bonus lets its chains outspend their share cannot have
+    the overspend charged to its shipyard. What changes is only the case that was
+    broken: work reserved for chains that had nothing to process now goes to the
+    yard instead of evaporating.
+
+    Outside a tick -- the terraforming planner, the empire view, the price
+    harness -- ``_refine`` has not run yet, so this reads
+    :attr:`Colony.refining_spent`, the figure the engine published last tick. A
+    colony that has never been ticked falls back to assuming the reservation was
+    spent in full, which is the conservative answer and the one every existing
+    calibration was measured against.
+
+    That column is not decoration. Without it the readout kept quoting the
+    reservation while the yard spent the remainder, so a player was shown 978,466
+    of construction work on a capital that did 1,450,899 -- the same class of
+    drift, on the same function, that once quoted a terraforming campaign at
+    eleven times its real length. ``tests/test_colony.py`` asserts the two agree.
+    """
+    total = industry_output(ctx, colony)
+    reserved = total * ctx.rates.refining_share_of_industry
+    last = colony.refining_spent
+    spent = ctx.cached_effects(
+        _refining_key(colony.id), lambda: reserved if last is None else float(last)
+    )
+    return total - min(spent, reserved)
 
 
 def industry_per_hour(

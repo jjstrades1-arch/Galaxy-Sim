@@ -687,15 +687,22 @@ compounding-resistant" produced exactly what it asked for — AI empires that
 reached six colonies on day two and sat there for twenty-six days. Growth is
 meant to compound, and a flat line is the failure rather than the target.
 
-Median colonies per AI civ, 8 civs over 28 simulated days:
+Median colonies per AI civ, 8 civs over 60 simulated days:
 
 ```
-day     4   8  12  16  20  24  28  32  40  48  60
+day     4   8  12  16  20  24  28  36  44  52  60
       ────────────────────────────────────────────
-        2   3   4   4   6   6   7   8  10  12  14
+        2   3   4   5   6   8   8   9  10  12  12
 ```
 
-Still rising at the end, which is the point.
+Still rising for most of it, and **flat over the last three samples**, which is
+not what this section asks for. That plateau appeared when construction started
+receiving the industry refining could not spend: the first month got faster (day
+28 went 7 → 8 worlds) and the second month got slower, ending at 12 against 14.
+A wider empire spends more of itself on holding what it has, which is the
+intended brake — but a brake that stops the curve inside the measured window is
+a finding rather than a design, and it is written down here instead of being
+tuned away.
 
 That curve moved once, and the way it moved is worth recording. Fixing the
 construction orders that never closed — see below — put an extra world on the
@@ -845,19 +852,6 @@ misbehaving — a number simply never chosen on purpose. A **scaling ceiling** i
 correct today, and growing. Only the first kind is a bug, and conflating them is
 how a list like this turns into a backlog nobody can prioritise.
 
-- *(measured defect)* **Half of a capital's industry is reserved for refining
-  and 94% of that reservation is idle.** Not "a first-pass number that wants a
-  play session", which is what this bullet used to say. Measured by wrapping
-  `refine` and totalling a real simulated day of a developed capital's chains:
-  **21.6 M of
-  368.1 M industry-work spent, 5.9%.** Refining is limited by ore in the
-  warehouse, not by labour, and `_refine` discards what it cannot spend rather
-  than handing it back — so a capital loses **47% of its total industry every
-  tick** to a reservation it cannot use.
-
-  Deliberately not fixed here. `refining_share_of_industry` sits underneath every
-  calibrated price in the game, including the 28-day pace gate, so moving it is
-  its own phase with its own soak rather than a line changed in passing.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
@@ -885,6 +879,52 @@ how a list like this turns into a backlog nobody can prioritise.
 Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
+
+- **Half a capital's industry was reserved for refining and 94% of it
+  evaporated.** The pipeline at the top of `production.py` has always described
+  step 6 as construction spending *whatever industry-work refining left*.
+  `construction_output` returned a flat `industry_output × (1 - refining_share)`
+  instead, and the two are not the same thing, because refining is limited by
+  **ore in the warehouse rather than by labour**. Measured by wrapping `refine`
+  and totalling a real simulated day of a developed capital's chains: **21.6 M of
+  the 368.1 M** industry-work it was handed, 5.9%. `_refine` discarded the rest.
+
+  Construction now takes the remainder, floored at the old fraction so nothing
+  calibrated against that figure can move downward. Measured in flight over 24
+  ticks at day 14 of eight driven opponents, construction comes out **1.31×
+  the old figure at the median and 1.51× at best**, with 1 call in 168
+  unchanged. My own estimate before measuring was "roughly doubles"; it is not,
+  because the colonies asking are a mix of capitals and young outposts and the
+  94% figure came from a lone developed capital with a full warehouse.
+
+  **The pace moved, and not in one direction.** Day 28 goes **7 → 8 colonies**
+  and 4.7 → 4.0 days a world. But run to 60 days the curves cross:
+
+  ```
+  day        4   12   20   24   28   36   44   52   60
+  before     2    4    6    6    7    8   10   12   14
+  now        2    4    6    8    8    9   10   12   12
+  ```
+
+  Faster to day 28, level by day 44, and **behind by day 60** — 12 colonies
+  against 14, with days-per-world drifting 3.6 → 5.2 over the second month. A
+  bigger early empire is a wider one, and a wider one spends more of itself on
+  holding what it has. That is the design's stated brake working, but the curve
+  flattening three samples from the end is *not* the property this file asks
+  for, and it is recorded here rather than smoothed over. Repricing a colony pod
+  to hide either end of it would be the exact mistake this file keeps
+  documenting; understanding why the second month slows down is the next
+  question, not a constant to turn.
+
+  One thing this broke and had to fix on the way. Making construction depend on
+  what refining *happened* to spend gave the number a fresh way to drift from its
+  own readout: a player asking the terraforming planner or the empire view got
+  978,466 of construction work on a capital whose yard did 1,450,899, because
+  outside a tick there was nothing published and the fallback quoted the
+  reservation. `Colony.refining_spent` now stores the engine's own last answer,
+  the same stored-with-a-one-tick-lag pattern `power_satisfaction` already uses
+  in the same file. That drift is the failure this project has already paid for
+  once, when a terraforming campaign was quoted at eleven times its real length.
 
 - **A crust with no copper ended a civilization.** The previous entry on this
   list said one opponent in eight never got going and the cause was unknown. It

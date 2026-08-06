@@ -34,6 +34,7 @@ from galaxysim.materials import (
     CONSTRUCTION,
     COPPER,
     ELECTRONICS,
+    FOOD,
     IRON,
     MATERIALS,
     RARE_EARTHS,
@@ -605,6 +606,148 @@ def test_equipment_buys_a_more_capable_colony():
 
     assert outfitted.starting_infrastructure() > bare.starting_infrastructure()
     assert bare.starting_infrastructure() > 0, "even a bare landing can do something"
+
+
+def test_construction_gets_the_industry_refining_could_not_spend():
+    """The pipeline's step 6 says so; for a long time the code did not.
+
+    ``production.py`` has always opened by describing construction as spending
+    *whatever industry-work refining left*, and ``construction_output`` returned
+    a flat ``industry_output x (1 - refining_share)`` instead. Those differ
+    because refining is limited by **ore in the warehouse**, not by labour: over
+    a real simulated day of a developed capital's chains it spent 21.6 M of the
+    368.1 M it was offered and the rest was discarded, so a capital lost 47% of
+    its total industry every tick to a reservation it could not use.
+
+    Two colonies, because one cannot tell a change from a constant: a warehouse
+    with nothing to refine must beat the flat fraction, and one whose chains can
+    absorb their whole share must land exactly on it.
+    """
+    from galaxysim.engine.context import TickContext
+    from galaxysim.engine.rates import CADENCE_HOURLY, DEFAULT_RATES
+    from galaxysim.engine.resolvers.production import (
+        _refine,
+        construction_output,
+        industry_output,
+    )
+    from galaxysim.model.entities import Universe
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=822, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = home_colony(session, civ)
+        ctx = TickContext.build(session, universe, CADENCE_HOURLY, DEFAULT_RATES)
+
+        total = industry_output(ctx, colony)
+        flat = total * (1.0 - DEFAULT_RATES.refining_share_of_industry)
+        assert flat > 0, "a reference colony that builds nothing measures nothing"
+
+        # Nothing in the warehouse to process, so every tonne of the refining
+        # reservation is unspendable and the whole of it is owed to the yard.
+        starved: dict[str, float] = {}
+        _refine(ctx, colony, starved)
+        assert construction_output(ctx, colony) == pytest.approx(total), (
+            "a colony with no ore refines nothing, so all of its industry should "
+            "reach construction; if this reads the flat fraction the reservation "
+            "is still evaporating"
+        )
+
+        # And the other end: chains that can absorb the entire share leave the
+        # yard exactly what it always had.
+        ctx.invalidate(("refining_spent", colony.id))
+        _refine(ctx, colony, rich_stockpile())
+        assert construction_output(ctx, colony) == pytest.approx(flat, rel=1e-9), (
+            "a colony whose chains spend their whole share must leave "
+            "construction the fraction every price in the game was calibrated "
+            "against"
+        )
+
+
+def test_the_construction_readout_is_the_work_the_yard_actually_did():
+    """One number, not two -- the guard this file has a scar for.
+
+    ``construction_output`` is both an engine input and a readout: the terraform
+    planner quotes it, the empire view prints it, and the resolver above spends
+    it. Letting the two drift is how a terraforming campaign came to be quoted at
+    eleven times its real length. Now that the figure depends on what refining
+    happened to spend this tick, there is a fresh way for them to part company,
+    so this asserts they cannot: a building under construction must lose exactly
+    the work the readout claims was available.
+    """
+    from galaxysim.engine.context import TickContext
+    from galaxysim.engine.rates import CADENCE_HOURLY, DEFAULT_RATES
+    from galaxysim.engine.resolvers.production import construction_output
+    from galaxysim.model.entities import Universe
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=823, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        colony = home_colony(session, civ)
+        # Water and food only: no ore, so the chains have nothing to process and
+        # the reservation goes almost entirely unspent. That gap is the whole
+        # point -- with a full warehouse refining absorbs its share, the stored
+        # figure and the reservation agree, and this test cannot tell them apart.
+        # It could not, in its first draft, and only the mutation said so.
+        colony.stockpile = {WATER: 1e9, FOOD: 1e9}
+        # Exactly one thing under construction, so the whole of the tick's
+        # construction work goes into it and the arithmetic is unambiguous.
+        for building in colony.buildings:
+            building.work_remaining = 0.0
+            building.completed_tick = 0
+        session.add(
+            Building(
+                colony_id=colony.id,
+                kind="mine",
+                level=1,
+                work_remaining=1e12,  # far more than one tick can finish
+                started_tick=0,
+            )
+        )
+        colony_id = colony.id
+
+    # Capture what the resolver used while the tick was running. Comparing a
+    # *pre*-tick quote against the next tick's work would measure the colony
+    # changing in between -- it mines ore, its chains find more to do -- rather
+    # than the two figures agreeing, which is what this is about.
+    import galaxysim.engine.resolvers.production as production
+
+    inside: list[float] = []
+    real = production.construction_output
+
+    def spy(ctx, colony):
+        value = real(ctx, colony)
+        if colony.id == colony_id:
+            inside.append(value)
+        return value
+
+    production.construction_output = spy
+    try:
+        run_ticks(engine, universe_id, 1)
+    finally:
+        production.construction_output = real
+
+    assert inside, "the colony built nothing, so this measured nothing"
+    spent_in_tick = inside[-1]
+
+    # Now the question a player's readout asks: same colony, same state, but
+    # from outside a tick, where the memo is gone and only the stored column is
+    # left to go on.
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        colony = session.get(Colony, colony_id)
+        ctx = TickContext.build(session, universe, CADENCE_HOURLY, DEFAULT_RATES)
+        quoted = construction_output(ctx, colony)
+
+    assert quoted == pytest.approx(spent_in_tick, rel=0.02), (
+        f"the yard had {spent_in_tick:,.0f} of construction work and a player "
+        f"asking afterwards is told {quoted:,.0f}; the number shown and the "
+        "number spent have come apart"
+    )
 
 
 def test_a_manifest_is_cut_down_to_what_the_warehouse_holds():

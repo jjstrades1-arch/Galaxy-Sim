@@ -471,12 +471,18 @@ def test_founding_a_world_is_the_decision_of_a_season(economies):
     reached five hundred colonies in four weeks, and grew their population four
     percent doing it. Enormously wide, completely hollow.
 
-    The intended shape is a new world every five or six days for a *fresh* civ,
+    The intended shape is a new world every four days or so for a *fresh* civ,
     accelerating from there as its industry deepens -- so the frontier speeds up
     because the empire got stronger, never because a rule let go. A capital
     building a pod also has mines and reactors going, so it spends some fraction
     of its construction on the yard; the band below is wide enough to hold any
     reasonable split and narrow enough to catch this going free again.
+
+    Note what this measures against: ``capital_work_per_hour`` comes from a
+    *fresh* colony that has never been ticked, where ``construction_output``
+    conservatively assumes refining spent its whole reservation. A colony that
+    has been running gets whatever its chains could not use on top, which is why
+    the observed pace is faster than dividing by this figure suggests.
     """
     per_hour = economies["capital_work_per_hour"]
     days_at_full_tilt = _hours(COLONY_POD_WORK, per_hour) / HOURS_PER_DAY
@@ -484,7 +490,7 @@ def test_founding_a_world_is_the_decision_of_a_season(economies):
     assert 10.0 < days_at_full_tilt < 22.0, (
         f"a pod is {days_at_full_tilt:.2f} days of a *fresh* capital's entire "
         "construction output. Measured against a soak, that lands a new world "
-        "about every five days early on and faster as the capital deepens -- "
+        "about every four days early on and faster as the capital deepens -- "
         "which is the intended shape: the frontier speeds up because the empire "
         "got stronger."
     )

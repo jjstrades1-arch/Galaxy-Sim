@@ -376,6 +376,23 @@ class Colony(Base):
     #: it works in life.
     power_satisfaction: Mapped[float] = mapped_column(Float, default=1.0)
 
+    #: Industry-work this colony's refining chains consumed last tick.
+    #:
+    #: Stored for the same reason and with the same one-tick lag as
+    #: :attr:`power_satisfaction` above, and it earns the column the same way:
+    #: what refining spends is discovered by *doing* it, against the ore actually
+    #: in the warehouse, and construction is owed whatever was left over. Anyone
+    #: asking outside a tick -- the terraforming planner, the empire view, the
+    #: price harness -- would otherwise have to guess, and the guess available
+    #: before this column existed was the reservation, which overstates what
+    #: refining uses by a factor of about twenty on a developed capital. A
+    #: readout that recomputes an engine number drifts from it; this is the
+    #: engine's own answer, published.
+    #:
+    #: ``None`` on a colony that has not been ticked yet, where the conservative
+    #: fallback is to assume the whole reservation was spent.
+    refining_spent: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
     #: How much of this colony's capacity to hold out is left, in the same units
     #: :func:`galaxysim.engine.resolvers.siege.standing_resistance` computes it.
     #: Worn down by a besieging fleet and recovering when the siege lifts.
