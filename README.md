@@ -838,13 +838,12 @@ waiting to be tuned.
 
 ## Known tuning gaps
 
-Three entries, and they are three different kinds of thing — which is worth
-saying, because "gap" has been doing too much work. The first is a **measured
-defect**: something behaves contrary to its own design and the measurement says
-so. The second is an **unmade decision**: nothing is misbehaving, a number has
-simply never been chosen on purpose. The third is a **scaling ceiling**: correct
-today, and growing. Only the first is a bug, and conflating them is how a list
-like this turns into a backlog nobody can prioritise.
+These are not all the same kind of thing, which is worth saying because "gap"
+has been doing too much work. A **measured defect** behaves contrary to its own
+design and the measurement says so. An **unmade decision** is nothing
+misbehaving — a number simply never chosen on purpose. A **scaling ceiling** is
+correct today, and growing. Only the first kind is a bug, and conflating them is
+how a list like this turns into a backlog nobody can prioritise.
 
 - *(measured defect)* **Half of a capital's industry is reserved for refining
   and 94% of that reservation is idle.** Not "a first-pass number that wants a
@@ -859,6 +858,16 @@ like this turns into a backlog nobody can prioritise.
   Deliberately not fixed here. `refining_share_of_industry` sits underneath every
   calibrated price in the game, including the 28-day pace gate, so moving it is
   its own phase with its own soak rather than a line changed in passing.
+- *(measured defect, cause unknown)* **One civilization in eight never gets
+  going at all.** Per-civ over 120 days of driven opponents, seven civilizations
+  reach 45–83 warship strength and one sits at **5.5 from day 14 to day 120** —
+  flat, the whole run, while the other seven grow monotonically and the galaxy
+  fills to 154 colonies. It is not a navy that collapsed; at `garrison_per_colony
+  × colonies` that reads as a civ that never got past two worlds. Whether it drew
+  a start with nothing habitable in reach, or something in the AI's settle rule
+  gives up, is not known — it surfaced in the run that confirmed the fuel fix and
+  has not been chased. Worth chasing: an opponent that is simply absent is a
+  worse experience than a hard one.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
@@ -932,9 +941,8 @@ from the inside.
     of it — the denominator was wrong, and the test guarding it could not see
     that, because it divided a fuel-and-alloys bill by total industry-work and
     passed anything from 2% to 60% while its docstring said "a tenth". Upkeep is
-    now
-    billed across fuel, alloys, steel and ceramics, each line about a fifth of a
-    developed capital's hourly production of that same material. Across five
+    now billed across fuel, alloys, steel and ceramics, each line about a fifth
+    of a developed capital's hourly production of that same material. Across five
     seeded homeworlds no line exceeds 26%, except on one drawn short of carbon
     *and* iron, where fuel and steel reach 75% and 71% — a reason to go and
     settle better ground rather than a countdown.
@@ -944,12 +952,36 @@ from the inside.
   Measured, under the old rule a civ short only of reaction mass — 4% of the bill
   — lost **80%** of the strength it would have lost supplying nothing at all.
 
-  The navy now climbs monotonically and never busts. Over 120 days at eight
-  steady opponents the median reads **6 → 10 → 14 → 18 → 22 → 27 → 31 → 36 → 40 →
-  42** at each 8-day mark, ending at 18 colonies a civ and 12.72 B people; over 60
-  days at eight *driven* ones — the setting the cliff was recorded on — it reads
-  **6 → 10 → 12 → 14 → 18 → 22 → 25 → 28 → 32 → 37**, at 14 colonies and 22.4 B.
-  Neither line has a bust anywhere in it.
+  **The cliff is gone; the weather is not.** Per civilization, 120 days of eight
+  driven opponents — the setting the collapse was recorded on, and per-civ
+  because the median is what hid it last time:
+
+  ```
+  day     civ1  civ2  civ3  civ4  civ5  civ6  civ7  civ8   total  colonies  shortfalls
+   14      9.5  10.0  10.5   9.5   5.5   5.5  10.5  10.0    71.0        28           0
+   42     32.5  25.0  26.0  25.0   5.5   9.5  22.0  27.0   172.5        66           0
+   70     53.0  45.0  44.5  24.1   5.5  12.0  33.5  47.5   265.1       107         205
+   98     52.5  64.5  54.0  41.3   5.5  17.0  45.0  68.0   347.8       137         831
+  120     52.5  83.5  53.0  63.8   5.5  19.0  45.5  80.0   402.8       154       1,117
+  ```
+
+  Aggregate warship strength at day 120 goes **281 → 402.8**. The deepest dip
+  anywhere in the run is civ4 losing 34% at day 70 and finishing at 63.8, its
+  highest; before, five of eight civilizations lost most of a navy and the worst
+  fell 81% in a fortnight.
+
+  **Three honest caveats.** Shortfalls are bounded, not eliminated — none at all
+  for 70 days, then 1,117 events over the rest, which is what civ4's dip is made
+  of. That is upkeep working as intended rather than a famine: a large navy far
+  from home occasionally outruns its supply and pays for it. Second, **civ5 sits
+  at 5.5 strength for the whole 120 days** while everyone else reaches 45-83, and
+  nothing here explains why; it is a civ that never expanded rather than one that
+  lost a navy, and it wants its own look. Third, this pressure is a property of
+  *driven* opponents: the same 120 days against **steady** ones runs
+  6 → 10 → 14 → 18 → 22 → 27 → 31 → 36 → 40 → 42 on the median, smooth
+  throughout, at 18 colonies a civ and 12.72 B people. It is the fleets a driven
+  civ pushes out past its own supply that generate the shortfalls, which is the
+  mechanic doing its job.
 
   What survives from the old entry is the part that was arithmetic rather than
   sampling: **this could never have been fixed by shipping.** A route ship holds
@@ -965,10 +997,12 @@ from the inside.
   23,040 build decisions end at `build_queue_depth`** before garrisons are asked
   about, and that run laid down 179 settlers against 83 warships.
 
-  It is not free: the 120-day soak costs **217 ms/tick** against the 180–186
-  recorded after the query work, because the economy it is simulating is larger —
-  navies that survive are navies to bill, and there are 18 colonies a civ at day
-  120 rather than a frontier that kept stalling.
+  It is not free: the 120-day steady soak costs **217 ms/tick** against the
+  180–186 recorded after the query work, and the 60-day driven one 339. The
+  economy being simulated is larger — navies that survive are navies to bill, and
+  the galaxy fills to 18 colonies a civ where it used to stall. Worth watching
+  rather than acting on: the per-tick cost of a *bigger* game is not the same
+  problem as a per-tick cost that grew for nothing.
 
 - **Region did nothing, and now it is the difficulty axis it was pretending to
   be.** This entry used to say the core plays exactly like the arm. That was
