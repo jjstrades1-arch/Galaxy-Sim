@@ -838,12 +838,29 @@ waiting to be tuned.
   is synthesised from ice and carbon and competes with the fissile chain, and
   when it runs short every crew in the fleet deserts at once.
 
-  **What is still open is the famine itself.** The crises are shorter than a
-  fortnight — `upkeep_paid` reads 1.00 at almost every sample and 0.85 at the one
-  that caught a civilization mid-collapse — so nothing here distinguishes a
-  routing failure from a refining one from the intended cost of a fleet. That is
-  the next question, and it wants tick-resolution sampling rather than another
-  inference.
+  **The famine is a distribution failure, and it cannot be shipped away.**
+  Instrumented at the moment of every shortfall across 120 days:
+
+  | short of | times | mean held by the civ | mean within supply range |
+  |---|---|---|---|
+  | alloys | 4,730 | **2,344,773,396 t** | **2 t** |
+  | fuel | 4,901 | **29,473,728 t** | **1 t** |
+
+  Not one of those was a production failure. The material existed by the billion
+  tonne; it was in the wrong warehouse, and no amount of it in the wrong
+  warehouse pays a crew. Fleets averaged 3.5 colonies inside supply range — the
+  suppliers were *there*, holding none of the two things upkeep is billed in,
+  because **nothing in this game ever moves fuel or alloys**. Routes carry water,
+  food and fertiliser out; the backhaul carries ore in, deliberately.
+
+  Nor can that be fixed by shipping, which is the part worth knowing. A point of
+  strength burns **3,000 t/hour**. A route ship holds 28,000 and takes 140 hours
+  to go and come back, so it delivers **200 t/hour** and costs **1,500** in
+  upkeep of its own. One strength-2 hull would need **thirty freighters**, each
+  consuming seven times what it carries. So this is not a logistics gap: **a
+  fleet lives where industry is, or it does not live**, and the open question is
+  whether the fuel share of upkeep — 1,100 of 3,000 tonnes — is priced where it
+  was meant to be. That is a deliberate decision, not another patch.
 
   The garrison itself is a live cap, not a dead number: `_maybe_build` reached
   the warship test 367 times and the cap turned it away 284 of them. But it is a
@@ -884,6 +901,28 @@ waiting to be tuned.
 Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
+
+- **The AI asked whether it could afford a hull by counting warehouses its
+  fleets could not reach.** `_can_carry_more_upkeep` is the brake on a navy's
+  size, and it summed the upkeep materials across **every colony the civ owned** —
+  while the bill it was predicting is charged only from colonies within supply
+  range of each fleet. The same proxy-for-the-real-thing this file keeps finding,
+  one dimension over: the function's own docstring had already learned that a
+  civ can hold a hundred million tonnes of steel and no fuel, and then measured
+  the fuel everywhere instead of where it was owed.
+
+  It now asks the local question — these warehouses, against everything already
+  drawing on them — which is the rule the biller itself uses.
+
+  **Honest about the size of it:** almost nothing. Over 120 days at eight driven
+  opponents it changed one civilization's fleet by about a point of strength and
+  left the other seven byte-identical, because the build queue refuses 85% of
+  decisions before affordability is ever asked, and because the collapses happen
+  when everything still looks affordable — the fleet sits at 59 against a line of
+  60 with `upkeep_paid` at 1.00 the fortnight it loses two thirds of itself. A
+  first attempt banked the *union* of every fleet's neighbourhood, which for a
+  spread-out empire is very nearly the whole empire; that one changed nothing at
+  all. Worth fixing because the question was wrong, not because the answer moved.
 
 - **A bad week cost a civilization its navy.** Scrapping had two triggers:
   strength above the garrison, and *insolvency*. The second had a good argument

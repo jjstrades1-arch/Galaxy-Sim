@@ -536,6 +536,7 @@ def _maybe_supply(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
                 colonies,
                 turn.fleets,
                 FREIGHTER_STRENGTH,
+                at=source,
             ):
                 return
             _order_freighter(session, civ, source, pending)
@@ -1464,7 +1465,9 @@ def _scarce_inputs(turn: "_Turn") -> tuple[str, ...]:
     return tuple(ordered[:6])
 
 
-def _can_carry_more_upkeep(turn: "_Turn", colonies, fleets, extra_strength: float) -> bool:
+def _can_carry_more_upkeep(
+    turn: "_Turn", colonies, fleets, extra_strength: float, at: Colony | None = None
+) -> bool:
     """Whether this civ could still pay its bills with another hull flying.
 
     The only limit left on a navy's size, and it is an economic one rather than
@@ -1477,6 +1480,22 @@ def _can_carry_more_upkeep(turn: "_Turn", colonies, fleets, extra_strength: floa
     million tonnes of steel while holding no fuel at all -- which is exactly
     what happened, and why a navy of ninety points of strength deserted down to
     five over the back half of a soak while its warehouses looked healthy.
+
+    Asked, too, **only of the warehouses the fleets can actually reach**. That
+    half was missing for a long time and it is the same error one dimension
+    over: upkeep is billed from colonies within :data:`SUPPLY_RANGE_LY` of each
+    fleet, so an empire-wide sum is a proxy for the question rather than the
+    question. Measured over 120 days, fleets went short of alloys **4,730 times
+    while their civilizations held 2.3 billion tonnes of them** -- with a mean
+    of *two tonnes* inside supply range. The material was not missing; it was
+    somewhere else, and no amount of it anywhere else pays a crew.
+
+    Nor can a freighter fix that, which is why this is a limit on the navy
+    rather than a job for logistics. A point of strength burns 3,000 tonnes an
+    hour; a route ship holds 28,000 and takes 140 hours to go and come back, so
+    it delivers 200 tonnes an hour and costs 1,500 in upkeep of its own. One
+    strength-2 hull would need thirty freighters, each consuming seven times
+    what it carries. **Fleets live where industry is, or they do not live.**
 
     Two questions, and they are not the same question. **Is it keeping up?** --
     :attr:`Civ.upkeep_paid`, last tick's bill against what was actually paid.
@@ -1493,14 +1512,32 @@ def _can_carry_more_upkeep(turn: "_Turn", colonies, fleets, extra_strength: floa
     if strength <= 0:
         return True
 
+    # Asked where the hull would live, not across the empire. The union of every
+    # fleet's neighbourhood is very nearly the whole empire once a civ has spread
+    # out, so asking it that way is the same global sum wearing a local coat --
+    # measured, it changed not one decision in 120 days. What binds is one
+    # place: these warehouses, against everything already drawing on them.
+    if at is None:
+        return True
+    here = at.world.system.position
+    near = queries.sorted_by_distance(colonies, here, within_ly=SUPPLY_RANGE_LY)
+
+    drawing = extra_strength + sum(
+        fleet.strength
+        for fleet in fleets
+        if fleet.strength > 0 and distance(fleet.position, here) <= SUPPLY_RANGE_LY
+    )
+    if drawing <= 0:
+        return True
+
     banked: dict[str, float] = {}
-    for colony in colonies:
+    for colony in near:
         for material in FLEET_UPKEEP_PER_STRENGTH:
             banked[material] = banked.get(material, 0.0) + colony.stockpile.get(material, 0.0)
 
     return all(
         banked.get(material, 0.0)
-        >= per_strength * strength * turn.doctrine.upkeep_reserve_hours
+        >= per_strength * drawing * turn.doctrine.upkeep_reserve_hours
         for material, per_strength in FLEET_UPKEEP_PER_STRENGTH.items()
     )
 
@@ -1740,7 +1777,7 @@ def _maybe_build(turn: "_Turn", pending: dict[str, list[Intent]], rng) -> None:
     # This is the only limit left on how large a navy may get, and it is a real
     # one now that a ship costs a real fraction of what a colony makes: keep
     # adding hulls and the hourly upkeep eats the output that was building them.
-    if not _can_carry_more_upkeep(turn, colonies, fleets, BUILD_STRENGTH):
+    if not _can_carry_more_upkeep(turn, colonies, fleets, BUILD_STRENGTH, at=colony):
         return
 
     # A settler if there is somewhere to send one and nothing to send.

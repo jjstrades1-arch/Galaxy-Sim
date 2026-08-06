@@ -360,6 +360,76 @@ def test_a_civ_that_missed_a_payment_does_not_buy_another_hull():
         assert not _can_carry_more_upkeep(turn, colonies, fleets, 2.0)
 
 
+def test_a_full_warehouse_on_the_far_side_of_the_empire_buys_nothing():
+    """The other half of "where the materials are", and it was missing for long.
+
+    Upkeep is billed from colonies within ``SUPPLY_RANGE_LY`` of each fleet, and
+    this check summed the *whole empire* -- so it answered a question nobody was
+    asking. Measured over 120 days of eight driven opponents, fleets went short
+    of alloys **4,730 times while their civilizations held 2.3 billion tonnes**,
+    with a mean of two tonnes inside supply range. The material was never
+    missing. It was somewhere else, and no amount of it somewhere else pays a
+    crew.
+
+    Nor can a freighter fix it, which is why this belongs here rather than in
+    logistics: a point of strength burns 3,000 tonnes an hour, and a route ship
+    holding 28,000 over a 140-hour round trip delivers 200 an hour while costing
+    1,500 of its own. Fleets live where industry is, or they do not live.
+    """
+    from galaxysim.ai.simple import _Turn, _can_carry_more_upkeep
+    from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=5153, civs=("Terrans",))
+
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        civ = civ_by_name(session, universe_id, "Terrans")
+        rich = home_colony(session, civ)
+        rich.stockpile = {key: 1e12 for key in MATERIALS}
+        turn = _Turn(session, universe, civ)
+        civ.upkeep_paid = 1.0
+
+        # A second world four supply-ranges out, with nothing in its warehouses:
+        # the frontier yard, and the only place this hull could be built.
+        far = Colony(
+            # A world in a *different* system: the first free world is usually
+            # another rock in the capital's own, and moving that system moves
+            # the capital with it.
+            world=session.scalars(
+                select(World)
+                .where(World.colony == None, World.system_id != rich.world.system_id)  # noqa: E711
+                .order_by(World.id)
+            ).first(),
+            civ_id=civ.id,
+            name="Frontier",
+            population=50_000.0,
+            infrastructure=1.0,
+            founded_tick=0,
+            stockpile={},
+            labor=dict(rich.labor),
+        )
+        session.add(far)
+        session.flush()
+        far.world.system.x = rich.world.system.x + SUPPLY_RANGE_LY * 4
+        far.world.system.y = rich.world.system.y
+        far.world.system.z = rich.world.system.z
+        session.flush()
+
+        colonies = [rich, far]
+        fleets = list(session.scalars(select(Fleet).where(Fleet.civ_id == civ.id)))
+        assert fleets, "the fixture needs a fleet to bill"
+
+        # Built at the capital, under a trillion tonnes of everything: yes.
+        assert _can_carry_more_upkeep(turn, colonies, fleets, 2.0, at=rich)
+
+        # Built on the frontier instead. The empire's holdings are untouched --
+        # only the distance from them changed.
+        assert not _can_carry_more_upkeep(turn, colonies, fleets, 2.0, at=far), (
+            "a trillion tonnes a hundred light-years away is not a fuel reserve"
+        )
+
+
 def test_decommissioning_returns_materials_and_stops_the_bill():
     """Upkeep stops being a one-way ratchet.
 
