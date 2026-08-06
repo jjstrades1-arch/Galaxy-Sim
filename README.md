@@ -878,13 +878,43 @@ waiting to be tuned.
   deeper than the rest of its stack. That may well be the intended pressure — it
   is what makes power a decision — but the number has never been chosen on
   purpose, and it wants a play session rather than another sweep.
-- **The core plays exactly like the arm, and that is the open question.** It has
-  now been run: 28 days at 8 civs in both regions gives 7 colonies and 4.7
-  days/world in each, the same wars on the same schedule. Ninety times the stars
-  and half a dex more metal changed nothing a player would feel, because a civ
-  settles what it can reach and afford, and neither is what the core is generous
-  with. Whether region *should* be a difficulty dial is a design question, but
-  today it is a sky, not a game.
+- **Region is a difficulty dial nobody chose, and the rim is the hard setting.**
+  This entry used to say the core plays exactly like the arm. That was measured
+  at 28 days on the pace metric, which cannot see the thing that actually
+  differs. Run to 60 days at 8 driven civs, two seeds, the regions are not alike
+  at all:
+
+  ```
+                              core     arm      rim
+  supply route length (median) 2.4/2.0  3.6/3.0  7.3/5.6  ly
+  routes the empire needs       38/51    56/73    68/87
+  upkeep shortfall events          0/0   54/730  28,791/27,907
+  ore yield of settled worlds  4.1/4.2  3.8/3.8  3.6/3.3
+  habitability settled         .09/.10  .00/.00  .00/.00
+  terraforming completed      170/234  176/232  109/154
+  ```
+
+  **Density pays through supply**, and it pays enormously: a core route is a
+  third the length of a rim one, the core needs 40% fewer of them, and a core
+  civilization never misses a fleet payment while a rim one misses tens of
+  thousands. That is a real difference in how the game feels — it just never
+  reached the number the soak reports.
+
+  What it is *not* is a playstyle choice, because **the rim gets nothing back**.
+  It is worse on every axis measured, and its neighbours are the same 48–51 ly
+  away as everyone's, so it does not even buy quiet. Meanwhile the channel that
+  looks like it should matter is dead: colonies within supply range of each other
+  run **15 / 14 / 13** regardless of region, because the settlement frontier is a
+  fixed volume and star density does not change how far apart an empire's own
+  worlds end up.
+
+  Population does *not* separate the regions — the arm leads on one seed and the
+  core on the other — so any claim that one is stronger overall is seed noise at
+  this sample size, and an earlier draft of this bullet made exactly that mistake
+  before a second seed caught it.
+
+  The open question is therefore not "does region do anything" but **what the rim
+  is for**. Giving it a genuine advantage is a design decision, not a measurement.
 - **What is left of the tail is one big read.** After loading the order queue and
   the fleets once a tick (below), the largest single row source is
   `charted_systems` — **848 rows a tick at 120 days**, more than everything else
