@@ -68,26 +68,54 @@ FREIGHTER_COST_PER_CAPACITY: dict[str, float] = {
 #: building it, and upkeep grows with it, so a civ can sustain a fleet drawing
 #: about a tenth of its refined output whatever its size.
 #:
-#: That paragraph has been here since the constant was written and was false for
-#: most of that time: the real figure was 0.00002% of output, and it was never
-#: checked. ``tests/test_prices.py`` now checks both halves -- the ratio against
-#: build cost, and the bill against what a capital's industry actually makes.
-#: The split between the two matters as much as the total, and the first
-#: version got it wrong in a way only a soak could show. Putting five sixths of
-#: upkeep into fuel looked reasonable -- ships burn fuel -- but fuel is
-#: synthesised from water ice and carbon, and it is also the input to *both*
-#: routes to fissiles. So a navy did not merely cost fuel, it consumed the
-#: entire chain: no fissiles, therefore no magnetic shields, therefore no
-#: terraforming, in a civilization sitting on a hundred million tonnes of
-#: alloys. One material was silently gating the whole endgame.
+#: **The split is where this has gone wrong twice, and the reason was the same
+#: both times: the bill was anchored to one number and drawn from another.**
 #:
-#: Weighted toward alloys now -- hull plating and spares, which any industrial
-#: world makes -- with fuel still a large enough share to be strategic. Same
-#: total, same 1.5% ratio, and fuel goes back to being a thing you compete over
-#: rather than the only thing that exists.
+#: The first version put five sixths of upkeep into fuel. That looked reasonable
+#: -- ships burn fuel -- but fuel is synthesised from water ice and carbon and is
+#: also the input to *both* routes to fissiles, so a navy did not merely cost
+#: fuel, it consumed the entire chain: no fissiles, no magnetic shields, no
+#: terraforming, in a civilization sitting on a hundred million tonnes of alloys.
+#:
+#: The second version moved to fuel and alloys, kept the total, and was checked
+#: against **total industry-work** -- which is neither tonnes nor either of the
+#: two materials being billed. Measured properly, at a reference navy of a
+#: fortnight of a capital's yard, the fuel line alone came to *185% of every
+#: tonne of fuel that capital could make*. It was not payable at any geology.
+#: The fleet flew on the fuel its homeworld was seeded with, and when the bank
+#: emptied the navy deserted -- which is the "fuel famine" this project has now
+#: chased three times, and never once at its cause.
+#:
+#: So the rule now: **upkeep is billed across the materials a ship actually
+#: consumes, each in proportion to what an economy makes of it.** Reaction mass,
+#: hull plating, structural spares and thermal ceramics. Measured on a developed
+#: capital, each line below comes to about a fifth of that colony's hourly
+#: production of that same material -- even across the basket, so no single chain
+#: can gate a navy again -- and the whole bill to 7% of refined output, which is
+#: the "about a tenth" this constant has always claimed and never met.
+#:
+#: **Water was in this basket for one draft and came out.** A crew drinks, so it
+#: read as the obvious fifth line; the suite caught within a minute that it puts
+#: a parked fleet in direct competition with the colonists' life support, drawing
+#: down the one material a colony dies without. That is the same single-chain
+#: gate this constant is trying to stop having, aimed at something worse than a
+#: navy. Upkeep is billed in industrial goods only.
+#:
+#: Poor geology still bites, and that is the point rather than a flaw. Across
+#: five seeded homeworlds the reference navy takes 10-26% of each chain that
+#: feeds it, except on the one drawn short of both carbon and iron, where fuel
+#: and steel run to 75% and 71%. That world's owner has a decision -- go and
+#: settle carbon, or fly a smaller navy -- rather than a countdown, because
+#: nothing is above 100% anywhere and
+#: :func:`~galaxysim.engine.resolvers.production._charge_fleet_upkeep` scales
+#: desertion to the unpaid share of the *whole* bill rather than to its worst
+#: line. Being short of one material costs a fleet that material's share of
+#: itself and not the fleet.
 FLEET_UPKEEP_PER_STRENGTH: dict[str, float] = {
-    FUEL: 1_100.0,
-    ALLOYS: 1_900.0,
+    FUEL: 120.0,
+    ALLOYS: 1_030.0,
+    STEEL: 400.0,
+    CERAMICS: 1_450.0,
 }
 
 #: What a colony pod costs to build, and the work of assembling one.

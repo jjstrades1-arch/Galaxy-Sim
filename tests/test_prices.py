@@ -109,6 +109,63 @@ def economies():
         }
 
 
+#: Days the reference refinery is run for before it is measured.
+#:
+#: A bootstrap capital's warehouse holds no ore at all, so a colony measured at
+#: tick zero refines water and air and *nothing else* -- every chain in the game
+#: reads as producing zero, and a test asserting production against it would pass
+#: for the wrong reason on any price whatsoever. Two days is enough for the mines
+#: to fill the warehouse and the chains to reach their steady rates; a week is
+#: taken because it costs about a second and puts the reading well clear of the
+#: opening transient.
+REFERENCE_REFINERY_DAYS = 7
+
+
+@pytest.fixture(scope="module")
+def refinery():
+    """What a developed capital makes per hour, by material, and the navy to
+    weigh it against.
+
+    Separate from :func:`economies` because it measures a different thing and
+    needs a different colony to measure it on. ``economies`` asks what a capital
+    *can do* -- work per hour, which a fresh one already does at full rate.
+    This asks what comes out of its chains, which is a question about ore in the
+    warehouse, and the answer at tick zero is nothing.
+
+    Production is read by running the engine's own :func:`refine` over the
+    capital's real stockpile for one hour, rather than by reimplementing the
+    chains here. That is deliberate and this file has the scar for it: a readout
+    that recomputes an engine number drifts from it, and nothing fails until
+    somebody acts on the difference.
+    """
+    from galaxysim.engine.tick import run_ticks
+    from galaxysim.materials.refining import refine
+    from galaxysim.model.base import create_engine_for
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=1, civs=("Terrans",), seconds_per_tick=3600)
+    run_ticks(engine, universe_id, 24 * REFERENCE_REFINERY_DAYS)
+
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        ctx = _hourly_context(session, universe)
+        capital = session.scalar(select(Colony).order_by(Colony.id))
+
+        budget = industry_output(ctx, capital) * DEFAULT_RATES.refining_share_of_industry
+        _, made = refine(
+            dict(capital.stockpile), budget, 1.0, priorities=capital.refining or None
+        )
+
+        # The navy every price below is weighed against: what a fortnight of the
+        # capital's entire yard buys. Deliberately larger than anything a civ
+        # actually fields, so a bill that is survivable here is survivable.
+        fortnight = construction_output(ctx, capital) * HOURS_PER_WEEK * 2.0
+        return {
+            "made_per_hour": made,
+            "reference_navy_strength": fortnight / DEFAULT_RATES.fleet_work_per_strength,
+        }
+
+
 def _hours(work: float, per_hour: float) -> float:
     assert per_hour > 0, "a reference economy that produces nothing measures nothing"
     return work / per_hour
@@ -479,23 +536,90 @@ def test_fleet_upkeep_is_the_stated_fraction_of_what_a_ship_costs_to_build():
     )
 
 
-def test_a_navy_a_capital_would_actually_field_is_a_real_bill(economies):
-    """Upkeep has to be felt, or hoarding ships is strictly correct.
+def test_a_developed_capital_makes_every_material_its_navy_is_billed_in(refinery):
+    """The regression that would have caught the fuel famine at its cause.
 
-    A capital that spent a fortnight of its construction output on warships
-    should be paying a noticeable share of its industry to keep them flying.
-    Not crippling -- a tenth is the documented target -- but never the rounding
-    error it was, where an entire navy cost seventeen tonnes an hour against
-    eighty-six million.
+    A homeworld of seven billion people **produced no fuel at all**, on every day
+    sampled from the first to the hundred and twentieth, while fuel was 37% of
+    what its navy was billed. The fifty-one million tonnes it is seeded with was
+    the entire fuel supply of the game; fleets flew on a bank account and
+    deserted when it emptied, and this was diagnosed as an upkeep problem twice
+    and a logistics problem once before anybody measured production.
+
+    One assertion, and it is the cheapest one in this file: you cannot price a
+    material the economy does not make.
     """
-    fortnight = economies["capital_work_per_hour"] * HOURS_PER_WEEK * 2.0
-    strength = fortnight / DEFAULT_RATES.fleet_work_per_strength
+    for material in sorted(FLEET_UPKEEP_PER_STRENGTH):
+        assert refinery["made_per_hour"].get(material, 0.0) > 0.0, (
+            f"the reference capital makes no {material}, and its fleets are "
+            "billed for it every hour; no price is right against zero"
+        )
 
-    upkeep = sum(FLEET_UPKEEP_PER_STRENGTH.values()) * strength
-    industry = economies["capital_industry_per_hour"]
-    share = upkeep / industry
 
-    assert 0.02 < share < 0.6, (
-        f"a fortnight's worth of navy costs {share * 100:.2f}% of the capital's "
-        "hourly industry; it should be a real bill"
+def test_no_single_chain_carries_the_navy(refinery):
+    """Upkeep has to be felt, and felt evenly, or one chain gates the game.
+
+    Two failures live under this. The first is upkeep being a rounding error --
+    an entire navy costing seventeen tonnes an hour against eighty-six million,
+    which is what happens when the prices are rescaled and this one is missed.
+
+    The second is subtler and is what the previous version of this test could not
+    see, because it compared a bill payable in **two materials** against the
+    capital's **total industry-work** -- neither tonnes, nor either of the things
+    being billed. Measured properly the fuel line alone came to 185% of every
+    tonne of fuel the capital could make. A band of 2% to 60% called that
+    healthy.
+
+    So the property is per material, against production of that same material: a
+    reference navy -- a fortnight of the capital's whole yard -- draws a real but
+    survivable share of each chain that feeds it, and no chain carries several
+    times what its neighbours do. That is what stops geology from being a cliff:
+    a civ short in one material pays a share of one line, not the fleet.
+    """
+    strength = refinery["reference_navy_strength"]
+    made = refinery["made_per_hour"]
+
+    # A chain that makes nothing is an infinite share rather than a KeyError:
+    # the test above says why that case exists at all, and this one should still
+    # report it in the same terms as every other line.
+    shares = {
+        material: (
+            per_strength * strength / made[material]
+            if made.get(material, 0.0) > 0
+            else float("inf")
+        )
+        for material, per_strength in FLEET_UPKEEP_PER_STRENGTH.items()
+    }
+    report = ", ".join(f"{key} {value * 100:.0f}%" for key, value in sorted(shares.items()))
+
+    for material, share in sorted(shares.items()):
+        assert 0.05 < share < 0.45, (
+            f"a fortnight's worth of navy takes {share * 100:.0f}% of the "
+            f"capital's hourly {material}; upkeep should be a real bill on every "
+            f"chain and payable on all of them ({report})"
+        )
+
+    assert max(shares.values()) / min(shares.values()) < 2.0, (
+        f"the heaviest upkeep line is {max(shares.values()) / min(shares.values()):.1f}x "
+        f"the lightest as a share of what feeds it ({report}); whichever chain "
+        "that is becomes the one thing that decides whether a navy flies"
+    )
+
+
+def test_the_whole_upkeep_bill_is_about_a_tenth_of_what_a_capital_refines(refinery):
+    """The documented figure, checked against tonnes for the first time.
+
+    "A civ can sustain a fleet drawing about a tenth of its refined output" has
+    been in :data:`FLEET_UPKEEP_PER_STRENGTH` since it was written. What was
+    checked was a ratio against build cost, which says nothing about whether an
+    economy can pay -- so this half went unmeasured while the real answer, for
+    the two materials it was billed in, was most of everything they made.
+    """
+    strength = refinery["reference_navy_strength"]
+    bill = sum(FLEET_UPKEEP_PER_STRENGTH.values()) * strength
+    share = bill / sum(refinery["made_per_hour"].values())
+
+    assert 0.03 < share < 0.2, (
+        f"a fortnight's worth of navy costs {share * 100:.1f}% of everything the "
+        "capital refines in an hour; the documented figure is about a tenth"
     )

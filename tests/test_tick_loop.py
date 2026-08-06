@@ -415,8 +415,14 @@ def test_a_yard_can_save_up_for_something_it_cannot_buy_outright(game):
         # warehouse: twelve loads of 20,000 is 240,000 tonnes of steel against a
         # bill of 210,000, so what is left should be the surplus and nothing
         # more. The yard took each delivery as it arrived.
+        #
+        # The slack is for fleet upkeep, which is billed in steel among other
+        # things and draws a little from this warehouse each tick. It is nowhere
+        # near wide enough to hide the failure this guards against: a yard that
+        # ignored the deliveries until it could pay in one go would leave the
+        # whole 240,000 sitting here.
         colony = session.get(Colony, colony_id)
-        assert colony.stockpile.get(STEEL, 0.0) == pytest.approx(30_000.0, abs=1_000.0)
+        assert colony.stockpile.get(STEEL, 0.0) == pytest.approx(30_000.0, abs=2_000.0)
 
 
 def test_impossible_orders_fail_with_a_reason(game):

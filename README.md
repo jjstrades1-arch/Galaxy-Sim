@@ -134,6 +134,15 @@ digs and build at full speed. Left alone it works through every chain it can,
 evenly — deliberately mediocre, so naming the two or three chains a world is
 actually good at beats it (`galaxysim refining <id> --chain smelting:2`).
 
+**A priority is a share of the scarce input, not a claim on all of it.** Every
+chain's draw on a material is capped at its weight's fraction of what the colony
+will release that hour, so ranking fuel synthesis top means it gets most of the
+carbon and never all of it. This is load-bearing rather than decorative: while
+the highest-ranked chain simply took what it wanted, the one below it found the
+cupboard bare no matter what weight it carried, and a homeworld of seven billion
+people **made no fuel at all for a hundred and twenty days** because two chains
+ahead of it in the queue also wanted carbon.
+
 **Research is bought, not banked.** Laboratories consume electronics, polymers,
 ceramics and fuel out of the stockpile where they stand. A colony with the
 workers, the buildings and an empty warehouse discovers nothing — so an
@@ -385,6 +394,15 @@ Projecting force is expensive on purpose. Fleet upkeep is billed to the colonies
 near the *fleet*, and there is nothing to draw on past supply range, so a
 squadron parked deep in somebody else's space deserts within days. Besieging a
 world is something you have to be able to sustain.
+
+It is billed across four materials — reaction mass, hull plating, structural
+spares and thermal ceramics — sized so that each line costs a mature colony about
+the same share of its hourly production of that same material. That is a
+correction rather than flavour: while the bill was fuel-heavy, the narrowest
+chain in the game decided whether anybody's navy flew, and a shortage of one
+material deserted a fleet at the same rate as a shortage of everything. Being
+short now costs a fleet that material's share of its bill, so poor geology is a
+reason to go and settle better ground rather than a countdown.
 
 ## The galaxy is a function, not a map
 
@@ -820,68 +838,31 @@ waiting to be tuned.
 
 ## Known tuning gaps
 
-- **Ships take about twice as long to build.** Refining takes half the industry
-  pool, so construction runs at half the rate it did. That is the intended
-  shape — ore has to become steel before it can become a hull — but the split is
-  a first-pass number that wants a play session, not a spreadsheet.
-- **A navy is not built down, it is starved down, and nothing yet says why the
-  famine comes.** The build rule works beautifully: per civilization, per
-  fortnight, warship strength sits within a point of `garrison_per_colony ×
-  colonies` for as long as nothing goes wrong. Then it falls off a cliff and
-  climbs back. One civilization, its whole run:
+Three entries, and they are three different kinds of thing — which is worth
+saying, because "gap" has been doing too much work. The first is a **measured
+defect**: something behaves contrary to its own design and the measurement says
+so. The second is an **unmade decision**: nothing is misbehaving, a number has
+simply never been chosen on purpose. The third is a **scaling ceiling**: correct
+today, and growing. Only the first is a bug, and conflating them is how a list
+like this turns into a backlog nobody can prioritise.
 
-  ```
-  day        14   28   42   56   70   84    98   112   120
-  warships  9.0 19.0 29.0 39.0 49.0 59.0  63.6  12.2  28.2
-  the line 10.0 20.0 30.0 40.0 50.0 60.0  70.0  80.0  85.0
-  deserted   —    —    —    —    —    —     —   60.4    —
-  ```
+- *(measured defect)* **Half of a capital's industry is reserved for refining
+  and 94% of that reservation is idle.** Not "a first-pass number that wants a
+  play session", which is what this bullet used to say. Measured by wrapping
+  `refine` and totalling a real simulated day of a developed capital's chains:
+  **21.6 M of
+  368.1 M industry-work spent, 5.9%.** Refining is limited by ore in the
+  warehouse, not by labour, and `_refine` discards what it cannot spend rather
+  than handing it back — so a capital loses **47% of its total industry every
+  tick** to a reservation it cannot use.
 
-  Five of eight civilizations had one of these, at different times, which is why
-  the *median* looked like a decline after day 84 — four happened to be in a bust
-  at once. They recover: one fell from 27.6 to 4.6 at day 70 and was back to 55
-  by day 120.
-
-  Accounted flow by flow, **desertion is the whole story.** Combat is nearly nil
-  — 8.2 strength in one fortnight across the run's worst engagement — and
-  scrapping was a second-order amplifier since removed (below). What destroys a
-  navy is the upkeep bill going unpaid for days: upkeep is fuel and alloys, fuel
-  is synthesised from ice and carbon and competes with the fissile chain, and
-  when it runs short every crew in the fleet deserts at once.
-
-  **The famine is a distribution failure, and it cannot be shipped away.**
-  Instrumented at the moment of every shortfall across 120 days:
-
-  | short of | times | mean held by the civ | mean within supply range |
-  |---|---|---|---|
-  | alloys | 4,730 | **2,344,773,396 t** | **2 t** |
-  | fuel | 4,901 | **29,473,728 t** | **1 t** |
-
-  Not one of those was a production failure. The material existed by the billion
-  tonne; it was in the wrong warehouse, and no amount of it in the wrong
-  warehouse pays a crew. Fleets averaged 3.5 colonies inside supply range — the
-  suppliers were *there*, holding none of the two things upkeep is billed in,
-  because **nothing in this game ever moves fuel or alloys**. Routes carry water,
-  food and fertiliser out; the backhaul carries ore in, deliberately.
-
-  Nor can that be fixed by shipping, which is the part worth knowing. A point of
-  strength burns **3,000 t/hour**. A route ship holds 28,000 and takes 140 hours
-  to go and come back, so it delivers **200 t/hour** and costs **1,500** in
-  upkeep of its own. One strength-2 hull would need **thirty freighters**, each
-  consuming seven times what it carries. So this is not a logistics gap: **a
-  fleet lives where industry is, or it does not live**, and the open question is
-  whether the fuel share of upkeep — 1,100 of 3,000 tonnes — is priced where it
-  was meant to be. That is a deliberate decision, not another patch.
-
-  The garrison itself is a live cap, not a dead number: `_maybe_build` reached
-  the warship test 367 times and the cap turned it away 284 of them. But it is a
-  minor constraint next to the queue — **85% of all 23,040 build decisions end at
-  `build_queue_depth`** before garrisons are asked about, and the run laid down
-  179 settlers against 83 warships.
-- **A capital cannot generate what it demands, and that is now a real question
-  rather than a bug.** Two defects were hiding this: governors could not build at
-  all, and the brownout rule abandoned any plant it could not immediately afford.
-  Both are fixed, three of the eight capitals recovered on their own — and four
+  Deliberately not fixed here. `refining_share_of_industry` sits underneath every
+  calibrated price in the game, including the 28-day pace gate, so moving it is
+  its own phase with its own soak rather than a line changed in passing.
+- *(unmade decision)* **A capital cannot generate what it demands.** Two defects
+  were hiding this: governors could not build at all, and the brownout rule
+  abandoned any plant it could not immediately afford. Both are fixed, three of
+  the eight capitals recovered on their own — and four
   still sit between 0.56 and 0.77 power at day 60. Demand scales with industrial
   *output*, which grows with every level of every industry; generation grows only
   with levels of plant, and the quadratic cost curve bites hardest exactly where
@@ -889,9 +870,10 @@ waiting to be tuned.
   deeper than the rest of its stack. That may well be the intended pressure — it
   is what makes power a decision — but the number has never been chosen on
   purpose, and it wants a play session rather than another sweep.
-- **What is left of the tail is one big read.** After loading the order queue and
-  the fleets once a tick (below), the largest single row source is
-  `charted_systems` — **848 rows a tick at 120 days**, more than everything else
+- *(scaling ceiling)* **What is left of the tail is one big read.** After
+  loading the order queue and the fleets once a tick (below), the largest single
+  row source is `charted_systems` — **848 rows a tick at 120 days**, more than
+  everything else
   put together — because the AI walks every charted system with its worlds and
   owners attached to decide where to settle and scout. It is already read once
   and shared across all eight opponents, so this is not repetition; it is one
@@ -904,6 +886,89 @@ waiting to be tuned.
 Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
+
+- **A navy was not built down, it was starved down, and the reason was that
+  nobody made any fuel.** This entry spent three phases saying the famine was a
+  distribution failure. It was a production failure the whole time, and the
+  evidence for "distribution" was a proxy measuring itself.
+
+  The symptom: warship strength tracked `garrison_per_colony × colonies` within a
+  point for as long as nothing went wrong, then fell off a cliff and climbed
+  back. Five of eight civilizations had one of these, at different times. One
+  civilization's whole run:
+
+  ```
+  day        14   28   42   56   70   84    98   112   120
+  warships  9.0 19.0 29.0 39.0 49.0 59.0  63.6  12.2  28.2
+  the line 10.0 20.0 30.0 40.0 50.0 60.0  70.0  80.0  85.0
+  deserted   —    —    —    —    —    —     —   60.4    —
+  ```
+
+  **Why the old answer was wrong.** The table said that at the moment of a
+  shortfall a civ held 2.34 B tonnes of alloys and had 2 tonnes within supply
+  range, so the material had to be in the wrong warehouse. But it was sampled *at
+  the moment of the shortfall* — after the biller has walked every warehouse in
+  range and emptied it. It would have read near zero whatever the truth was. A
+  proxy measuring itself: this project's most expensive recurring mistake, made
+  in the one file that names it.
+
+  **What the chains actually produce**, measured by wrapping `refine` and
+  totalling a real simulated day: a homeworld of seven billion people made
+  **no fuel at all**, on every day sampled from the first to the hundred and
+  twentieth. The 51 M tonnes it is seeded with was the entire fuel supply of the
+  game. Every fleet in every soak had been flying on a bank account, and the
+  cliff was the account emptying. Two causes:
+
+  - **A priority was a monopoly, not a share.** Carbon feeds smelting, polymers
+    and fuel synthesis; `refine` gave each scarce input to whichever chain the
+    plan reached first, and a governed plan ranked fuel synthesis fourth. This is
+    the same defect that once left a capital on eight billion tonnes of iron
+    making no steel — "fixed" then by reordering the default plan, which cured
+    the symptom and left the mechanism, so it came back through governor-written
+    weights and stayed. Contested inputs are now split by weight. Fuel production
+    at the reference capital: **0 → ~78,000 t/hour.**
+  - **Fuel was priced at 185% of every tonne a capital could make.** Upkeep was
+    anchored to *total* refined output and drawn from two materials that are 7%
+    of it — the denominator was wrong, and the test guarding it could not see
+    that, because it divided a fuel-and-alloys bill by total industry-work and
+    passed anything from 2% to 60% while its docstring said "a tenth". Upkeep is
+    now
+    billed across fuel, alloys, steel and ceramics, each line about a fifth of a
+    developed capital's hourly production of that same material. Across five
+    seeded homeworlds no line exceeds 26%, except on one drawn short of carbon
+    *and* iron, where fuel and steel reach 75% and 71% — a reason to go and
+    settle better ground rather than a countdown.
+
+  A third change makes the wider basket safe rather than more fragile: desertion
+  now scales to the unpaid share of the **whole** bill instead of its worst line.
+  Measured, under the old rule a civ short only of reaction mass — 4% of the bill
+  — lost **80%** of the strength it would have lost supplying nothing at all.
+
+  The navy now climbs monotonically and never busts. Over 120 days at eight
+  steady opponents the median reads **6 → 10 → 14 → 18 → 22 → 27 → 31 → 36 → 40 →
+  42** at each 8-day mark, ending at 18 colonies a civ and 12.72 B people; over 60
+  days at eight *driven* ones — the setting the cliff was recorded on — it reads
+  **6 → 10 → 12 → 14 → 18 → 22 → 25 → 28 → 32 → 37**, at 14 colonies and 22.4 B.
+  Neither line has a bust anywhere in it.
+
+  What survives from the old entry is the part that was arithmetic rather than
+  sampling: **this could never have been fixed by shipping.** A route ship holds
+  28,000 t and takes 140 hours to go and come back, so it delivers 200 t/hour and
+  costs upkeep of its own. **A fleet lives where industry is, or it does not
+  live** — the intended shape, and now a constraint on *where* rather than a
+  countdown.
+
+  Two measurements from the same investigation that were never about the famine
+  and are still true. The garrison is a live cap rather than a dead number —
+  `_maybe_build` reached the warship test 367 times and the cap turned it away
+  284 of them — but it is a minor constraint next to the queue: **85% of all
+  23,040 build decisions end at `build_queue_depth`** before garrisons are asked
+  about, and that run laid down 179 settlers against 83 warships.
+
+  It is not free: the 120-day soak costs **217 ms/tick** against the 180–186
+  recorded after the query work, because the economy it is simulating is larger —
+  navies that survive are navies to bill, and there are 18 colonies a civ at day
+  120 rather than a frontier that kept stalling.
 
 - **Region did nothing, and now it is the difficulty axis it was pretending to
   be.** This entry used to say the core plays exactly like the arm. That was
@@ -1012,10 +1077,11 @@ from the inside.
   sixteen hulls to scrapping inside a fortnight**, then rebuilt twelve points of
   it eight days later — the shortage was weather, and it had sold the fleet.
 
-  The salvage does not even answer the shortage. Upkeep is **fuel and alloys**;
-  breaking a hull returns **alloys, steel and electronics**. A civ short of fuel
-  sells its navy and is still short of fuel, having paid a third of build cost
-  for the privilege. Surplus is the only trigger now.
+  The salvage does not even answer the shortage. Upkeep is billed in fuel,
+  alloys, steel and ceramics; breaking a hull returns **alloys, steel and
+  electronics**. A civ short of fuel or ceramics sells its navy and is still
+  short of them, having paid a third of build cost for the privilege. Surplus is
+  the only trigger now.
 
   It is not free: the hulls that used to be scrapped now desert instead, so the
   desertion column rises. It is still a large net gain, because desertion is

@@ -283,6 +283,70 @@ def test_fleet_upkeep_is_charged_and_unpaid_fleets_desert():
         ).all()
 
 
+def test_being_short_of_one_material_costs_a_share_and_not_the_fleet():
+    """Desertion tracks the unpaid share of the whole bill, not its worst line.
+
+    This is what lets upkeep be billed across several materials at all. While
+    attrition was set by the *maximum* shortfall across the basket, a
+    civilization that covered every tonne of plating, spares and ceramics but ran
+    a day short of reaction mass lost ships at exactly the rate of one supplying
+    nothing whatsoever -- so widening the basket would have made a navy more
+    fragile with each material added, and geology a cliff rather than a decision.
+
+    Measured as a comparison rather than against a constant, because the number
+    that matters is the *ratio*: two identical fleets, one short of the smallest
+    line in the basket and one short of everything.
+    """
+    from galaxysim.materials import FLEET_UPKEEP_PER_STRENGTH
+
+    scarcest = min(FLEET_UPKEEP_PER_STRENGTH, key=FLEET_UPKEEP_PER_STRENGTH.get)
+    share = FLEET_UPKEEP_PER_STRENGTH[scarcest] / sum(FLEET_UPKEEP_PER_STRENGTH.values())
+
+    def _run(stocked: bool) -> float:
+        engine = create_engine_for("sqlite://")
+        universe_id = new_universe(engine, seed=5150, civs=("Terrans",))
+        with open_session(engine) as session:
+            civ = civ_by_name(session, universe_id, "Terrans")
+            fleet = session.scalar(
+                select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
+            )
+            fleet.strength = 500.0
+            home = home_colony(session, civ)
+            # Every upkeep line covered many times over except one, which is
+            # empty in both runs -- so the only difference is whether the *rest*
+            # of the bill can be paid.
+            home.stockpile = (
+                {key: 1e12 for key in FLEET_UPKEEP_PER_STRENGTH if key != scarcest}
+                if stocked
+                else {}
+            )
+            fleet_id = fleet.id
+        run_ticks(engine, universe_id, 24)
+        with open_session(engine) as session:
+            return 500.0 - session.get(Fleet, fleet_id).strength
+
+    lost_one_line = _run(stocked=True)
+    lost_everything = _run(stocked=False)
+
+    assert lost_one_line > 0.0, (
+        "a bill that cannot be paid in full still costs something; if this is "
+        "zero the shortfall is not being noticed at all"
+    )
+    assert lost_one_line < lost_everything, (
+        f"being short of {scarcest} alone cost {lost_one_line:.1f} strength and "
+        f"being short of everything cost {lost_everything:.1f}; the worst line "
+        "is deciding the whole bill again"
+    )
+    # And in about the proportion that line is of the bill. Loosely banded: the
+    # loss compounds tick over tick, so the ratio is near the share rather than
+    # equal to it.
+    ratio = lost_one_line / lost_everything
+    assert share * 0.5 < ratio < share * 2.0, (
+        f"{scarcest} is {share * 100:.0f}% of the bill but being short of it "
+        f"costs {ratio * 100:.0f}% of what being short of everything costs"
+    )
+
+
 def test_solvent_civ_keeps_its_fleet():
     """The counterpart: upkeep must not bleed a civ that can afford it."""
     engine = create_engine_for("sqlite://")
@@ -438,7 +502,12 @@ def test_decommissioning_returns_materials_and_stops_the_bill():
     decision.
     """
     from galaxysim.colony.labor import LIFE_SUPPORT
-    from galaxysim.materials import ELECTRONICS, FLEET_COST_PER_STRENGTH, SALVAGE_FRACTION
+    from galaxysim.materials import (
+        ELECTRONICS,
+        FLEET_COST_PER_STRENGTH,
+        FLEET_UPKEEP_PER_STRENGTH,
+        SALVAGE_FRACTION,
+    )
     from tests.conftest import take_manual_control
 
     engine = create_engine_for("sqlite://")
@@ -453,8 +522,20 @@ def test_decommissioning_returns_materials_and_stops_the_bill():
         # the scrapping happens and the salvage is the only thing that moves.
         intents.set_labor(session, home, {LIFE_SUPPORT: 1.0})
         home.stockpile = {key: 1e9 for key in MATERIALS}
-        home.stockpile[STEEL] = 0.0
+        # Electronics starts empty so the salvage is the only thing that can put
+        # any there. Steel would be the obvious second case and is deliberately
+        # *not* emptied: steel is an upkeep material, and a warehouse with none
+        # of it starves the fleet for the tick it is being broken up in -- so it
+        # deserts a slice of itself first and the salvage that comes back is a
+        # third of a smaller hull. That is correct behaviour and it makes a poor
+        # measurement of scrapping, which is what this test is for.
         home.stockpile[ELECTRONICS] = 0.0
+        # Enough steel to pay the hull's last hour and not a tonne more than the
+        # assertion below can see. The billion this warehouse holds of everything
+        # else would swallow a hundred-tonne bill inside ``approx``'s relative
+        # tolerance -- which it did, silently, until the mutation was tried.
+        home.stockpile[STEEL] = 10_000.0
+        steel_before = home.stockpile[STEEL]
         # The fleet is parked over the homeworld, which is where it was built.
         fleet.x, fleet.y, fleet.z = (
             home.world.system.x,
@@ -463,17 +544,31 @@ def test_decommissioning_returns_materials_and_stops_the_bill():
         )
         intents.decommission_fleet(session, civ, fleet.id)
         fleet_id, home_id, strength = fleet.id, home.id, fleet.strength
+        universe = session.get(Universe, universe_id)
+        hours_per_tick = universe.seconds_per_tick / 3600.0
 
     run_ticks(engine, universe_id, 1)
 
     with open_session(engine) as session:
         assert session.get(Fleet, fleet_id) is None, "the hull should be gone"
         home = session.get(Colony, home_id)
-        for resource in (STEEL, ELECTRONICS):
-            expected = FLEET_COST_PER_STRENGTH[resource] * strength * SALVAGE_FRACTION
-            assert home.stockpile[resource] == pytest.approx(expected), (
-                f"{resource} should have come back as salvage"
-            )
+
+        # Electronics is not an upkeep material, so the whole third comes back
+        # and nothing else in the tick can have touched it.
+        assert home.stockpile[ELECTRONICS] == pytest.approx(
+            FLEET_COST_PER_STRENGTH[ELECTRONICS] * strength * SALVAGE_FRACTION
+        ), "electronics should have come back as salvage"
+
+        # Steel is billed, and a hull is billed for the tick it is broken up in
+        # -- it was still flying when the bill went out -- so the warehouse ends
+        # one tick's upkeep light. Stated exactly rather than as a tolerance,
+        # because the point of scrapping is that it *stops* the bill: if it
+        # stopped one tick early or one tick late this is what would say so.
+        last_bill = FLEET_UPKEEP_PER_STRENGTH[STEEL] * strength * hours_per_tick
+        salvage = FLEET_COST_PER_STRENGTH[STEEL] * strength * SALVAGE_FRACTION
+        assert home.stockpile[STEEL] == pytest.approx(steel_before + salvage - last_bill), (
+            "steel should have come back as salvage, less the hull's last hour"
+        )
         assert session.scalars(
             select(Event).where(Event.kind == "fleet_decommissioned")
         ).all()

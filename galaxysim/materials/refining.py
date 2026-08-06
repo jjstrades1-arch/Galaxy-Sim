@@ -27,12 +27,15 @@ from __future__ import annotations
 
 from galaxysim.materials.recipes import RECIPES, Recipe
 
-#: The order a colony works through its chains when nobody has said otherwise.
+#: The chains a colony runs when nobody has said otherwise, all at equal weight.
 #:
-#: Survival first, then the bulk materials everything else is built from, then
-#: the specialised chains. Water processing leads because a colony that stops
-#: making water stops breathing, and that should never wait behind a batch of
-#: ceramics.
+#: Read as an order -- survival first, then the bulk materials everything else is
+#: built from, then the specialised chains -- but the order is documentation now
+#: rather than mechanism. It used to be load-bearing, because whoever came first
+#: took the scarce input outright; :func:`refine` splits contested inputs by
+#: weight, so an unconfigured colony spreads itself evenly across every chain it
+#: can run. That is the intended default: mediocre, and beatable by a player who
+#: names the two or three chains their world is actually good at.
 DEFAULT_PLAN: tuple[str, ...] = (
     "water_processing",
     "fuel_synthesis",
@@ -84,26 +87,43 @@ def _runnable(recipe: Recipe, allowance: dict[str, float]) -> float:
     return 0.0 if limit == float("inf") else limit
 
 
+def _contested(active: list[tuple[Recipe, float]]) -> dict[str, float]:
+    """Total weight competing for each input across the chains that can run.
+
+    The denominator of the split in :func:`refine`. A material only one chain
+    wants comes back carrying that chain's own weight, so its share works out to
+    the whole allowance and a sole claimant is never rationed.
+    """
+    contested: dict[str, float] = {}
+    for recipe, weight in active:
+        for key, amount in recipe.inputs.items():
+            if amount > 0:
+                contested[key] = contested.get(key, 0.0) + weight
+    return contested
+
+
 def plan_for(priorities: dict[str, float] | None) -> list[tuple[Recipe, float]]:
     """The recipes a colony will attempt, **most important first**.
 
     An empty or unrecognised plan falls back to :data:`DEFAULT_PLAN` at equal
-    weight, so a colony nobody has configured still works. That fallback is a
-    *tuple* and its order is the priority -- water before fuel before steel --
-    which is why it has always behaved sensibly.
+    weight, so a colony nobody has configured still works -- and equal weight now
+    means an equal share of every contested input, which is the "deliberately
+    mediocre" default the design asks for rather than an accident of ordering.
 
-    **Order is not cosmetic here, it is the priority**, and this used to sort by
-    name. :func:`refine` walks the plan spending a shared per-material draw
-    allowance as it goes, so whoever comes first gets the scarce input and a
-    chain further down finds the cupboard bare no matter what weight it carries.
-    With the weights alphabetised, ``polymers`` -- eight carbon a run -- drank
-    the entire carbon supply before ``smelting`` was reached, and a capital
-    sitting on **eight billion tonnes of iron produced no steel at all** while
-    its plan listed smelting as the single highest priority. Expansion across
-    eight civilizations stopped dead for two simulated months on that.
+    **Weight is the priority; order is only how it is read.** This used to sort
+    by name, back when :func:`refine` handed each scarce input to whichever chain
+    it reached first: ``polymers`` -- eight carbon a run -- drank the entire
+    carbon supply before ``smelting`` was reached, and a capital sitting on
+    **eight billion tonnes of iron produced no steel at all** while its plan
+    listed smelting as the single highest priority. Expansion across eight
+    civilizations stopped dead for two simulated months on that.
 
-    Ties break on the recipe key so the order is still fully determined, which
-    tick replay requires.
+    Sorting by weight fixed the symptom and the same failure came back through
+    governor-written plans; :func:`refine` now splits a contested material by
+    weight instead, so being ranked first buys a bigger share and never the lot.
+    The order still decides nothing that matters, which is the point -- but it is
+    kept stable, ties breaking on the recipe key, because tick replay requires
+    every list in the engine to be fully determined.
     """
     if priorities:
         chosen = sorted(
@@ -139,6 +159,24 @@ def refine(
     whatever the first could not spend -- because a chain ran out of inputs
     rather than out of labour -- to the chains that can still use it. Without the
     second pass a colony with one viable recipe would idle most of its workforce.
+
+    **The scarce inputs are split the same way, and that is the correction.**
+    This used to divide only the *work* by weight and let the draw allowance go
+    first-come: whoever the plan ranked higher took as much of a shared material
+    as it could use and the chain below found the cupboard bare, whatever weight
+    it carried. :func:`plan_for` describes what that cost the first time -- eight
+    billion tonnes of iron and no steel -- and the fix then was to reorder the
+    default plan, which cured the one symptom and left the mechanism. So the
+    moment governors began writing weighted plans it came back one layer up, and
+    stayed: a capital ranking ``fuel_synthesis`` fourth behind two chains that
+    also want carbon **made no fuel at all for a hundred and twenty days**, while
+    the whole game's navy flew on the fuel its homeworld was seeded with.
+
+    Now each contested material is divided across its claimants in proportion to
+    weight, from the allowance as it stood when the pass began -- so the split
+    does not depend on the order chains are visited, and a priority buys a larger
+    share rather than the lot. A material only one chain wants is not rationed at
+    all.
     """
     if work <= 0 or efficiency <= 0:
         return 0.0, {}
@@ -162,9 +200,18 @@ def refine(
             break
 
         budget = remaining
+        # Both splits are measured against the pass's opening position, so no
+        # chain's ration depends on how many ran before it.
+        contested = _contested(active)
+        opening = dict(allowance)
         for recipe, weight in active:
             share = budget * (weight / total_weight)
-            runs = min(share / recipe.work, _runnable(recipe, allowance))
+            quota = {
+                key: opening.get(key, 0.0) * (weight / contested[key])
+                for key in recipe.inputs
+                if contested.get(key, 0.0) > 0
+            }
+            runs = min(share / recipe.work, _runnable(recipe, quota))
             if runs <= 0:
                 continue
             for key, amount in recipe.inputs.items():

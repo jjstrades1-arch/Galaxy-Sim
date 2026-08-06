@@ -1020,7 +1020,17 @@ def _charge_fleet_upkeep(
         suppliers = queries.sorted_by_distance(
             colonies, fleet.position, within_ly=SUPPLY_RANGE_LY
         )
-        shortfall = 0.0
+        # Scaled to the unpaid share of the *whole* bill, in tonnes, rather than
+        # to its worst line. Taking the maximum meant the narrowest chain in the
+        # basket decided the fate of the fleet: measured, a civ that covered
+        # every tonne of plating, spares and ceramics and was short only of
+        # reaction mass -- 4% of the bill -- lost **80%** of the strength it
+        # would have lost supplying nothing at all. That is what turned poor
+        # geology into a cliff rather than a decision, and it is why upkeep could
+        # never be spread across more than one material without making a navy
+        # more fragile with every material added.
+        owed_here = 0.0
+        unpaid_here = 0.0
         for resource, per_strength in sorted(FLEET_UPKEEP_PER_STRENGTH.items()):
             owed = ctx.per_tick(per_strength * fleet.strength)
             if owed <= 0:
@@ -1034,10 +1044,12 @@ def _charge_fleet_upkeep(
                 if paid > 0:
                     supplier.stockpile[resource] = available - paid
                     outstanding -= paid
-            shortfall = max(shortfall, outstanding / owed)
+            owed_here += owed
+            unpaid_here += outstanding
             billed += owed
             settled += owed - outstanding
 
+        shortfall = unpaid_here / owed_here if owed_here > 0 else 0.0
         if shortfall <= 1e-9:
             continue
 

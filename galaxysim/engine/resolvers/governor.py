@@ -207,6 +207,25 @@ def _refining_for(colony: Colony) -> dict[str, float]:
     finally emptied a third of the navy deserted inside two days. The collapse
     looked like an upkeep problem and was a refining problem.
 
+    **And writing this rule did not fix it, which is the part worth keeping.**
+    The weights below are a ranking, and ``refine`` used to hand each scarce
+    input to whichever chain it reached first -- so all a governed plan could do
+    was choose *which* chains starved. Measured afterwards, a capital of seven
+    billion people ranked fuel synthesis fourth behind two chains that also want
+    carbon and produced zero fuel an hour on every day sampled from the first to
+    the hundred and twentieth. Nobody looked, because the rule had a good
+    argument and the README said it was fixed. The mechanism was corrected in
+    ``refine`` instead, where a priority is now a share rather than a monopoly;
+    this rule decides how big a share.
+
+    **It still reads a stock where it wants a rate**, and that is worth knowing
+    before trusting it. "How much do I hold" says nothing about how long it will
+    last: a colony sitting on a fifty-million-tonne fuel bank and making none
+    reads as comfortable until the day it is empty, which is exactly how the
+    famine above stayed invisible. Cover -- held over drawn-per-hour -- is the
+    number a player actually uses, and it needs consumption tracked per colony
+    per material. Left undone deliberately rather than forgotten.
+
     The rule is the one a competent player uses: **make what you have least of**.
     Each chain is weighted inversely to how much of its output the colony
     already holds, measured against its own average holding so the rule is
