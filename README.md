@@ -858,16 +858,6 @@ how a list like this turns into a backlog nobody can prioritise.
   Deliberately not fixed here. `refining_share_of_industry` sits underneath every
   calibrated price in the game, including the 28-day pace gate, so moving it is
   its own phase with its own soak rather than a line changed in passing.
-- *(measured defect, cause unknown)* **One civilization in eight never gets
-  going at all.** Per-civ over 120 days of driven opponents, seven civilizations
-  reach 45–83 warship strength and one sits at **5.5 from day 14 to day 120** —
-  flat, the whole run, while the other seven grow monotonically and the galaxy
-  fills to 154 colonies. It is not a navy that collapsed; at `garrison_per_colony
-  × colonies` that reads as a civ that never got past two worlds. Whether it drew
-  a start with nothing habitable in reach, or something in the AI's settle rule
-  gives up, is not known — it surfaced in the run that confirmed the fuel fix and
-  has not been chased. Worth chasing: an opponent that is simply absent is a
-  worse experience than a hard one.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
@@ -895,6 +885,52 @@ how a list like this turns into a backlog nobody can prioritise.
 Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
+
+- **A crust with no copper ended a civilization.** The previous entry on this
+  list said one opponent in eight never got going and the cause was unknown. It
+  is known now, and it was geology closing a door the design says is never
+  closed.
+
+  Electronics needs copper *and* rare earths. A unit of colony equipment needs
+  three thousand tonnes of electronics. One homeworld in eight was drawn with
+  **zero of both elements** — the only zero in the sample — so it could not
+  outfit an expedition at any income, ever:
+
+  ```
+  civ       copper    rare_e   colonies@30d   pop
+  AI-1      0.0240    0.0343         9        18.5 B
+  AI-5      0.0000    0.0000         2        11.5 B   ← locked out
+  AI-8      0.0242    0.0402         8        11.6 B
+  ```
+
+  ```
+   781 failed    'could not outfit the expedition in 14 days; order abandoned'
+  1686 queued    'loading at Biosiobrai Prime (15,000 electronics short)'
+  ```
+
+  Habitability 1.000, eleven and a half billion people, every bill paid, and two
+  settlers holding pods they would never land — cycling order → fortnight →
+  abandon → order for a hundred and twenty days. `expedition.py` opens by saying
+  the game **never refuses**: *"Sending colonists to a toxic rock with no stores
+  is a legal order and it kills them — the game says so clearly and then lets you
+  do it."* The outfitting loop refused.
+
+  **The fortnight now buys a smaller expedition instead of no expedition.**
+  Equipment is cut first — it is productivity, and the only line needing
+  electronics — then stores, never colonists. The colony lands on the same world
+  with the same people and **0.5 infrastructure against 1.5**, and has to
+  bootstrap what it could not bring. That is the rule research has always used
+  and says out loud: a civilization does not stop having ideas because one
+  warehouse is empty, it substitutes badly and goes slower.
+
+  Deliberately **not** fixed by adding a second electronics recipe. Electronics
+  is documented as the chain that forces trade and should stay scarce; the defect
+  was that scarcity was a lockout rather than a penalty.
+
+  Measured over 30 days of eight driven opponents: the stuck civ goes **2 → 4
+  colonies**, `colonize` orders failing for materials go **2 → 0**, and the other
+  seven civilizations are identical to the person — this only ever fires where
+  something was already broken. The 28-day pace gate is byte-identical.
 
 - **A navy was not built down, it was starved down, and the reason was that
   nobody made any fuel.** This entry spent three phases saying the famine was a

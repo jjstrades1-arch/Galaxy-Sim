@@ -32,13 +32,24 @@ from galaxysim.colony.labor import (
 from galaxysim.materials import (
     CERAMICS,
     CONSTRUCTION,
+    COPPER,
     ELECTRONICS,
     IRON,
     MATERIALS,
+    RARE_EARTHS,
     STEEL,
     WATER,
     can_afford,
 )
+
+#: A warehouse and a crust that between them cannot make electronics.
+#:
+#: Zeroing the finished good is not enough and that is the whole point of the
+#: chain: a colony holding copper and rare earths refines its own within the
+#: hour, so a test that only empties the ELECTRONICS line measures nothing. This
+#: is the position ``AI-5`` was actually in -- no copper and no rare earths in
+#: the ground, and none in the warehouse either.
+NO_ELECTRONICS_CHAIN = (ELECTRONICS, COPPER, RARE_EARTHS)
 from galaxysim.engine import intents
 from galaxysim.engine.tick import run_ticks
 from galaxysim.model.base import create_engine_for, open_session
@@ -594,6 +605,141 @@ def test_equipment_buys_a_more_capable_colony():
 
     assert outfitted.starting_infrastructure() > bare.starting_infrastructure()
     assert bare.starting_infrastructure() > 0, "even a bare landing can do something"
+
+
+def test_a_manifest_is_cut_down_to_what_the_warehouse_holds():
+    """The unit of the fix: what a short expedition sails with.
+
+    Equipment goes first because it is productivity and the only line needing
+    electronics; stores are protected behind it because they are survival.
+    """
+    wanted = Loadout(colonists=50_000.0, equipment=4.0, stores=40_000.0)
+    full = wanted.cost()
+
+    # Everything except the electronics a unit of equipment needs.
+    without_electronics = {key: value for key, value in full.items() if key != ELECTRONICS}
+    reduced = wanted.largest_within(without_electronics)
+    assert reduced is not None, "the colonists were fully supplied; it should sail"
+    assert reduced.equipment == 0.0, "equipment is the line that needs electronics"
+    assert reduced.colonists == wanted.colonists, "people are never cut"
+    assert reduced.stores == wanted.stores, "stores are protected behind equipment"
+
+    # A warehouse holding the lot changes nothing.
+    assert wanted.largest_within(full) == wanted
+
+    # And nothing at all is the one case that still refuses: an expedition that
+    # cannot feed its own colonists is not a poorer colony, it is a funeral.
+    assert wanted.largest_within({}) is None
+
+
+def test_a_crust_with_no_copper_does_not_end_a_civilization():
+    """The regression for the whole phase.
+
+    Electronics needs copper *and* rare earths, a unit of colony equipment needs
+    three thousand tonnes of electronics, and a homeworld drawn without either
+    element therefore could not outfit an expedition at all. Measured over thirty
+    days of eight opponents, one sat on a habitability-1.0 world with eleven
+    billion people and two colonies, cycling order -> fortnight -> abandon ->
+    order for the whole run. Its geology had ended it before it played.
+
+    ``expedition.py`` says this game never refuses a legal order. Now it does not.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=820, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        home = home_colony(session, civ)
+        # Rich in everything the expedition needs except the one chain this
+        # world's crust cannot feed.
+        home.stockpile = {
+            key: 0.0 if key in NO_ELECTRONICS_CHAIN else value
+            for key, value in rich_stockpile().items()
+        }
+        give_deposits(home.world, iron=0.4, silicon=0.6)  # no copper, no rare earths
+
+        rock = next(
+            w
+            for w in sorted(home.world.system.worlds, key=lambda w: w.id)
+            if w.colony is None
+        )
+        give_deposits(rock, iron=0.02)
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        intents.colonize(
+            session,
+            civ,
+            fleet.id,
+            rock.id,
+            loadout=Loadout(colonists=50_000.0, equipment=4.0, stores=40_000.0),
+            name="Copperless",
+        )
+
+    # Past the fortnight the outfitting loop waits before giving up.
+    run_ticks(engine, universe_id, 24 * 15)
+
+    with open_session(engine) as session:
+        colony = session.scalar(select(Colony).where(Colony.name == "Copperless"))
+        assert colony is not None, (
+            "a civilization whose crust cannot make electronics must still be "
+            "able to settle; it is the difference between a hard start and no game"
+        )
+        assert colony.population == pytest.approx(50_000.0, rel=0.1)
+        assert session.scalars(
+            select(Event).where(Event.kind == "expedition_sailed_short")
+        ).all(), "and the player is told the manifest was cut"
+
+
+def test_sailing_short_lands_a_worse_colony_rather_than_a_free_one():
+    """The counterpart, and the thing that stops this being a loophole.
+
+    If a short expedition landed the same colony, equipment would be optional
+    for everybody and the whole electronics chain would stop mattering.
+    """
+    def _settle(with_electronics: bool) -> float:
+        engine = create_engine_for("sqlite://")
+        universe_id = new_universe(engine, seed=821, civs=("Terrans",), seconds_per_tick=3600)
+        with open_session(engine) as session:
+            civ = civ_by_name(session, universe_id, "Terrans")
+            home = home_colony(session, civ)
+            home.stockpile = rich_stockpile()
+            if not with_electronics:
+                home.stockpile = {
+                    key: 0.0 if key in NO_ELECTRONICS_CHAIN else value
+                    for key, value in home.stockpile.items()
+                }
+                give_deposits(home.world, iron=0.4, silicon=0.6)
+            rock = next(
+                w
+                for w in sorted(home.world.system.worlds, key=lambda w: w.id)
+                if w.colony is None
+            )
+            give_deposits(rock, iron=0.02)
+            fleet = session.scalar(
+                select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id)
+            )
+            intents.colonize(
+                session,
+                civ,
+                fleet.id,
+                rock.id,
+                loadout=Loadout(colonists=50_000.0, equipment=4.0, stores=40_000.0),
+                name="Landing",
+            )
+        run_ticks(engine, universe_id, 24 * 15)
+        with open_session(engine) as session:
+            colony = session.scalar(select(Colony).where(Colony.name == "Landing"))
+            assert colony is not None
+            return colony.infrastructure
+
+    supplied = _settle(with_electronics=True)
+    short = _settle(with_electronics=False)
+
+    assert short < supplied, (
+        f"a colony landed by a short expedition came up with {short} "
+        f"infrastructure against {supplied} for a supplied one; if these match, "
+        "equipment has quietly become optional and geology stopped mattering"
+    )
+    assert short > 0, "even a bare landing can do something"
 
 
 def test_hostility_is_priced_through_what_survival_requires():

@@ -80,6 +80,12 @@ def resolve(ctx: TickContext) -> None:
         if not intent.payload.get("outfitted_colony_id"):
             if not _outfit(ctx, intent, civ, fleet, loadout):
                 continue
+            # Outfitting may have cut the manifest down to what the warehouse
+            # could actually cover, so read it back rather than trusting the
+            # local. Everything below -- the assessment the player is shown, the
+            # infrastructure the colony lands with -- has to describe the
+            # expedition that sailed and not the one that was ordered.
+            loadout = Loadout.from_payload(intent.payload)
 
         if fleet.in_transit or distance(fleet.position, world.system.position) > ARRIVAL_TOLERANCE_LY:
             # Not there yet. Wait rather than fail -- the fleet is probably on
@@ -182,13 +188,7 @@ def _outfit(ctx: TickContext, intent, civ: Civ, fleet: Fleet, loadout: Loadout) 
         stalled = int(intent.payload.get("stalled_since", intent.queued_tick))
         waited = (ctx.tick - stalled) * ctx.cadence.hours_per_tick
         if waited >= OUTFITTING_PATIENCE_HOURS:
-            _fail(
-                ctx,
-                intent,
-                f"{outfitter.name} could not outfit the expedition in "
-                f"{OUTFITTING_PATIENCE_HOURS / 24:.0f} days; order abandoned",
-            )
-            return False
+            return _sail_short(ctx, intent, civ, fleet, loadout, outfitter, banked)
         intent.result = (
             f"loading at {outfitter.name} ("
             + ", ".join(
@@ -209,6 +209,84 @@ def _outfit(ctx: TickContext, intent, civ: Civ, fleet: Fleet, loadout: Loadout) 
         f"{loadout.colonists:,.0f} colonists",
         civ_id=civ.id,
         payload={"colony_id": outfitter.id, "fleet_id": fleet.id},
+    )
+    return True
+
+
+def _sail_short(
+    ctx: TickContext,
+    intent,
+    civ: Civ,
+    fleet: Fleet,
+    loadout: Loadout,
+    outfitter: Colony,
+    banked: dict[str, float],
+) -> bool:
+    """Send the expedition with what the warehouse could actually cover.
+
+    The patience above used to end in :func:`_fail`, and for most of a
+    civilization's life that is harmless -- a capital mid-way through a shipyard
+    run has the materials next week and the order is simply re-issued. It is not
+    harmless when the shortage is *permanent*. A homeworld with no copper and no
+    rare earths makes no electronics ever, a unit of colony equipment wants three
+    thousand tonnes of it, and the order therefore fails on a fortnight's timer
+    for as long as the game runs. Measured: one opponent in eight, on a
+    habitability-1.0 world with eleven billion people, stuck at two colonies for
+    a hundred and twenty days with two settlers holding pods they would never
+    land.
+
+    So the fortnight now buys a *smaller* expedition rather than no expedition.
+    See :meth:`Loadout.largest_within` for what gets cut and why. The colony that
+    results is a real one and a poor one -- same people, same world, a third of
+    the infrastructure -- which is the honest cost of a crust that cannot supply
+    what settling takes, and leaves geology a reason to go somewhere better
+    rather than a reason to stop playing.
+    """
+    reduced = loadout.largest_within(banked)
+    if reduced is None:
+        _fail(
+            ctx,
+            intent,
+            f"{outfitter.name} could not supply even the colonists in "
+            f"{OUTFITTING_PATIENCE_HOURS / 24:.0f} days; order abandoned",
+        )
+        return False
+
+    # Whatever the smaller manifest does not need goes back on the shelf. The
+    # escrow was never burned -- it is stores on a dock.
+    returned = dict(outfitter.stockpile)
+    needed = reduced.cost()
+    for material, amount in sorted(banked.items()):
+        spare = amount - needed.get(material, 0.0)
+        if spare > 1e-9:
+            returned[material] = returned.get(material, 0.0) + spare
+    outfitter.stockpile = returned
+
+    intent.payload.update(reduced.as_payload())
+    intent.payload.pop("loaded", None)
+    intent.payload.pop("loaded_last", None)
+    intent.payload.pop("stalled_since", None)
+    intent.payload["outfitted_colony_id"] = outfitter.id
+    intent.payload["sailed_short"] = True
+
+    shortfall = (
+        f"{reduced.equipment:,.1f} of {loadout.equipment:,.1f} equipment"
+        if reduced.equipment < loadout.equipment
+        else f"{reduced.stores:,.0f} of {loadout.stores:,.0f} tonnes of stores"
+    )
+    intent.result = f"sailed short from {outfitter.name} ({shortfall})"
+    ctx.log(
+        "expedition_sailed_short",
+        f"{outfitter.name} could not fill {fleet.name}'s manifest in "
+        f"{OUTFITTING_PATIENCE_HOURS / 24:.0f} days and sent it anyway with "
+        f"{shortfall}. The colony will land able to do less for itself.",
+        civ_id=civ.id,
+        payload={
+            "colony_id": outfitter.id,
+            "fleet_id": fleet.id,
+            "equipment": reduced.equipment,
+            "stores": reduced.stores,
+        },
     )
     return True
 

@@ -87,6 +87,50 @@ class Loadout:
     def starting_infrastructure(self) -> float:
         return BASE_INFRASTRUCTURE + self.equipment * INFRASTRUCTURE_PER_EQUIPMENT
 
+    def largest_within(self, banked: dict[str, float]) -> "Loadout | None":
+        """The biggest version of this expedition ``banked`` actually covers.
+
+        ``None`` when it cannot even feed the colonists, which is the one case
+        where sailing is not a worse outcome than staying.
+
+        **Why this exists.** A crust with no copper makes no electronics, a unit
+        of equipment wants three thousand tonnes of it, and so a civilization
+        drawn onto such a world could not outfit an expedition *at all*: measured
+        over thirty days of eight opponents, one sat on a habitability-1.0
+        homeworld with eleven billion people and two colonies, cycling
+        order -> fortnight -> abandon -> order, for ever. Its geology had ended
+        it. The module docstring above says this game never refuses a legal
+        order; the outfitting loop refused.
+
+        Research already had the answer and it is quoted here because the shape
+        is the same: a civilization does not stop having ideas because one
+        warehouse is empty, it substitutes badly and goes slower. So an
+        expedition short of materials sails smaller. It lands on the same world
+        with the same people and a third of the infrastructure, and has to
+        bootstrap what it could not bring.
+
+        **Reduced in a fixed order, and the order is a judgement.** Equipment
+        goes first -- it is productivity, and it is the only line that needs
+        electronics. Stores go second, because they are survival and a colony
+        that starves on arrival is not a cheaper colony. Colonists are never
+        reduced: fewer people is a different expedition, not a poorer one, and
+        the caller asked for these.
+        """
+        reserved = _scale(COLONIST_COST, self.colonists)
+        if _units_within(COLONIST_COST, banked, {}) < self.colonists:
+            return None
+
+        # Stores keep their claim while equipment is cut.
+        keeping_stores = _merge(reserved, _scale(STORES_COST, self.stores))
+        equipment = min(self.equipment, _units_within(EQUIPMENT_COST, banked, keeping_stores))
+        if equipment > 0 or self.equipment <= 0:
+            return Loadout(self.colonists, equipment, self.stores)
+
+        # Not even a bare hull's worth of equipment fits, so the stores are what
+        # is over-committed. Cut those instead and land with nothing but people.
+        stores = min(self.stores, _units_within(STORES_COST, banked, reserved))
+        return Loadout(self.colonists, 0.0, stores)
+
     def starting_stockpile(self) -> dict[str, float]:
         """What is left standing on the ground after landing.
 
@@ -98,6 +142,34 @@ class Loadout:
         # Stores land as what they actually are: water and food. Life support
         # draws on the first, and the population eats the second.
         return {WATER: self.stores * 0.7, FOOD: self.stores * 0.3}
+
+
+def _scale(unit_cost: dict[str, float], quantity: float) -> dict[str, float]:
+    return {key: amount * quantity for key, amount in sorted(unit_cost.items())}
+
+
+def _merge(left: dict[str, float], right: dict[str, float]) -> dict[str, float]:
+    merged = dict(left)
+    for key, amount in sorted(right.items()):
+        merged[key] = merged.get(key, 0.0) + amount
+    return merged
+
+
+def _units_within(
+    unit_cost: dict[str, float], banked: dict[str, float], reserved: dict[str, float]
+) -> float:
+    """How many units of ``unit_cost`` fit in ``banked`` once ``reserved`` is set aside.
+
+    The scarcest line decides, which is the whole point: an expedition is not
+    outfitted on average, it is outfitted on the material it has least of.
+    """
+    limit = float("inf")
+    for key, per_unit in sorted(unit_cost.items()):
+        if per_unit <= 0:
+            continue
+        spare = banked.get(key, 0.0) - reserved.get(key, 0.0)
+        limit = min(limit, max(0.0, spare) / per_unit)
+    return 0.0 if limit == float("inf") else limit
 
 
 @dataclass(frozen=True, slots=True)
