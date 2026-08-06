@@ -63,6 +63,17 @@ class TickContext:
         """Drop a colony's memo, after something changed what it derives from."""
         self._colony_cache.pop(colony_id, None)
 
+    def invalidate(self, key: object) -> None:
+        """Drop a whole memo, after something changed the set it was built from.
+
+        The pipeline flushes between stages *on purpose*, so a resolver sees rows
+        the one before it created. Anything memoized across stages has to be
+        given up when that happens, and this is how -- see
+        :func:`galaxysim.engine.resolvers.queries.pending`, whose queue the
+        governor adds to a stage before production reads it.
+        """
+        self._colony_cache.pop(key, None)
+
     @classmethod
     def build(
         cls, session: Session, universe: Universe, cadence: Cadence, rates: Rates

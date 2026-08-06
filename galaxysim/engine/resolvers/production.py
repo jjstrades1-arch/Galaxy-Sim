@@ -109,7 +109,7 @@ def resolve(ctx: TickContext) -> None:
     # the whole table once per civ -- which is how a tick's cost came to scale
     # with the size of the game rather than with what happened in it.
     colonies = queries.colonies_grouped(ctx)
-    fleets = queries.fleets_by_civ(ctx.session, ctx.universe.id)
+    fleets = queries.fleets_grouped(ctx)
 
     for civ in queries.civs(ctx.session, ctx.universe.id):
         _produce(ctx, civ, colonies.get(civ.id, []), fleets.get(civ.id, []))
@@ -1068,9 +1068,7 @@ def _charge_fleet_upkeep(
 
 def _start_structures(ctx: TickContext) -> None:
     """Charge for and lay the foundations of ordered buildings."""
-    for intent in queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.BUILD_STRUCTURE.value
-    ):
+    for intent in queries.pending(ctx, IntentKind.BUILD_STRUCTURE.value):
         if intent.status != IntentStatus.QUEUED.value:
             continue
 
@@ -1146,9 +1144,7 @@ def _start_structures(ctx: TickContext) -> None:
 
 def _start_fleets(ctx: TickContext) -> None:
     """Charge for ordered ships. Requires a shipyard at the building colony."""
-    for intent in queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.BUILD_FLEET.value
-    ):
+    for intent in queries.pending(ctx, IntentKind.BUILD_FLEET.value):
         if intent.status != IntentStatus.QUEUED.value:
             continue
 
@@ -1251,9 +1247,7 @@ def _decommission_fleets(ctx: TickContext) -> None:
 
     Salvage lands where the ship is, like everything else made of matter.
     """
-    orders = queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.DECOMMISSION.value
-    )
+    orders = queries.pending(ctx, IntentKind.DECOMMISSION.value)
     if not orders:
         return
 
@@ -1308,6 +1302,8 @@ def _decommission_fleets(ctx: TickContext) -> None:
             payload={"colony_id": yard.id, "strength": fleet.strength},
         )
         ctx.session.delete(fleet)
+        ctx.invalidate(queries.FLEET_LIST)
+        ctx.invalidate(queries.FLEET_INDEX)
         all_fleets.pop(fleet.id, None)
 
         intent.status = IntentStatus.COMPLETED.value
@@ -1326,9 +1322,7 @@ def _advance_construction(ctx: TickContext, colonies_by_civ: dict) -> None:
     # civilization with a hundred colonies read the whole intent table a hundred
     # times to find the handful of orders that belonged to it.
     orders_by_colony: dict[int, list] = {}
-    for intent in queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.BUILD_FLEET.value
-    ):
+    for intent in queries.pending(ctx, IntentKind.BUILD_FLEET.value):
         if intent.status == IntentStatus.IN_PROGRESS.value:
             orders_by_colony.setdefault(intent.payload.get("colony_id"), []).append(intent)
 
@@ -1423,9 +1417,7 @@ def _open_structure_orders(ctx: TickContext) -> dict[tuple[int, str], object]:
     building is still going up, so only one of each can ever be in flight.
     """
     open_orders: dict[tuple[int, str], object] = {}
-    for intent in queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.BUILD_STRUCTURE.value
-    ):
+    for intent in queries.pending(ctx, IntentKind.BUILD_STRUCTURE.value):
         if intent.status != IntentStatus.IN_PROGRESS.value:
             continue
         colony_id = intent.payload.get("colony_id")
@@ -1491,6 +1483,8 @@ def _commission_fleet(ctx: TickContext, colony: Colony, intent) -> None:
         z=position.z,
     )
     ctx.session.add(fleet)
+    ctx.invalidate(queries.FLEET_LIST)
+    ctx.invalidate(queries.FLEET_INDEX)
     intent.status = IntentStatus.COMPLETED.value
     intent.resolved_tick = ctx.tick
     ctx.log(

@@ -91,9 +91,7 @@ def throughput_per_hour(colony: Colony) -> float:
 
 
 def _resolve_transfers(ctx: TickContext) -> None:
-    transfers = queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.TRANSFER_CARGO.value
-    )
+    transfers = queries.pending(ctx, IntentKind.TRANSFER_CARGO.value)
     if not transfers:
         return
     all_fleets = queries.fleets_by_id(ctx)
@@ -165,9 +163,7 @@ def _resolve_routes(ctx: TickContext) -> None:
     origin, fly, unload at the destination, fly back. It never completes on its
     own -- that is the point, since an outpost's need does not stop.
     """
-    routes = queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.SUPPLY_ROUTE.value
-    )
+    routes = queries.pending(ctx, IntentKind.SUPPLY_ROUTE.value)
     if not routes:
         return
 
@@ -484,9 +480,7 @@ def _resolve_migrations(ctx: TickContext) -> None:
     world to matter sooner ships people to it rather than waiting. Nobody is
     forced to; doing it is an advantage.
     """
-    crossings = queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.MIGRATE.value
-    )
+    crossings = queries.pending(ctx, IntentKind.MIGRATE.value)
     if not crossings:
         return
     all_fleets = queries.fleets_by_id(ctx)

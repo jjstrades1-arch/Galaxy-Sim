@@ -221,6 +221,26 @@ class _Turn:
             )
         return self._shared["charted"]
 
+    def orders(self, kind: str) -> list[Intent]:
+        """This civ's standing orders of one kind, off one read for the galaxy.
+
+        Two decisions ask "have I already got one of these" by selecting the
+        *whole universe's* orders of a kind and then filtering to themselves,
+        which at eight opponents is eight reads of identical rows -- 422 a tick
+        at 120 days. Shared like the star charts and the garrisons, and for the
+        same reason.
+
+        Safe because a civ only ever reads its own slice: an order another
+        opponent queued later in the same tick was never in this answer anyway.
+        """
+        cache = self._shared.setdefault("orders", {})
+        if kind not in cache:
+            grouped: dict[int, list[Intent]] = {}
+            for intent in queries.active_intents(self.session, self.universe.id, kind):
+                grouped.setdefault(intent.civ_id, []).append(intent)
+            cache[kind] = grouped
+        return cache[kind].get(self.civ.id, [])
+
     @property
     def garrisons(self) -> list[tuple[Vec3, int, float]]:
         """Where every fleet in the galaxy is standing, and whose it is.
@@ -513,7 +533,7 @@ def _maybe_supply(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     source = max(colonies, key=lambda c: c.population)
     existing = {
         intent.payload.get("dest_colony_id"): intent
-        for intent in _all_routes(session, universe, civ)
+        for intent in _all_routes(turn)
     }
     _refresh_route_levels(colonies, existing)
 
@@ -648,11 +668,7 @@ def _maybe_migrate(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     session, universe, civ = turn.session, turn.universe, turn.civ
     if pending.get(IntentKind.MIGRATE.value):
         return
-    if any(
-        intent.kind == IntentKind.MIGRATE.value
-        for intent in queries.active_intents(session, universe.id, IntentKind.MIGRATE.value)
-        if intent.civ_id == civ.id
-    ):
+    if turn.orders(IntentKind.MIGRATE.value):
         return
 
     colonies = turn.colonies
@@ -683,14 +699,8 @@ def _maybe_migrate(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     turn.claimed.add(fleet.id)
 
 
-def _all_routes(session: Session, universe: Universe, civ: Civ) -> list[Intent]:
-    return [
-        intent
-        for intent in queries.active_intents(
-            session, universe.id, IntentKind.SUPPLY_ROUTE.value
-        )
-        if intent.civ_id == civ.id
-    ]
+def _all_routes(turn: "_Turn") -> list[Intent]:
+    return turn.orders(IntentKind.SUPPLY_ROUTE.value)
 
 
 def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:

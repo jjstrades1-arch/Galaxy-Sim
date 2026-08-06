@@ -167,6 +167,7 @@ def _statements_per_tick(
     routes: bool = True,
     war: bool = False,
     reads_only: bool = False,
+    matching=None,
 ) -> float:
     """Statements a tick emits, averaged over five ticks.
 
@@ -206,6 +207,8 @@ def _statements_per_tick(
     def count(conn, cursor, statement, parameters, context, executemany):
         nonlocal counted
         if reads_only and not statement.lstrip().upper().startswith("SELECT"):
+            return
+        if matching is not None and not matching(statement):
             return
         counted += 1
 
@@ -258,8 +261,75 @@ def test_a_tick_is_a_bounded_number_of_round_trips():
     Deliberately loose -- this is a guard rail, not a budget. It exists so that
     adding a resolver which reads the whole world twice per civilization is
     noticed here rather than in a soak run three phases later.
+
+    Ratcheted when the tick started loading its order queue and its fleets once
+    instead of once per asker: **reads went 26.2 to 10.2** and statements overall
+    57 to 41. A ceiling left at 120 would have let all of that leak back without
+    anything failing, which is the only way a guard rail like this rots.
     """
-    assert _statements_per_tick(civs=4, colonies_each=20) < 120
+    assert _statements_per_tick(civs=4, colonies_each=20) < 60
+
+
+def test_the_tick_loads_its_order_queue_once():
+    """The queue is one select, however many resolvers read it.
+
+    Eighteen resolvers ask for orders, and at 120 days that was **32 statements
+    a tick** because some of them ask per civilization. What makes one load safe
+    is that the status filter is applied per call rather than baked in, so an
+    order another resolver cancelled mid-tick disappears from the next reader's
+    view without a round trip -- and the governor, which queues construction a
+    stage before production reads it, gives the memo up when it does.
+    """
+    counted = _statements_per_tick(
+        civs=4,
+        colonies_each=20,
+        reads_only=True,
+        matching=lambda sql: "FROM intents" in sql,
+    )
+    assert counted <= 2, (
+        f"the tick ran {counted} selects against intents; it should load the "
+        "queue once and hand out slices"
+    )
+
+
+def test_an_order_resolved_this_tick_leaves_the_queue_without_a_re_read():
+    """The rule that makes loading the queue once *safe* rather than just fast.
+
+    Resolvers finish each other's orders all through a tick -- logistics
+    completes a route, production commissions a hull and two functions later
+    reads the same kind again. If the memo baked its status filter in at load
+    time, every one of those would be handed back an order that is already done,
+    and the tick would do the work twice.
+
+    It holds because these are the same objects: re-checking ``status`` on the
+    way out sees a change made anywhere, with no round trip. The one thing it
+    cannot see is an order that did not exist yet, which is why the governor
+    gives the memo up when it queues construction.
+    """
+    from galaxysim.engine.context import TickContext
+    from galaxysim.engine.rates import DEFAULT_RATES, Cadence
+    from galaxysim.engine.resolvers import queries
+    from galaxysim.model.entities import IntentKind, IntentStatus
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=7, civs=("A",), seconds_per_tick=3600)
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        civ = session.scalar(select(Civ).where(Civ.universe_id == universe_id))
+        colony = session.scalar(select(Colony).where(Colony.civ_id == civ.id))
+        intents.build_structure(session, civ, colony.id, "mine")
+        session.flush()
+
+        ctx = TickContext.build(session, universe, Cadence(3600), DEFAULT_RATES)
+        first = queries.pending(ctx, IntentKind.BUILD_STRUCTURE.value)
+        assert len(first) == 1, "the fixture needs exactly one order to resolve"
+
+        # What a resolver does when it finishes one.
+        first[0].status = IntentStatus.COMPLETED.value
+
+        assert queries.pending(ctx, IntentKind.BUILD_STRUCTURE.value) == [], (
+            "a finished order was handed to the next resolver as if it were live"
+        )
 
 
 def test_supply_routes_do_not_cost_a_query_each():

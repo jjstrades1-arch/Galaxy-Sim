@@ -32,7 +32,7 @@ from galaxysim.model.entities import Civ, IntentKind, IntentStatus
 
 
 def resolve(ctx: TickContext) -> None:
-    for intent in queries.active_intents(ctx.session, ctx.universe.id, IntentKind.RESEARCH.value):
+    for intent in queries.pending(ctx, IntentKind.RESEARCH.value):
         civ = ctx.session.get(Civ, intent.civ_id)
         if civ is None:
             continue

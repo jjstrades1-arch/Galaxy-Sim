@@ -117,7 +117,7 @@ def _compute_blockades(ctx: TickContext) -> dict[int, tuple[int, float]]:
 
     fleets = [
         fleet
-        for fleet in queries.fleets(ctx.session, ctx.universe.id)
+        for fleet in queries.fleets_of(ctx)
         if not fleet.in_transit and fleet.strength > 0
     ]
     if not fleets:
@@ -156,9 +156,7 @@ def _compute_blockades(ctx: TickContext) -> dict[int, tuple[int, float]]:
 def _hostilities(ctx: TickContext) -> set[tuple[int, int]]:
     """(aggressor, target) pairs with a standing attack order."""
     pairs: set[tuple[int, int]] = set()
-    for intent in queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.ATTACK.value
-    ):
+    for intent in queries.pending(ctx, IntentKind.ATTACK.value):
         target = intent.payload.get("target_civ_id")
         if isinstance(target, int) and target != intent.civ_id:
             pairs.add((intent.civ_id, target))
@@ -205,7 +203,7 @@ def _try_capture(ctx: TickContext, colony: Colony, civ_id: int) -> None:
         (
             fleet
             for fleet in sorted(
-                queries.fleets_by_civ(ctx.session, ctx.universe.id).get(civ_id, []),
+                queries.fleets_grouped(ctx).get(civ_id, []),
                 key=lambda f: f.id,
             )
             if fleet.colony_pods > 0

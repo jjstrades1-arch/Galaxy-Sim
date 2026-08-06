@@ -45,7 +45,7 @@ OUTFITTING_PATIENCE_HOURS = 24.0 * 14.0
 
 
 def resolve(ctx: TickContext) -> None:
-    for intent in queries.active_intents(ctx.session, ctx.universe.id, IntentKind.COLONIZE.value):
+    for intent in queries.pending(ctx, IntentKind.COLONIZE.value):
         civ = ctx.session.get(Civ, intent.civ_id)
         if civ is None:
             continue

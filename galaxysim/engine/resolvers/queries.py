@@ -148,8 +148,8 @@ def colonies_by_id(ctx) -> dict[int, Colony]:
 def fleets_by_id(ctx) -> dict[int, Fleet]:
     """Every fleet in the universe, indexed, computed once per tick."""
     return ctx.cached_effects(
-        "fleets_by_id",
-        lambda: {fleet.id: fleet for fleet in fleets(ctx.session, ctx.universe.id)},
+        FLEET_INDEX,
+        lambda: {fleet.id: fleet for fleet in fleets_of(ctx)},
     )
 
 
@@ -225,6 +225,71 @@ def active_intents(session: Session, universe_id: int, kind: str) -> list[Intent
             .order_by(Intent.id)
         )
     )
+
+
+#: Memo key for the tick's whole order queue. Named because two modules touch it.
+INTENT_QUEUE = "intent_queue"
+#: Memo keys for the tick's fleet loads. Named because the resolvers that
+#: launch, scrap and destroy hulls have to give them up.
+FLEET_LIST = "fleet_list"
+FLEET_INDEX = "fleets_by_id"
+
+
+def pending(ctx, kind: str) -> list[Intent]:
+    """:func:`active_intents`, reading a queue loaded once for the whole tick.
+
+    Eighteen resolvers ask for orders and each one asked separately, which at 120
+    days was **32 statements a tick** -- some of them per civilization -- against
+    a table whose active rows are a standing route for every colony and an attack
+    order for every war. One select now, grouped by kind, and everybody reads
+    their slice of it.
+
+    **The status filter is applied per call, not baked into the memo**, and that
+    is what makes this safe rather than merely fast. Resolvers cancel and
+    complete each other's orders all through the tick -- logistics finishes a
+    route, siege ends a war -- and those are the *same objects*, so re-checking
+    ``status`` here sees the change without going back to the database. What the
+    memo cannot see is an order that did not exist when it was built, and there
+    is exactly one of those: the governor queues construction a stage before
+    production reads it, and drops this memo when it does.
+    """
+    grouped = ctx.cached_effects(INTENT_QUEUE, lambda: _load_queue(ctx))
+    return [intent for intent in grouped.get(kind, ()) if intent.status in ACTIVE_STATUSES]
+
+
+def _load_queue(ctx) -> dict[str, list[Intent]]:
+    grouped: dict[str, list[Intent]] = {}
+    rows = ctx.session.scalars(
+        select(Intent)
+        .where(
+            Intent.universe_id == ctx.universe.id,
+            Intent.status.in_(ACTIVE_STATUSES),
+        )
+        .order_by(Intent.id)
+    )
+    for intent in rows:
+        grouped.setdefault(intent.kind, []).append(intent)
+    return grouped
+
+
+def fleets_of(ctx) -> list[Fleet]:
+    """Every fleet in the universe, loaded once for the whole tick.
+
+    Movement, combat twice, siege and production each read the whole table --
+    measured at 120 days, 666 fleet rows a tick to look at 175 fleets.
+
+    The set changes mid-tick in two places and both give this up: production
+    launches and scraps hulls, and combat removes the destroyed.
+    """
+    return ctx.cached_effects(FLEET_LIST, lambda: fleets(ctx.session, ctx.universe.id))
+
+
+def fleets_grouped(ctx) -> dict[int, list[Fleet]]:
+    """:func:`fleets_by_civ`, off the tick's one fleet load."""
+    grouped: dict[int, list[Fleet]] = {}
+    for fleet in fleets_of(ctx):
+        grouped.setdefault(fleet.civ_id, []).append(fleet)
+    return grouped
 
 
 def world_by_id(session: Session, world_id: int) -> World | None:

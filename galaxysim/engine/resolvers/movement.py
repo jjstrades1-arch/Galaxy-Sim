@@ -25,7 +25,7 @@ def resolve(ctx: TickContext) -> None:
 
 
 def _launch_ordered_moves(ctx: TickContext) -> None:
-    for intent in queries.active_intents(ctx.session, ctx.universe.id, IntentKind.MOVE_FLEET.value):
+    for intent in queries.pending(ctx, IntentKind.MOVE_FLEET.value):
         fleet = ctx.session.get(Fleet, intent.payload.get("fleet_id", -1))
 
         if fleet is None or fleet.civ_id != intent.civ_id:
@@ -66,7 +66,7 @@ def _launch_ordered_moves(ctx: TickContext) -> None:
 
 
 def _advance_in_transit(ctx: TickContext) -> None:
-    for fleet in queries.fleets(ctx.session, ctx.universe.id):
+    for fleet in queries.fleets_of(ctx):
         if not fleet.in_transit:
             continue
 

@@ -143,9 +143,7 @@ def resolve(ctx: TickContext) -> None:
     # per civ, which is the same mistake production was making and costs the
     # same thing: a tick that gets slower as the game gets bigger.
     pending_structures: dict[int, set[str]] = {}
-    for intent in queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.BUILD_STRUCTURE.value
-    ):
+    for intent in queries.pending(ctx, IntentKind.BUILD_STRUCTURE.value):
         colony_id = intent.payload.get("colony_id")
         if colony_id is not None:
             pending_structures.setdefault(colony_id, set()).add(
@@ -397,6 +395,10 @@ def _maybe_build(
             continue  # take the best thing it *can* buy -- see the docstring
 
         intents.build_structure(ctx.session, civ, colony.id, kind)
+        # Production reads the queue in the very next stage and has to see this.
+        # The tick's order queue is loaded once (queries.pending); adding to it
+        # is the one thing that memo cannot notice for itself.
+        ctx.invalidate(queries.INTENT_QUEUE)
         ctx.log(
             "governor_building",
             f"Governor at {colony.name} began "

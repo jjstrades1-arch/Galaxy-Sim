@@ -56,7 +56,7 @@ def _declared_hostilities(ctx: TickContext) -> set[tuple[int, int]]:
     war does not lapse because a player did not log in to renew it.
     """
     pairs: set[tuple[int, int]] = set()
-    for intent in queries.active_intents(ctx.session, ctx.universe.id, IntentKind.ATTACK.value):
+    for intent in queries.pending(ctx, IntentKind.ATTACK.value):
         target = intent.payload.get("target_civ_id")
         if isinstance(target, int) and target != intent.civ_id:
             pairs.add((intent.civ_id, target))
@@ -74,7 +74,7 @@ def _fleets_by_location(
     grouped: dict[tuple[float, float, float], dict[int, list[Fleet]]] = defaultdict(
         lambda: defaultdict(list)
     )
-    for fleet in queries.fleets(ctx.session, ctx.universe.id):
+    for fleet in queries.fleets_of(ctx):
         if fleet.in_transit or fleet.strength <= 0:
             continue
         key = (round(fleet.x, 6), round(fleet.y, 6), round(fleet.z, 6))
@@ -137,7 +137,7 @@ def _apply_damage(side: list[Fleet], total_strength: float, damage: float) -> fl
 
 
 def _remove_destroyed(ctx: TickContext) -> None:
-    for fleet in queries.fleets(ctx.session, ctx.universe.id):
+    for fleet in queries.fleets_of(ctx):
         if fleet.strength > ctx.rates.fleet_destruction_threshold:
             continue
         ctx.log(
@@ -147,3 +147,5 @@ def _remove_destroyed(ctx: TickContext) -> None:
             payload={"fleet_id": fleet.id},
         )
         ctx.session.delete(fleet)
+        ctx.invalidate(queries.FLEET_LIST)
+        ctx.invalidate(queries.FLEET_INDEX)

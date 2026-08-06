@@ -83,9 +83,7 @@ def unmet_requirements(survey, project: Project) -> tuple[str, ...]:
 
 
 def _start(ctx: TickContext) -> None:
-    for intent in queries.active_intents(
-        ctx.session, ctx.universe.id, IntentKind.TERRAFORM.value
-    ):
+    for intent in queries.pending(ctx, IntentKind.TERRAFORM.value):
         if intent.status != IntentStatus.QUEUED.value:
             continue
 
@@ -309,9 +307,7 @@ def _advance(ctx: TickContext) -> None:
     """
     running = [
         intent
-        for intent in queries.active_intents(
-            ctx.session, ctx.universe.id, IntentKind.TERRAFORM.value
-        )
+        for intent in queries.pending(ctx, IntentKind.TERRAFORM.value)
         if intent.status == IntentStatus.IN_PROGRESS.value
     ]
     if not running:

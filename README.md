@@ -885,22 +885,56 @@ waiting to be tuned.
   settles what it can reach and afford, and neither is what the core is generous
   with. Whether region *should* be a difficulty dial is a design question, but
   today it is a sky, not a game.
-- **The tail of a long soak is where the cost is, and it is rows now.** A 28-day
-  run sits near 100 ms/tick at 8 civs and a 120-day run at 212, so the tail
-  roughly doubles rather than tripling — galaxy generation used to be most of it
-  and is now absent from the profile entirely. What is left is loading: at 60
-  days the tick spends its time in SQLAlchemy turning 2.07 million rows into
-  objects. The *query* count is flat in universe size and tested to stay that
-  way; the rows those queries return are not, because a bigger empire is more
-  colonies, more fleets and more standing orders to resolve. That is honest
-  per-row cost rather than a shape bug, but it is what decides how large a
-  universe can get before a tick stops being cheap.
+- **What is left of the tail is one big read.** After loading the order queue and
+  the fleets once a tick (below), the largest single row source is
+  `charted_systems` — **848 rows a tick at 120 days**, more than everything else
+  put together — because the AI walks every charted system with its worlds and
+  owners attached to decide where to settle and scout. It is already read once
+  and shared across all eight opponents, so this is not repetition; it is one
+  query whose result grows with the charted galaxy. Making it smaller means
+  changing *what the AI looks at*, not how often, which is a design change rather
+  than a hoist.
 
 ## What was on this list and is not any more
 
 Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
+
+- **Eighteen resolvers each asked the database for the orders.** A tick reads the
+  intent queue from movement, logistics, combat, siege, the governor, production
+  five times over, research, terraforming and colonization — and each one asked
+  separately, some of them once per civilization. Measured at 120 days that was
+  **32 statements a tick** against a table whose active rows are a standing route
+  for every colony and an attack order for every war, plus **3.8 full scans of
+  the fleet table** to look at 175 fleets. The AI did the same thing one level
+  up: two decisions selected the whole galaxy's orders of a kind and then
+  filtered to themselves, once per opponent.
+
+  All of it now loads once a tick and is handed out in slices, through the memo
+  the context already had for colonies and star charts.
+
+  What makes that safe rather than merely fast is that **the status filter is
+  applied per call, not baked into the memo**. Resolvers finish each other's
+  orders all through a tick, and those are the same objects, so re-checking on
+  the way out sees a cancellation without a round trip. The one thing a memo
+  cannot see is an order that did not exist when it was built — the governor
+  queues construction one stage before production reads it — so that one gives
+  the memo up when it queues. Both rules are tests, and both were checked by
+  breaking them.
+
+  | | before | after |
+  |---|---|---|
+  | SELECTs per tick (4 civs × 20 colonies) | 26.2 | **10.2** |
+  | statements per tick | 57 | 41 |
+  | rows loaded per tick at 120 days | 2,209 | **1,611** |
+  | 120-day soak | 212 ms/tick | **180–186** |
+
+  A 120-day run is byte-identical afterwards — same colonies, same population to
+  the unit — which is the only thing that proves a stale cache did not quietly
+  change the game. The absolute round-trip ceiling was ratcheted from 120 to 60
+  in the same breath, because a guard rail left at three times the real number is
+  a guard rail that lets all of this leak back.
 
 - **The AI asked whether it could afford a hull by counting warehouses its
   fleets could not reach.** `_can_carry_more_upkeep` is the brake on a navy's
