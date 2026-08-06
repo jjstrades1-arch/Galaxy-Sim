@@ -705,7 +705,7 @@ have or do. Never free materials, never hidden information — and that is a tes
 | settles by | nearest | **nearest** | best | best |
 | hulls in build | 1 | **1** | 2 | 4 |
 | upkeep reserve | 7 d | **3 d** | 2 d | 1 d |
-| seated in | rim | **arm** | arm | core |
+| seated in | core | **arm** | arm | rim |
 
 ```bash
 .venv/bin/galaxysim new Frontier --difficulty relentless
@@ -722,10 +722,21 @@ universe, which was true for most of this project's life.
 it settles the nearest rock or the one carrying what its economy is short of, how
 deep a build queue it keeps, how early it commits to terraforming.
 
-**Circumstance** is the galaxy itself. `add_civ` seats civs as far apart as the
-region allows, so the region *is* the rival-proximity dial — the crowded Core
-against the empty Rim. A property of the sky rather than a gift, since the player
-lives under the same one.
+**Circumstance** is the galaxy itself, and it is a real difficulty axis rather
+than scenery — though not the one it was written to be. Region does not move your
+neighbours: they sit 48–51 ly away in all three. What it moves is **supply**. A
+core empire's routes are a couple of light-years end to end and it never misses
+a fleet payment; a rim empire's are three times as long and it misses tens of
+thousands. So the core is the forgiving sky, the rim is the demanding one, and
+the ladder seats them that way — it used to run backwards, on the strength of a
+rival proximity that was never there. A property of the sky rather than a gift,
+since the player lives under the same one.
+
+That cuts both ways, and it is worth knowing before you pick Relentless. At 28
+days it settles a world every 5.6 days against Driven's 5.1 and ends with much
+the same population — the rim slows *it* down too. What it keeps is the bigger
+navy. So the top of the ladder is harder because it plays better and because the
+galaxy is less forgiving to you both, not because it out-expands you.
 
 There is a fifth dial, and it is the sharpest one because it is the only one
 that can take something away from you: **whether the opponent goes to war at
@@ -878,43 +889,6 @@ waiting to be tuned.
   deeper than the rest of its stack. That may well be the intended pressure — it
   is what makes power a decision — but the number has never been chosen on
   purpose, and it wants a play session rather than another sweep.
-- **Region is a difficulty dial nobody chose, and the rim is the hard setting.**
-  This entry used to say the core plays exactly like the arm. That was measured
-  at 28 days on the pace metric, which cannot see the thing that actually
-  differs. Run to 60 days at 8 driven civs, two seeds, the regions are not alike
-  at all:
-
-  ```
-                              core     arm      rim
-  supply route length (median) 2.4/2.0  3.6/3.0  7.3/5.6  ly
-  routes the empire needs       38/51    56/73    68/87
-  upkeep shortfall events          0/0   54/730  28,791/27,907
-  ore yield of settled worlds  4.1/4.2  3.8/3.8  3.6/3.3
-  habitability settled         .09/.10  .00/.00  .00/.00
-  terraforming completed      170/234  176/232  109/154
-  ```
-
-  **Density pays through supply**, and it pays enormously: a core route is a
-  third the length of a rim one, the core needs 40% fewer of them, and a core
-  civilization never misses a fleet payment while a rim one misses tens of
-  thousands. That is a real difference in how the game feels — it just never
-  reached the number the soak reports.
-
-  What it is *not* is a playstyle choice, because **the rim gets nothing back**.
-  It is worse on every axis measured, and its neighbours are the same 48–51 ly
-  away as everyone's, so it does not even buy quiet. Meanwhile the channel that
-  looks like it should matter is dead: colonies within supply range of each other
-  run **15 / 14 / 13** regardless of region, because the settlement frontier is a
-  fixed volume and star density does not change how far apart an empire's own
-  worlds end up.
-
-  Population does *not* separate the regions — the arm leads on one seed and the
-  core on the other — so any claim that one is stronger overall is seed noise at
-  this sample size, and an earlier draft of this bullet made exactly that mistake
-  before a second seed caught it.
-
-  The open question is therefore not "does region do anything" but **what the rim
-  is for**. Giving it a genuine advantage is a design decision, not a measurement.
 - **What is left of the tail is one big read.** After loading the order queue and
   the fleets once a tick (below), the largest single row source is
   `charted_systems` — **848 rows a tick at 120 days**, more than everything else
@@ -930,6 +904,46 @@ waiting to be tuned.
 Kept because the fixes are the most useful thing in the file: each was a number
 or a proxy that had stopped meaning anything, and none of them looked like a bug
 from the inside.
+
+- **Region did nothing, and now it is the difficulty axis it was pretending to
+  be.** This entry used to say the core plays exactly like the arm. That was
+  measured at 28 days on the pace metric, which cannot see what differs. Run to
+  60 days at 8 driven civs, two seeds:
+
+  ```
+                              core     arm      rim
+  supply route length (median) 2.4/2.0  3.6/3.0  7.3/5.6  ly
+  routes the empire needs       38/51    56/73    68/87
+  upkeep shortfall events          0/0   54/730  28,791/27,907
+  ore yield of settled worlds  4.1/4.2  3.8/3.8  3.6/3.3
+  terraforming completed      170/234  176/232  109/154
+  ```
+
+  **Density pays through supply**, and enormously: a core route is a third the
+  length of a rim one, the core needs 40% fewer of them, and a core civilization
+  never misses a fleet payment while a rim one misses tens of thousands.
+
+  Two things that looked like channels are not. Colonies within supply range of
+  each other run **15 / 14 / 13** regardless of region — the settlement frontier
+  is a fixed volume, so star density does not change how far apart an empire's
+  own worlds end up, which is why the core terraforms no faster than the arm. And
+  "density buys reach" cannot work either: a colony pod costs 450 million units
+  of work against an expedition's 317,000 tonnes of materials, so pricing the
+  crossing would move 1.5% of a decision whose real cost is yard time.
+
+  **The decision was to leave the rim uncompensated and say so.** It is the hard
+  start; the core is the easy one; the arm is the calibrated middle. The three
+  region descriptions now say that, and the difficulty ladder — which seated
+  Dormant on the rim and Relentless in the core, on the strength of a rival
+  proximity that Phase 22 measured as 48–51 ly in *all three* regions — was
+  turned the right way round. Steady and Driven stay in the arm, because every
+  price in the game is calibrated there. `tests/test_ai.py` asserts the ordering
+  so it cannot invert again.
+
+  Population does *not* separate the regions — the arm leads on one seed, the
+  core on the other — so any claim that one is stronger overall is seed noise at
+  this sample size. An earlier draft made exactly that claim before a second seed
+  caught it.
 
 - **Eighteen resolvers each asked the database for the orders.** A tick reads the
   intent queue from movement, logistics, combat, siege, the governor, production

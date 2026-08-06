@@ -95,6 +95,24 @@ class Region:
     to promise otherwise ("your neighbours are on top of you from the first
     week"), which is star spacing dressed up as a rival, and reads as a
     difficulty dial nothing implements. Say what the region delivers.
+
+    **What it does change is supply, and that makes region a difficulty axis.**
+    Measured over 60 days at eight opponents, two seeds:
+
+    ============================  =======  =======  =============
+    per empire                    core     arm      rim
+    ============================  =======  =======  =============
+    supply route length, median   2.4/2.0  3.6/3.0  7.3/5.6 ly
+    routes the empire needs        38/51    56/73    68/87
+    fleet payments missed            0/0   54/730   28,791/27,907
+    ore yield of settled worlds   4.1/4.2  3.8/3.8  3.6/3.3
+    ============================  =======  =======  =============
+
+    The core is forgiving and the rim is demanding, and that is now the *decided*
+    answer rather than an accident: the rim was given no compensating advantage,
+    so choosing it is choosing the hard game. The descriptions below say so, and
+    :mod:`galaxysim.ai.doctrine` seats the ladder to match -- it used to run the
+    other way round.
     """
 
     key: str
@@ -108,26 +126,30 @@ CORE = Region(
     "core",
     "The Core",
     "Stars a fraction of a light-year apart and metal-rich to a fault. "
-    "Thousands of systems sit inside a single supply line, so everything worth "
-    "having is in reach -- and so is everyone who wants it. Your rivals, "
-    "though, start no closer here than they do anywhere else.",
+    "Thousands of systems sit inside a single supply line, your routes are a "
+    "couple of light-years end to end, and a fleet is always in reach of a "
+    "warehouse that can pay it. The forgiving sky, and the easiest start. "
+    "Your rivals begin no closer here than anywhere else.",
     6_000.0,
 )
 ARM = Region(
     "arm",
     "The Arm",
     "The solar neighbourhood: stars a handful of light-years apart, ordinary "
-    "metallicity, a few hundred systems within supply range. Room to grow into, "
-    "and enough of it to be worth the growing.",
+    "metallicity, a few hundred systems within supply range. Room to grow into "
+    "and enough of it to be worth the growing -- and the sky every price in the "
+    "game is calibrated against, so it is the one that plays as intended.",
     SOLAR_RADIUS_LY,
 )
 RIM = Region(
     "rim",
     "The Rim",
-    "Thin, poor and quiet. Dozens of systems inside supply range rather than "
-    "thousands, and the ore is worse in all of them, so journeys are long and "
-    "most of them are wasted. Your neighbours are no further off than anyone "
-    "else's -- there is simply nothing between you and them.",
+    "Thin, poor and hard. Dozens of systems inside supply range rather than "
+    "thousands, ore a third of a dex poorer, and supply lines three times as "
+    "long -- so your fleets go unpaid and desert where a core empire's never "
+    "would. Your neighbours are no further off than anyone else's; there is "
+    "simply nothing between you and them, and nothing spare when it starts. "
+    "This is the hard start, and it is not compensated.",
     46_000.0,
 )
 

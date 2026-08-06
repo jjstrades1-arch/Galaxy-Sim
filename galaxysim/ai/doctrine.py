@@ -129,6 +129,16 @@ class Doctrine:
     # --- circumstance -------------------------------------------------------
     #: Where the game is seated when the player does not say. A property of the
     #: galaxy rather than a gift to anybody: the player lives under the same sky.
+    #:
+    #: **Ordered, not a free choice**, and it used to run backwards. The ladder
+    #: seated Dormant on the rim and Relentless in the core on the theory that
+    #: the core meant close neighbours -- and rivals sit 48-51 ly apart in all
+    #: three regions, so that was never true. What region really changes is
+    #: supply, measured over 60 days at eight opponents across two seeds: a core
+    #: route is a third the length of a rim one, a core empire needs 40% fewer of
+    #: them, and it misses **no** fleet payments where a rim empire misses
+    #: twenty-eight thousand. The forgiving sky is the core; the demanding one is
+    #: the rim. ``tests/test_ai.py`` asserts the ladder runs that way now.
     preferred_region: str
     #: How many rivals the level puts in the galaxy by default.
     rivals: int
@@ -140,11 +150,12 @@ class Doctrine:
 
 #: Barely playing. Thinks once a day, settles whatever is closest, keeps one
 #: yard and one order, and will only reshape a world that is nearly dead
-#: already. Seated out on the rim, where neighbours are a long way off.
+#: already. Seated in the core, where supply lines are short and a fleet can
+#: always be paid.
 DORMANT = Doctrine(
     key="dormant",
     name="Dormant",
-    description="Checks in once a day and takes what is nearest. Far-flung neighbours.",
+    description="Checks in once a day and takes what is nearest. A forgiving sky.",
     decision_interval_hours=24.0,
     industrial_worlds=1,
     settle_by=NEAREST,
@@ -158,7 +169,7 @@ DORMANT = Doctrine(
     garrison_per_colony=1.0,
     raid_strength=0.0,
     raid_population_ceiling=0.0,
-    preferred_region="rim",
+    preferred_region="core",
     rivals=2,
 )
 
@@ -211,11 +222,12 @@ DRIVEN = Doctrine(
 )
 
 #: Everything Driven does, wider and with less margin, in the one part of the
-#: galaxy where every good world is contested from the first week.
+#: galaxy that will not carry it: routes three times as long, ore a third of a
+#: dex poorer, and a fleet that goes unpaid where a core empire's never does.
 RELENTLESS = Doctrine(
     key="relentless",
     name="Relentless",
-    description="Six industrial worlds, four hulls in build, thin reserves, and the Core.",
+    description="Six industrial worlds, four hulls in build, thin reserves, and the Rim.",
     decision_interval_hours=1.0,
     industrial_worlds=6,
     settle_by=BEST,
@@ -229,7 +241,7 @@ RELENTLESS = Doctrine(
     garrison_per_colony=3.0,
     raid_strength=20.0,
     raid_population_ceiling=5.0e7,
-    preferred_region="core",
+    preferred_region="rim",
     rivals=8,
 )
 

@@ -185,6 +185,36 @@ def test_the_ladder_climbs():
     assert RELENTLESS.settles_by_quality
 
 
+def test_the_ladder_seats_the_hard_settings_in_the_hard_sky():
+    """``preferred_region`` is ordered, and it used to run backwards.
+
+    The ladder seated Dormant on the rim and Relentless in the core, on the
+    theory that the core meant close neighbours. Rivals sit 48-51 ly apart in
+    *all three* regions, so the reason was never true -- and what region really
+    changes turns out to run the other way. Over 60 days at eight opponents
+    across two seeds, per empire:
+
+        supply route length, median   2.4/2.0  3.6/3.0  7.3/5.6 ly
+        routes the empire needs        38/51    56/73    68/87
+        fleet payments missed            0/0   54/730   28,791/27,907
+
+    The core is the forgiving sky and the rim is the demanding one, so the
+    easiest setting belongs in the core and the hardest on the rim. The middle
+    of the ladder stays in the arm because that is the sky every price in the
+    game was calibrated against, and moving it would invalidate all of them.
+    """
+    harshness = {"core": 0, "arm": 1, "rim": 2}
+
+    seated = [harshness[d.preferred_region] for d in LADDER]
+    assert seated == sorted(seated), (
+        "the ladder must run from the forgiving sky to the demanding one; got "
+        + ", ".join(f"{d.key}={d.preferred_region}" for d in LADDER)
+    )
+    assert DEFAULT_DOCTRINE.preferred_region == "arm", (
+        "the calibrated default must stay in the calibrated region"
+    )
+
+
 def test_steady_is_the_behaviour_the_economy_was_calibrated_against():
     """The default must not quietly move.
 
