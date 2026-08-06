@@ -697,12 +697,15 @@ day     4   8  12  16  20  24  28  36  44  52  60
 
 Still rising for most of it, and **flat over the last three samples**, which is
 not what this section asks for. That plateau appeared when construction started
-receiving the industry refining could not spend: the first month got faster (day
-28 went 7 → 8 worlds) and the second month got slower, ending at 12 against 14.
-A wider empire spends more of itself on holding what it has, which is the
-intended brake — but a brake that stops the curve inside the measured window is
-a finding rather than a design, and it is written down here instead of being
-tuned away.
+receiving the industry refining could not spend: day 28 went 7 → 8 worlds and
+day 60 went 14 → 12.
+
+It is a **Steady-doctrine** result and does not generalise. The same change
+measured against *driven* opponents over 120 days puts the frontier ahead at
+every sample and ends at 227 colonies against 154. What actually broke in that
+run was the navy rather than the frontier — see the entry below. Recorded both
+ways because one doctrine at one length is not the shape of the game, which is
+a lesson this file has already paid for once.
 
 That curve moved once, and the way it moved is worth recording. Fixing the
 construction orders that never closed — see below — put an extra world on the
@@ -852,6 +855,28 @@ misbehaving — a number simply never chosen on purpose. A **scaling ceiling** i
 correct today, and growing. Only the first kind is a bug, and conflating them is
 how a list like this turns into a backlog nobody can prioritise.
 
+- *(measured defect)* **A navy still cannot survive the empire it defends.**
+  Correcting construction to take the industry refining could not spend built a
+  47% larger galaxy — 227 colonies at day 120 against 154 — and the fleets did
+  not survive it. Aggregate warship strength runs ahead of the old numbers until
+  day 70, peaks at 353.5, and then **collapses to 297.0 in a fortnight**, ending
+  at 392.9 against 402.8. Shortfall events go **1,117 → 6,869** and the worst
+  single-civilization drawdown goes from **-34% to -70%**.
+
+  This is the failure the fuel work closed, arriving through a different door.
+  There it was production — nobody made any fuel. Here everything is made and
+  the empire is simply *wider* than its supply lines: upkeep is billed from
+  colonies within range of a fleet, and a navy that scales with a 47% larger
+  galaxy outruns what those warehouses hold. The brake is the intended one and
+  it is arriving as a collapse rather than a decision, which is the complaint
+  that produced the previous phase.
+
+  Not fixed by undoing the industry correction, which stopped half a capital's
+  output evaporating and was right. The question is whether upkeep should scale
+  with distance rather than with strength alone, whether the AI should stop
+  buying hulls it cannot supply, or whether supply range itself is the number
+  that has stopped meaning anything. All three are guesses; none has been
+  measured.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
@@ -897,24 +922,46 @@ from the inside.
   because the colonies asking are a mix of capitals and young outposts and the
   94% figure came from a lone developed capital with a full warehouse.
 
-  **The pace moved, and not in one direction.** Day 28 goes **7 → 8 colonies**
-  and 4.7 → 4.0 days a world. But run to 60 days the curves cross:
+  **Expansion got much faster. The navy paid for it, and that is unfinished.**
+
+  Against eight *driven* opponents over 120 days, seed 1, same probe as the fuel
+  work below:
 
   ```
-  day        4   12   20   24   28   36   44   52   60
-  before     2    4    6    6    7    8   10   12   14
-  now        2    4    6    8    8    9   10   12   12
+  day            14    28    42    56    70    84    98   112   120
+  colonies       28    47    66    86   107   123   137   148   154   before
+                 34    62    88   116   141   166   188   214   227   now
+  warships     71.0 122.5 172.5 227.5 265.1 304.5 347.8 384.8 402.8   before
+               84.5 157.5 219.4 308.4 353.5 297.0 316.7 348.0 392.9   now
   ```
 
-  Faster to day 28, level by day 44, and **behind by day 60** — 12 colonies
-  against 14, with days-per-world drifting 3.6 → 5.2 over the second month. A
-  bigger early empire is a wider one, and a wider one spends more of itself on
-  holding what it has. That is the design's stated brake working, but the curve
-  flattening three samples from the end is *not* the property this file asks
-  for, and it is recorded here rather than smoothed over. Repricing a colony pod
-  to hide either end of it would be the exact mistake this file keeps
-  documenting; understanding why the second month slows down is the next
-  question, not a constant to turn.
+  Colonies at day 120 go **154 → 227**, a 47% larger galaxy, and the frontier is
+  ahead at every single sample. Aggregate warship strength is ahead too, until
+  day 70 — and then it **falls off a cliff**, 353.5 → 297.0, and spends the rest
+  of the run climbing back to roughly where it started. Shortfall events over the
+  run go **1,117 → 6,869**, six times as many, and the worst single civilization
+  drawdown goes from **-34% to -70%** (73.5 down to 22.0 across four weeks).
+
+  So this did not break expansion; it broke the thing the phase before it had
+  just fixed. A corrected industry builds more colonies *and* more hulls, and
+  upkeep is billed from the colonies within supply range of a fleet — so a navy
+  that grows with the empire outruns what the empire's warehouses can carry.
+  That is the design's stated brake, but it is arriving as a collapse rather
+  than as a decision, which is the exact complaint that produced the fuel work.
+
+  **§2 is not the thing to undo.** It stopped half a capital's industry
+  evaporating, which was real, and the docstring above it had said so for
+  months. What it exposed is that upkeep and supply cannot carry the economy a
+  correct industry produces. That is the next problem and it is written down
+  here rather than hidden by repricing `COLONY_POD_WORK`, which would be the
+  mistake this file keeps documenting.
+
+  One caveat on an earlier draft of this entry, which claimed the curve went
+  *flat* by day 60. That was measured on **steady** opponents at 60 days, where
+  colonies read 12 against 14 before. It does not generalise: under driven
+  opponents at 120 days the frontier is ahead throughout. A single doctrine at a
+  single length is not the shape of the game, and saying so from one run was
+  exactly the median-shaped mistake recorded further down this file.
 
   One thing this broke and had to fix on the way. Making construction depend on
   what refining *happened* to spend gave the number a fresh way to drift from its
