@@ -1278,3 +1278,109 @@ def test_the_player_and_the_opponent_see_the_same_galaxy():
             "whichever one sees more is playing with privileged information"
         )
         assert theirs, "the fixture needs a rival colony to be visible at all"
+
+
+# --- where a ship can be kept, not merely how far it is ----------------------
+
+
+def _scouting_civ(*, supplied: bool):
+    """One AI civ with a warship free to explore, and warehouses that can or
+    cannot keep it.
+
+    The only difference between the two runs is what the colonies hold. Geometry,
+    seed, doctrine and the fleet are identical, so anything that changes between
+    them is the supply question and nothing else.
+    """
+    from galaxysim.materials import FLEET_UPKEEP_PER_STRENGTH
+    from galaxysim.model.entities import Colony, Fleet
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=4242, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        civ.is_ai = True
+        civ.difficulty = "driven"
+        for colony in session.scalars(select(Colony).where(Colony.civ_id == civ.id)):
+            # Enough to cover a driven doctrine's reserve many times over, or
+            # nothing at all. Not a token amount either way: the reserve is
+            # `upkeep_reserve_hours` of the whole basket, so a stingy "supplied"
+            # fixture would refuse for the right reason and prove nothing.
+            colony.stockpile = (
+                {material: 1e9 for material in FLEET_UPKEEP_PER_STRENGTH}
+                if supplied
+                else {}
+            )
+        # A warship with no job, which is what the scout rule looks for.
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        fleet.colony_pods = 0
+        fleet.cargo = {}
+        fleet.cargo_capacity = 0.0
+        civ_id = civ.id
+
+    return engine, universe_id, civ_id
+
+
+def _scout_orders(session, civ_id: int) -> list:
+    from galaxysim.model.entities import Intent, IntentKind
+
+    return list(
+        session.scalars(
+            select(Intent).where(
+                Intent.civ_id == civ_id, Intent.kind == IntentKind.MOVE_FLEET.value
+            )
+        )
+    )
+
+
+def test_it_does_not_park_a_scout_where_nothing_can_supply_it():
+    """The leash is a distance and it means a supply line.
+
+    ``Doctrine.scout_range_fraction`` says why it is bounded below one: upkeep
+    comes from the warehouses nearest a fleet, there is nothing to draw on past
+    supply range, and a scout sent further deserts before it arrives. That is the
+    right rule measured against the wrong quantity -- *near* a colony is not the
+    same as near one that makes anything, and at the frontier the nearest colony
+    is the outpost founded last week.
+
+    Measured at day 72 before this was checked: five fleets in two hundred and
+    fifty had **zero percent** of their bill within reach while every other fleet
+    had seven to thirty times theirs. Those five bled continuously, produced two
+    thousand shortfall events between them, and cost civilizations half a navy
+    each while their empires ran eight to thirty times solvent.
+    """
+    from galaxysim.ai.simple import take_turn
+    from galaxysim.model.entities import Civ, Universe
+
+    engine, universe_id, civ_id = _scouting_civ(supplied=False)
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, civ_id))
+        session.flush()
+        assert not _scout_orders(session, civ_id), (
+            "a civilization whose warehouses hold none of the upkeep basket sent "
+            "a ship out to sit beside them anyway; the leash is measuring "
+            "distance again"
+        )
+
+
+def test_it_still_scouts_from_a_colony_that_can_keep_a_ship():
+    """The counterpart, and the one that stops this being a way to lose.
+
+    A rule that never dispatches a scout would flatten the navy collapse
+    beautifully and freeze the frontier doing it -- the AI stops charting, stops
+    finding worlds, and stops expanding. That would read as a win on every table
+    this phase is measured against, which is exactly why it is asserted.
+    """
+    from galaxysim.ai.simple import take_turn
+    from galaxysim.model.entities import Civ, Universe
+
+    engine, universe_id, civ_id = _scouting_civ(supplied=True)
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, civ_id))
+        session.flush()
+        assert _scout_orders(session, civ_id), (
+            "a well-supplied civilization sent nobody to look at anything; the "
+            "supply check has become a way of never exploring"
+        )

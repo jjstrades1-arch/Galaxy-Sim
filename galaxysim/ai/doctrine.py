@@ -77,12 +77,26 @@ class Doctrine:
     build_queue_depth: int
     #: Candidate systems weighed when choosing where to send a scout.
     scout_candidates: int
-    #: Scouting range as a fraction of ``SUPPLY_RANGE_LY``. Bounded below one
-    #: on purpose: upkeep is charged from the warehouses nearest a fleet and
-    #: there is nothing to draw on past supply range, so a scout sent further
-    #: deserts before it arrives -- exploration that consumes the explorer.
-    #: Holding it inside the line also makes scouting and settling leapfrog
-    #: outward together rather than one running away from the other.
+    #: Scouting range as a fraction of ``SUPPLY_RANGE_LY``. Bounded below one so
+    #: scouting and settling leapfrog outward together rather than one running
+    #: away from the other.
+    #:
+    #: **This used to be the whole of the supply rule, and it was the right rule
+    #: measured against the wrong quantity.** The reasoning was sound -- upkeep
+    #: is charged from the warehouses nearest a fleet, there is nothing to draw
+    #: on past supply range, and a scout sent further deserts before it arrives.
+    #: But being *near* a colony is not the same as being near one that makes
+    #: anything, and at the frontier those come apart completely: the nearest
+    #: colony to unexplored sky is the outpost founded last week, which produces
+    #: none of the upkeep basket. A scout parked beside it sat comfortably inside
+    #: its distance leash and outside any supply at all. Measured at day 72, five
+    #: fleets in two hundred and fifty had **zero percent** of their bill within
+    #: reach against seven to thirty times theirs for everyone else, and those
+    #: five cost civilizations half a navy apiece.
+    #:
+    #: :func:`~galaxysim.ai.simple._maybe_scout` now asks the supply question
+    #: directly, of the colony it anchors on. This number is about how boldly a
+    #: civilization explores; it is no longer what keeps its ships alive.
     scout_range_fraction: float
     #: Habitability at or below which a settled world is worth reshaping, and
     #: the least construction its neighbourhood must muster before committing.
