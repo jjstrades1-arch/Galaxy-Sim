@@ -907,11 +907,32 @@ how a list like this turns into a backlog nobody can prioritise.
   nothing where a neighbourhood has enough, so it can only touch the case that
   was broken.
 
-  **The 120-day verdict is not in yet.** If the day-70 cliff flattens while the
-  227 colonies stay, this is the whole fix. If civilizations still collapse,
-  the depots genuinely cannot carry a navy sized by `len(colonies) ×
-  garrison_per_colony` — an empire-wide count setting a bill that is paid
-  locally — and that is the next change rather than one stacked on this.
+  **It was not the cause.** Run to 120 days the cliff is exactly where it was:
+
+  ```
+  day            70     84     98    112    120   shortfalls  colonies
+  first-come  353.5  297.0  316.7  348.0  392.9      6,869       227
+  by weight   355.0  287.4  317.8  347.6  383.4      7,176       224
+  ```
+
+  So a real defect was fixed and the symptom did not move. Both things are
+  worth saying: first-come rationing genuinely did starve the newest hulls, and
+  the unit tests prove it — but it was not what makes navies collapse, and
+  keeping it in the ledger as though it were would be the kind of half-claimed
+  fix this file exists to prevent. It costs about 10% of a tick and buys
+  fairness rather than survival.
+
+  What that leaves: if *who* gets the material does not matter, there is not
+  enough of it at the depots the fleets can reach, and the size of the navy is
+  the only remaining term. `ai/simple.py:1295` and `:1811` set it as
+  `len(colonies) × garrison_per_colony` — an empire-wide count — while upkeep is
+  drawn from whatever sits within `SUPPLY_RANGE_LY` of where the fleets happen to
+  be. A 47% larger empire buys a 47% larger navy; the depots beneath it do not
+  multiply to match. **Still to be measured before it is changed**: the whole
+  empire's hourly output of each upkeep material against the whole navy's hourly
+  bill. Two earlier attempts at that number compared a neighbourhood's output
+  against a *single* fleet's bill, which is why they came back reassuring and
+  meant nothing.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
