@@ -37,23 +37,39 @@ def _queue(session: Session, civ: Civ, kind: IntentKind, payload: dict) -> Inten
     return intent
 
 
-def move_fleet(session: Session, civ: Civ, fleet_id: int, x: float, y: float, z: float) -> Intent:
+def move_fleet(
+    session: Session,
+    civ: Civ,
+    fleet_id: int,
+    x: float,
+    y: float,
+    z: float,
+    *,
+    reason: str | None = None,
+) -> Intent:
     """Order a fleet to a point in space.
 
     The target is a coordinate, not a system. Systems do not gate movement --
     a fleet can be sent anywhere, and what it costs is distance.
+
+    ``reason`` is a short tag for *why* the order was issued -- "scout", "raid",
+    "withdraw". Nothing in the engine reads it; it exists because the log
+    recorded that a fleet was sent somewhere and never what for, so neither a
+    player reading their own history nor anyone auditing the AI could tell a
+    survey sweep from a war. Optional, because a human clicking a destination
+    owes nobody an explanation.
     """
-    return _queue(
-        session,
-        civ,
-        IntentKind.MOVE_FLEET,
-        {"fleet_id": fleet_id, "x": float(x), "y": float(y), "z": float(z)},
-    )
+    payload: dict = {"fleet_id": fleet_id, "x": float(x), "y": float(y), "z": float(z)}
+    if reason:
+        payload["reason"] = reason
+    return _queue(session, civ, IntentKind.MOVE_FLEET, payload)
 
 
-def move_fleet_to_system(session: Session, civ: Civ, fleet_id: int, system) -> Intent:
+def move_fleet_to_system(
+    session: Session, civ: Civ, fleet_id: int, system, *, reason: str | None = None
+) -> Intent:
     """Convenience wrapper: send a fleet to a system's coordinates."""
-    return move_fleet(session, civ, fleet_id, system.x, system.y, system.z)
+    return move_fleet(session, civ, fleet_id, system.x, system.y, system.z, reason=reason)
 
 
 def colonize(

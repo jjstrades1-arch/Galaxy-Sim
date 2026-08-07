@@ -1444,3 +1444,58 @@ def test_a_supplied_fleet_is_left_where_it_is():
             "a fleet sitting on a full warehouse was recalled to the warehouse "
             "it is already sitting on; the rule is firing on ships that are fine"
         )
+
+
+def test_every_order_the_ai_issues_says_why():
+    """A dispatch that does not record its reason cannot be audited.
+
+    Twelve attempts at the late-run navy collapse asked *what* was killing
+    fleets and none could ask *which decision sent them there*, because a move
+    order recorded a destination and nothing else. Scouting, raiding,
+    reinforcing, annexing, expanding and withdrawing all produced the same
+    anonymous row, so the biggest question about this AI -- where does it send a
+    hull that then starves -- was unanswerable from its own history.
+
+    Asserted across every order the AI issues rather than site by site: a
+    seventh dispatch added later without a reason is exactly the case a
+    per-function test would miss, and this module already carries a scar from
+    filters written inline at five call sites with no name between them.
+    """
+    from galaxysim.bootstrap import add_civ, create_universe
+    from galaxysim.engine.tick import resolve_tick
+    from galaxysim.model.base import new_session, transaction
+    from galaxysim.model.entities import Intent, IntentKind, UniverseMode
+
+    engine = create_engine_for("sqlite://")
+    universe_id = create_universe(
+        engine,
+        "Why",
+        seed=99,
+        seconds_per_tick=3600,
+        mode=UniverseMode.SOLO,
+        region="arm",
+        difficulty="driven",
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        for index in range(3):
+            add_civ(session, universe, f"AI-{index + 1}", is_ai=True)
+
+    session = new_session(engine)
+    universe = session.get(Universe, universe_id)
+    for _ in range(24 * 3):
+        with transaction(session):
+            simple.take_all_turns(session, universe)
+            session.flush()
+            resolve_tick(session, universe)
+
+    orders = session.scalars(
+        select(Intent).where(Intent.kind == IntentKind.MOVE_FLEET.value)
+    ).all()
+    assert orders, "the fixture produced no movement at all, so it proves nothing"
+    unlabelled = [order for order in orders if not order.payload.get("reason")]
+    assert not unlabelled, (
+        f"{len(unlabelled)} of {len(orders)} orders the AI issued do not say why; "
+        "a hull that starves under one of these cannot be traced to the decision "
+        "that sent it"
+    )

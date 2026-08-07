@@ -494,7 +494,7 @@ def _maybe_expand(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
         # to go in and a healthy income sat still for two simulated months.
 
         if distance(fleet.position, system.position) > 0.01:
-            intents.move_fleet_to_system(session, civ, fleet.id, system)
+            intents.move_fleet_to_system(session, civ, fleet.id, system, reason="expand")
         intents.colonize(session, civ, fleet.id, world.id, loadout=loadout)
         claimed.add(world.id)
         turn.claimed.add(fleet.id)
@@ -805,7 +805,7 @@ def _maybe_raid(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     for fleet in committed:
         turn.claimed.add(fleet.id)
         if distance(fleet.position, system.position) > DOCKING_TOLERANCE_LY:
-            intents.move_fleet_to_system(session, civ, fleet.id, system)
+            intents.move_fleet_to_system(session, civ, fleet.id, system, reason="raid")
 
 
 def _defenders(turn: "_Turn", where: Vec3, owner: int) -> float:
@@ -991,7 +991,7 @@ def _maybe_annex(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             if lander is None:
                 return  # nothing to send anywhere
 
-            intents.move_fleet_to_system(session, civ, lander.id, system)
+            intents.move_fleet_to_system(session, civ, lander.id, system, reason="annex")
             turn.claimed.add(lander.id)
             return
 
@@ -1146,7 +1146,7 @@ def _maybe_reinforce(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
 
             for fleet in committed:
                 turn.claimed.add(fleet.id)
-                intents.move_fleet_to_system(session, civ, fleet.id, system)
+                intents.move_fleet_to_system(session, civ, fleet.id, system, reason="reinforce")
             return
 
 
@@ -1243,7 +1243,9 @@ def _maybe_withdraw(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             continue  # nowhere to go; moving would only starve it somewhere else
 
         turn.claimed.add(fleet.id)
-        intents.move_fleet_to_system(session, civ, fleet.id, haven.world.system)
+        intents.move_fleet_to_system(
+            session, civ, fleet.id, haven.world.system, reason="withdraw"
+        )
         return  # one rescue a turn, like every other decision here
 
 
@@ -1832,6 +1834,7 @@ def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
                     stub.position.x,
                     stub.position.y,
                     stub.position.z,
+                    reason="scout",
                 )
                 turn.claimed.add(scout.id)
                 return
