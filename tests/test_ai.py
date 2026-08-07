@@ -1278,3 +1278,169 @@ def test_the_player_and_the_opponent_see_the_same_galaxy():
             "whichever one sees more is playing with privileged information"
         )
         assert theirs, "the fixture needs a rival colony to be visible at all"
+
+
+# --- a starving fleet has somewhere to go ------------------------------------
+
+
+def _move_orders(session, civ_id: int, fleet_id: int) -> list:
+    """Move orders this civ has queued for one particular ship."""
+    from galaxysim.model.entities import Intent, IntentKind
+
+    return [
+        intent
+        for intent in session.scalars(
+            select(Intent).where(
+                Intent.civ_id == civ_id, Intent.kind == IntentKind.MOVE_FLEET.value
+            )
+        )
+        if intent.payload.get("fleet_id") == fleet_id
+    ]
+
+
+def _stranded_fleet(*, supplied_where_it_stands: bool):
+    """One civ, a stocked capital, and a warship far from any warehouse.
+
+    ``supplied_where_it_stands`` parks the ship on the capital instead, which is
+    the case the rule must leave alone.
+    """
+    from galaxysim.engine.resolvers.production import SUPPLY_RANGE_LY
+    from galaxysim.materials import FLEET_UPKEEP_PER_STRENGTH
+    from galaxysim.model.entities import Colony, Fleet
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=606, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        civ.is_ai = True
+        civ.difficulty = "driven"
+        home = session.scalar(
+            select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
+        )
+        # Enough to cover the fleet's hourly bill many times over. Not a token
+        # amount: the rule compares against what the ship is actually owed, so a
+        # stingy fixture would refuse for the right reason and prove nothing.
+        home.stockpile = {material: 1e9 for material in FLEET_UPKEEP_PER_STRENGTH}
+        system = home.world.system
+
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        fleet.colony_pods = 0
+        fleet.cargo = {}
+        fleet.cargo_capacity = 0.0
+        fleet.strength = 10.0
+        if not supplied_where_it_stands:
+            # Well past supply range of everything this civ owns, which is
+            # exactly where a scout ends up and where nothing could ever pay it.
+            fleet.x = system.x + SUPPLY_RANGE_LY * 3.0
+            fleet.y = system.y
+            fleet.z = system.z
+        civ_id, home_system_id, fleet_id = civ.id, system.id, fleet.id
+
+    return engine, universe_id, civ_id, home_system_id, fleet_id
+
+
+def test_a_fleet_dying_for_want_of_a_warehouse_is_brought_home():
+    """Nothing in the AI reacted to a fleet going unsupplied. At all.
+
+    ``_maybe_scout`` was the only decision that ever moved an idle warship, and
+    it moves them to *uncharted* systems -- places with no colony by definition.
+    ``_maybe_scrap`` needs a hull docked at a colony and surplus to garrison,
+    which a ship dying in empty space is neither. Reinforce, raid and annex all
+    send ships out. So a fleet that ended up somewhere with no supply had no way
+    back and bled until it was gone.
+
+    Measured, that was the whole late-run navy collapse: five fleets in two
+    hundred and fifty with zero percent of their bill in reach, producing fifteen
+    thousand shortfall events by day 120 inside empires running eight to thirty
+    times solvent. Not an economy that could not carry a navy -- a navy with no
+    retreat, which is a thing no player would ever suffer.
+    """
+    from galaxysim.ai.simple import take_turn
+    from galaxysim.model.entities import Civ, StarSystem, Universe
+
+    engine, universe_id, civ_id, home_system_id, fleet_id = _stranded_fleet(
+        supplied_where_it_stands=False
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, civ_id))
+        session.flush()
+        home = session.get(StarSystem, home_system_id)
+        orders = _move_orders(session, civ_id, fleet_id)
+        assert orders, "a starving fleet was left to die where it stood"
+        assert orders[0].payload.get("x") == pytest.approx(home.x), (
+            "it was ordered somewhere, but not to the one place that could pay it"
+        )
+
+
+def test_a_fleet_holding_a_blockade_is_not_withdrawn():
+    """The exclusion that matters more than the rule.
+
+    A cordon deep in somebody else's space is *supposed* to starve -- that is how
+    a siege ends, and it is the cost of projecting force. A withdrawal rule that
+    could not tell a blockade from a stranded scout would dissolve every war the
+    civilization is prosecuting and read, on a fleet-strength table, as a triumph.
+    """
+    from galaxysim.ai import simple
+    from galaxysim.ai.simple import take_turn
+    from galaxysim.model.entities import Civ, Universe
+
+    # The *starving* case, which is the only one that tests anything. A cordon
+    # inside supply range is fed, so withdrawal would not fire on it whether the
+    # exclusion existed or not -- the first draft of this test asserted exactly
+    # that and passed against an engine with the exclusion deleted.
+    engine, universe_id, civ_id, _, fleet_id = _stranded_fleet(
+        supplied_where_it_stands=False
+    )
+
+    besieging = simple._besieging
+    simple._besieging = lambda turn, pending: {fleet_id}
+    try:
+        with open_session(engine) as session:
+            universe = session.get(Universe, universe_id)
+            take_turn(session, universe, session.get(Civ, civ_id))
+            session.flush()
+            assert not _move_orders(session, civ_id, fleet_id), (
+                "a fleet holding a cordon was recalled for being unsupplied; a "
+                "blockade deep in somebody else's space is meant to starve, and "
+                "that is how a siege ends"
+            )
+    finally:
+        simple._besieging = besieging
+
+
+def test_a_supplied_fleet_is_left_where_it_is():
+    """The guard against the rule churning a whole navy every turn.
+
+    A withdrawal that fires on ships which are perfectly well fed would shuttle
+    the fleet around the empire for ever, which costs nothing visible on a
+    strength table and quietly stops the AI doing anything else with them.
+    """
+    from galaxysim.ai.simple import take_turn
+    from galaxysim.model.entities import Civ, Universe
+
+    from galaxysim.model.entities import StarSystem
+
+    engine, universe_id, civ_id, home_system_id, fleet_id = _stranded_fleet(
+        supplied_where_it_stands=True
+    )
+    with open_session(engine) as session:
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, civ_id))
+        session.flush()
+        home = session.get(StarSystem, home_system_id)
+        # The ship may still be sent scouting -- that is a different decision,
+        # and it goes to an *uncharted* system. A withdrawal is the only thing
+        # that would order it to the system it is already parked in, so that is
+        # what isolates the rule under test.
+        recalls = [
+            intent
+            for intent in _move_orders(session, civ_id, fleet_id)
+            if intent.payload.get("x") == pytest.approx(home.x)
+            and intent.payload.get("y") == pytest.approx(home.y)
+        ]
+        assert not recalls, (
+            "a fleet sitting on a full warehouse was recalled to the warehouse "
+            "it is already sitting on; the rule is firing on ships that are fine"
+        )

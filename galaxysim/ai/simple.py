@@ -371,6 +371,11 @@ def take_turn(
     # being fought comes before one being started. See :func:`_maybe_reinforce`.
     _maybe_reinforce(turn, pending)
     _maybe_raid(turn, pending)
+    # Then bring home anything that is dying for want of a warehouse. After the
+    # war decisions, because a cordon is a job and this must not undo one; before
+    # everything below, because a ship that is starving is worth rescuing ahead
+    # of being sent to look at another star. See :func:`_maybe_withdraw`.
+    _maybe_withdraw(turn, pending)
     _maybe_expand(turn, pending)
     _maybe_supply(turn, pending)
     _maybe_migrate(turn, pending)
@@ -1143,6 +1148,86 @@ def _maybe_reinforce(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
                 turn.claimed.add(fleet.id)
                 intents.move_fleet_to_system(session, civ, fleet.id, system)
             return
+
+
+def _maybe_withdraw(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
+    """Bring a starving ship back to somewhere that can pay it.
+
+    **Nothing in this file reacted to a fleet going unsupplied, at all.** Walk
+    the decisions: ``_maybe_scout`` is the only one that ever moves an idle
+    warship and it moves them to *uncharted* systems, which by definition have no
+    colony; ``_maybe_scrap`` needs a hull docked at a colony *and* surplus to
+    garrison, which a ship dying in empty space is neither; and reinforce, raid
+    and annex all send ships **out**. So a fleet that ended up somewhere with no
+    supply had no way back, and bled at
+    :attr:`Rates.unpaid_fleet_attrition_per_hour` until it was gone.
+
+    Measured, that is the whole of the late-run navy collapse. Five fleets in two
+    hundred and fifty had *zero percent* of their bill within reach while every
+    other fleet had seven to thirty times theirs -- and those five produced two
+    thousand shortfall events by day seventy and fifteen thousand by day one
+    twenty. The same ships, going short every hour, for months, inside empires
+    running eight to thirty times solvent. It was never an economy that could not
+    carry a navy; it was a navy with no retreat.
+
+    Which is a thing no player would ever suffer. Watch a fleet starve and you
+    move it; the AI could not, because the action did not exist.
+
+    **What it deliberately will not touch.** A fleet in ``turn.on_station`` is
+    holding a cordon, and a blockade deep in somebody else's space is *supposed*
+    to starve -- that is how sieges end. Withdrawing those would dissolve every
+    war the civilization is prosecuting and read, on a fleet-strength table, as a
+    triumph. ``_besieging`` exists precisely because a ship keeping a blockade
+    carries no order and looks idle to everything here.
+    """
+    session, civ = turn.session, turn.civ
+    colonies = turn.colonies
+    if not colonies:
+        return
+
+    moving = {i.payload.get("fleet_id") for i in pending.get(IntentKind.MOVE_FLEET.value, [])}
+
+    for fleet in turn.fleets:
+        if fleet.strength <= 0 or fleet.in_transit:
+            continue
+        if fleet.id in turn.on_station or fleet.id in turn.claimed or fleet.id in moving:
+            continue
+        if not _is_fighting_hull(fleet):
+            continue  # a freighter's job is to be away from home
+
+        owed = {
+            material: per_strength * fleet.strength
+            for material, per_strength in FLEET_UPKEEP_PER_STRENGTH.items()
+        }
+        # The same neighbourhood the biller draws from, asked the same way.
+        near = queries.sorted_by_distance(
+            colonies, fleet.position, within_ly=SUPPLY_RANGE_LY
+        )
+        held = {
+            material: sum(colony.stockpile.get(material, 0.0) for colony in near)
+            for material in owed
+        }
+        if all(held[material] >= amount for material, amount in owed.items()):
+            continue  # it is being fed where it stands
+
+        # Somewhere that could actually cover an hour of it, nearest first.
+        haven = next(
+            (
+                colony
+                for colony in queries.sorted_by_distance(colonies, fleet.position)
+                if all(
+                    colony.stockpile.get(material, 0.0) >= amount
+                    for material, amount in owed.items()
+                )
+            ),
+            None,
+        )
+        if haven is None:
+            continue  # nowhere to go; moving would only starve it somewhere else
+
+        turn.claimed.add(fleet.id)
+        intents.move_fleet_to_system(session, civ, fleet.id, haven.world.system)
+        return  # one rescue a turn, like every other decision here
 
 
 def _destination(fleet: Fleet) -> Vec3 | None:
