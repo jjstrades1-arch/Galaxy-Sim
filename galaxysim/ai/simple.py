@@ -1162,16 +1162,33 @@ def _maybe_withdraw(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     supply had no way back, and bled at
     :attr:`Rates.unpaid_fleet_attrition_per_hour` until it was gone.
 
-    Measured, that is the whole of the late-run navy collapse. Five fleets in two
-    hundred and fifty had *zero percent* of their bill within reach while every
-    other fleet had seven to thirty times theirs -- and those five produced two
-    thousand shortfall events by day seventy and fifteen thousand by day one
-    twenty. The same ships, going short every hour, for months, inside empires
-    running eight to thirty times solvent. It was never an economy that could not
-    carry a navy; it was a navy with no retreat.
+    Sampled at day 72, five fleets in two hundred and fifty had *zero percent* of
+    their bill within reach while every other fleet had seven to thirty times
+    theirs. No middle: a fleet is either where the materials are made, or where
+    none of them are.
 
-    Which is a thing no player would ever suffer. Watch a fleet starve and you
-    move it; the AI could not, because the action did not exist.
+    **Five is a rate, not a population**, and the first draft of this docstring
+    read it as the latter -- "the same ships, going short for months." At
+    :attr:`Rates.unpaid_fleet_attrition_per_hour` of 0.1 an hour, a fully
+    unsupplied fleet has a **6.6-hour half-life** and is swept up at
+    :attr:`Rates.fleet_destruction_threshold` inside about **28 hours**. Nothing
+    starves for months; it starves for a day and dies. The 7,176 shortfall events
+    of a 120-day run are ~300 fleet-days of starvation, which at that half-life
+    is *hundreds of different hulls* walking into dead ground and dying there --
+    a flow of new construction, not a stock of stranded veterans.
+
+    So this rescues what it can catch, and it is racing a clock: an hourly turn
+    against a 6.6-hour half-life saves a fleet noticed early and buries one
+    noticed late. Measured over days 40-90 it fires on 2.4% of turns and takes
+    shortfall events down 21% across a 120-day run -- real, and bounded by that
+    race. What it is *not* is a whole explanation of the late-run strength curve;
+    that has never been decomposed into desertion versus battle damage, and
+    :mod:`galaxysim.engine.resolvers.combat` is the other of the only two places
+    in the engine that reduce ``Fleet.strength``.
+
+    Watch a fleet starve and you move it. The AI could not, because the action
+    did not exist -- which is worth fixing whatever the strength curve turns out
+    to be made of.
 
     **What it deliberately will not touch.** A fleet in ``turn.on_station`` is
     holding a cordon, and a blockade deep in somebody else's space is *supposed*

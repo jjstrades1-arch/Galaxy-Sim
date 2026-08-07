@@ -863,11 +863,24 @@ how a list like this turns into a backlog nobody can prioritise.
   at 392.9 against 402.8. Shortfall events go **1,117 → 6,869** and the worst
   single-civilization drawdown goes from **-34% to -70%**.
 
-  *Read to the end before acting on this entry.* Most of what follows is the
-  record of five wrong answers, two of which were built and one of which was
-  reverted. The part that held is at the bottom, and it narrows the defect rather
-  than closing it: aggregate bleeding is fixed, a single empire losing most of a
-  navy in a fortnight is not.
+  *Read to the end before acting on this entry.* **Twelve commits have now been
+  aimed at this symptom** — `f1f121b`, `f2bea06`, `171f1aa`, `41d354e`,
+  `440020a`, `87536fc`, `9dbab3b`, `d5c092b`, `93c7471`, `e6069d4`, `397cb2e`
+  (reverted) and `a8efeb8` — and most of them fixed a real, test-verified defect
+  without moving the curve. What none of them did was ask what the curve is
+  *made of*.
+
+  Only two lines in the engine reduce `Fleet.strength`: `production.py:1199`,
+  desertion from unpaid upkeep, and `combat.py:134`, battle damage. Twelve
+  attempts assumed the first and never separated it from the second — and the
+  attrition rate says the assumption cannot hold, because a fully unsupplied
+  fleet has a **6.6-hour half-life** and a civilization shedding 53 strength over
+  four weeks is not doing it by desertion. Every table here is also **seed=1**,
+  which makes the per-civ drawdown figures the whole argument turns on a single
+  sample of a quantity that includes who happened to go to war with whom.
+
+  So the next move is not a thirteenth fix. It is an attribution of every point
+  of strength lost, on five seeds, with the ledger required to reconcile.
 
   This is the failure the fuel work closed, arriving through a different door.
   There it was production — nobody made any fuel. Here everything is made and
@@ -966,13 +979,26 @@ how a list like this turns into a backlog nobody can prioritise.
 
   No middle. A fleet is either somewhere the materials are made, where it is
   comfortable seven to thirty times over, or somewhere **nothing** it needs is
-  made, where it starves completely and keeps starving — which is why five
-  fleets generate two thousand shortfall *events*. The collapse is not a navy
-  outgrowing an economy. It is a handful of squadrons parked over dead ground,
-  bleeding continuously, while the empire behind them is rich.
+  made, where it starves completely.
 
   That is this file's own rule working exactly as written — *a fleet lives where
   industry is, or it does not live*.
+
+  **The reading of that table was wrong, and the correction matters more than
+  the table.** "n=5 going short" was read as a standing population — a handful of
+  squadrons bleeding continuously for months — and both the fix below and its
+  first ledger entry were written on that reading. It is arithmetically
+  impossible. `unpaid_fleet_attrition_per_hour = 0.1` at one-hour ticks gives a
+  fully unsupplied fleet a **6.6-hour half-life**, and it is swept up at
+  `fleet_destruction_threshold = 0.05` inside about **28 hours**. Nothing starves
+  for months. It starves for a day and dies.
+
+  So five is a *rate*, not a stock. 7,176 shortfall events over 120 days is ~300
+  fleet-days of starvation, which at that half-life is **hundreds of different
+  hulls** walking into dead ground and dying there — a flow of new construction
+  being fed into empty sky, not veterans stranded. Every conclusion below that
+  says "those five fleets" should be read as "the five that happened to be dying
+  at the instant of the sample."
 
   **Those five fleets are scouts, and stopping them made everything worse.**
   `_maybe_scout` takes idle warships — the same hulls the garrison is made of —
