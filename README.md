@@ -879,8 +879,13 @@ how a list like this turns into a backlog nobody can prioritise.
   which makes the per-civ drawdown figures the whole argument turns on a single
   sample of a quantity that includes who happened to go to war with whom.
 
-  So the next move is not a thirteenth fix. It is an attribution of every point
-  of strength lost, on five seeds, with the ledger required to reconcile.
+  So the thirteenth move was not a fix but an attribution of every point of
+  strength lost, with the ledger required to reconcile. **It found the cause,
+  and it is not what any of the twelve assumed** — see "Thirteenth attempt"
+  below. Between a third and a half of every ship these civilizations build
+  starves to death within a day of launch; desertion is 72–86% of all strength
+  lost, on every seed. The open question is no longer *what* kills a navy but
+  *where the AI sends a new hull*.
 
   This is the failure the fuel work closed, arriving through a different door.
   There it was production — nobody made any fuel. Here everything is made and
@@ -1082,10 +1087,63 @@ how a list like this turns into a backlog nobody can prioritise.
   compound — and the *worst single-civilization drawdown got worse*, -66.4% to
   **-72.1%**, with AI-1 still falling 73.5 → 20.5 between days 70 and 98. So
   continuous bleeding in dead space is fixed and measured, and whatever takes a
-  single empire's navy apart in a fortnight is a different thing that has not
-  been found. The remaining suspect is the one named directly above: a garrison
-  sized `len(colonies) × garrison_per_colony`, an empire-wide count setting a
-  bill that is paid neighbourhood by neighbourhood, still never measured locally.
+  single empire's navy apart in a fortnight had, at that point, not been found.
+
+  ### Thirteenth attempt: stop fixing it and count it
+
+  Only two lines in the codebase mutate `Fleet.strength` — battle damage in
+  `combat.py` and desertion in `production.py` — plus creation in
+  `_commission_fleet` and deletion in `_remove_destroyed` /
+  `_decommission_fleets`. So the loss can be *booked*, and once
+  `upkeep_shortfall` and `fleet_destroyed` carried the strength they cost, the
+  books close from the event log alone:
+
+  ```
+  Δ total strength  ==  built − deserted − killed − scrapped − swept
+  ```
+
+  Three 120-day seeds, eight driven civs, reconciling to float noise (worst
+  absolute drift 2×10⁻⁴ on totals of 300–670, i.e. ~5×10⁻⁷ relative — float64
+  accumulation over tens of thousands of events, not a fifth door):
+
+  ```
+  share of all strength lost      combat   desertion   scrapping   swept
+  seed 1                            9.3%       86.4%        2.7%    1.6%
+  seed 2                           14.8%       79.6%        4.0%    1.5%
+  seed 3                           25.2%       72.2%        1.4%    1.1%
+  ```
+
+  **Desertion, decisively, on every seed.** The prediction written into the plan
+  was the opposite — that a civilization shedding 53 strength over four weeks
+  *could not* be doing it by desertion, given a 6.6-hour half-life. Wrong, and
+  wrong against an insight recorded three paragraphs above: at that half-life a
+  fortnight of losses is not one fleet bleeding, it is **fifty different hulls
+  dying in sequence**. The flow reading was already written down and then not
+  applied to the prediction it falsifies.
+
+  And the flow is enormous. Summing what each civilization builds against what
+  deserts:
+
+  ```
+  seed 1    built  733.5    deserted  323.0    44.0% of everything built
+  seed 2    built 1039.0    deserted  317.7    30.6%
+  seed 3    built  628.5    deserted  200.7    31.9%
+  ```
+
+  **Between a third and a half of every ship these civilizations build starves
+  to death.** Seed 1's day-70→84 bucket is the shape of it: 95.0 strength built,
+  **123.1 deserted** in the same fortnight. That is a conveyor belt — yards
+  producing hulls, hulls dispatched somewhere with no supply, hulls dead inside
+  a day — and *that* is the late-run collapse, not an economy outgrown and not a
+  navy too large.
+
+  It also retires the drawdown metric that twelve attempts were steered by. The
+  three seeds end at 383.9/227 colonies, 664.0/269 and 374.4/186; a per-civ
+  drawdown read off seed 1 alone was never a signal.
+
+  So the target is **where the AI sends a new hull**, not how it rescues an old
+  one — `_maybe_withdraw` catches what it can and is bounded by the same 6.6-hour
+  clock. Successor phase, aimed at dispatch, with these numbers as the baseline.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
