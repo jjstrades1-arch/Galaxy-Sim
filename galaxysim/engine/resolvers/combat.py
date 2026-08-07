@@ -140,11 +140,14 @@ def _remove_destroyed(ctx: TickContext) -> None:
     for fleet in queries.fleets_of(ctx):
         if fleet.strength > ctx.rates.fleet_destruction_threshold:
             continue
+        # The residual goes in the payload so the strength ledger closes: a hull
+        # swept up here still had something on it, and without this the only
+        # numbers that balance are the ones for ships that died tidily.
         ctx.log(
             "fleet_destroyed",
-            f"{fleet.name} was destroyed",
+            f"{fleet.name} was destroyed with {fleet.strength:.2f} strength left",
             civ_id=fleet.civ_id,
-            payload={"fleet_id": fleet.id},
+            payload={"fleet_id": fleet.id, "strength": fleet.strength},
         )
         ctx.session.delete(fleet)
         ctx.invalidate(queries.FLEET_LIST)

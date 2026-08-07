@@ -22,6 +22,7 @@ rounding error.
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from galaxysim.colony.labor import balanced_allocation
@@ -652,4 +653,73 @@ def test_a_pod_already_settling_a_world_is_not_also_sent_to_a_siege():
         assert after_annex == after_expansion, (
             "the siege took a ship expansion had already sent somewhere else; "
             "one hull cannot settle a rock and land on a besieged world at once"
+        )
+
+
+# ------------------------------------------------------- the strength ledger
+
+
+def test_a_swept_hull_reports_what_it_took_with_it():
+    """The last term in the strength ledger, and the easiest one to lose.
+
+    Only two lines in the engine reduce ``Fleet.strength`` -- battle damage and
+    desertion -- so every point a civilization loses can be booked and the books
+    can be made to balance. Except that a hull under
+    ``fleet_destruction_threshold`` is *deleted*, and whatever was still on it
+    left the total without appearing in either line. Small per ship, and there
+    are hundreds of them across a long run.
+
+    Staged with the doomed hull parked at its own capital and nowhere near an
+    enemy, so nothing touches its strength between the tick beginning and the
+    sweep: the assertion is then the exact number it was created with, rather
+    than something recomputed from the same arithmetic the engine used.
+
+    The war is real but happens elsewhere -- ``_remove_destroyed`` runs inside
+    ``combat.resolve``, behind its early return, so in a galaxy at peace a
+    starved-out hull is never swept up at all.
+    """
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=4180, seconds_per_tick=3600)
+
+    residual = 0.04  # below fleet_destruction_threshold = 0.05
+    with open_session(engine) as session:
+        terrans = civ_by_name(session, universe_id, "Terrans")
+        vex = civ_by_name(session, universe_id, "Vex")
+        take_manual_control(session, terrans)
+        home = home_colony(session, terrans)
+        # Rich, so upkeep is paid in full and desertion cannot nibble the hull
+        # before the sweep reaches it.
+        home.stockpile = rich_stockpile()
+        doomed = Fleet(
+            universe_id=universe_id,
+            civ_id=terrans.id,
+            name="Wreck",
+            strength=residual,
+            colony_pods=0,
+            speed_ly_per_hour=1.0,
+            cargo={},
+            cargo_capacity=0.0,
+            x=home.world.system.x,
+            y=home.world.system.y,
+            z=home.world.system.z,
+        )
+        session.add(doomed)
+        session.flush()
+        _at_war(session, vex, terrans)
+        doomed_id = doomed.id
+
+    run_ticks(engine, universe_id, 1)
+
+    with open_session(engine) as session:
+        assert session.get(Fleet, doomed_id) is None, "the fixture never swept the hull"
+        swept = [
+            event
+            for event in session.scalars(select(Event).where(Event.kind == "fleet_destroyed"))
+            if event.payload.get("fleet_id") == doomed_id
+        ]
+        assert len(swept) == 1, "one hull swept, one event"
+        assert swept[0].payload.get("strength") == pytest.approx(residual), (
+            "a destroyed hull does not report the strength it took out of the "
+            f"total; it held {residual} and the log recorded "
+            f"{swept[0].payload.get('strength')!r}"
         )

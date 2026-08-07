@@ -1196,7 +1196,16 @@ def _charge_fleet_upkeep(
             continue
 
         attrition = shortfall * ctx.per_tick(ctx.rates.unpaid_fleet_attrition_per_hour)
-        fleet.strength = max(0.0, fleet.strength - fleet.strength * attrition)
+        standing = fleet.strength
+        fleet.strength = max(0.0, standing - standing * attrition)
+        # **The consequence, not just the percentage.** This event used to report
+        # a share of a bill and stop there, so the only thing anyone could count
+        # was how many times it fired -- and twelve attempts at the late-run navy
+        # collapse did exactly that, treating a count of occurrences as though it
+        # were the quantity that mattered. Strength is what leaves; log it.
+        # Unrounded, because :mod:`scratchpad.attribution` balances the books
+        # with it against `combat`, `build_completed` and `fleet_decommissioned`.
+        lost = standing - fleet.strength
 
         ctx.log(
             "upkeep_shortfall",
@@ -1207,9 +1216,13 @@ def _charge_fleet_upkeep(
                 if suppliers
                 else f" (nothing within {SUPPLY_RANGE_LY:.0f} ly)"
             )
-            + "; ships are deserting",
+            + f"; {lost:.2f} strength deserted",
             civ_id=civ.id,
-            payload={"fleet_id": fleet.id, "shortfall": round(shortfall, 4)},
+            payload={
+                "fleet_id": fleet.id,
+                "shortfall": round(shortfall, 4),
+                "lost": lost,
+            },
         )
 
     # The whole bill, in tonnes, against what the warehouses could cover. Read

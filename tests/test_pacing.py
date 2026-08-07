@@ -283,6 +283,58 @@ def test_fleet_upkeep_is_charged_and_unpaid_fleets_desert():
         ).all()
 
 
+def test_a_desertion_reports_the_strength_it_cost():
+    """The event has to carry the consequence, not only the percentage.
+
+    ``upkeep_shortfall`` reported a *share of a bill* and stopped there, so the
+    only thing anybody could count was how many times it fired -- and twelve
+    successive attempts at the late-run navy collapse counted exactly that,
+    treating a tally of occurrences as though it were the quantity that
+    mattered. A count of events cannot tell a fleet that lost a tenth of itself
+    from one that lost all of it, and both were being summed into the same
+    number.
+
+    So the payload carries the strength that actually left, and this asserts it
+    against the fleet's own books rather than against a formula -- a test that
+    recomputed ``strength * shortfall * attrition`` would pass against any
+    engine that made the same mistake twice.
+    """
+    from galaxysim.colony.labor import LIFE_SUPPORT
+    from tests.conftest import take_manual_control
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=5170, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        take_manual_control(session, civ)
+        fleet = session.scalar(select(Fleet).where(Fleet.civ_id == civ.id).order_by(Fleet.id))
+        fleet.strength = 100.0
+        home = home_colony(session, civ)
+        # Nothing to pay with, and no industry to top the warehouse back up
+        # mid-tick -- so the shortfall is total and the loss is unambiguous.
+        home.stockpile = {}
+        intents.set_labor(session, home, {LIFE_SUPPORT: 1.0})
+        fleet_id, before = fleet.id, fleet.strength
+
+    run_ticks(engine, universe_id, 1)
+
+    with open_session(engine) as session:
+        fleet = session.get(Fleet, fleet_id)
+        events = session.scalars(
+            select(Event).where(Event.kind == "upkeep_shortfall")
+        ).all()
+        assert len(events) == 1, "one hour, one starving fleet, one event"
+
+        deserted = before - fleet.strength
+        assert deserted > 0, "the fixture is not actually starving anything"
+        assert events[0].payload.get("lost") == pytest.approx(deserted), (
+            "the shortfall event does not say how much strength it cost; "
+            f"the fleet lost {deserted:.4f} and the log recorded "
+            f"{events[0].payload.get('lost')!r}"
+        )
+
+
 def _two_fleets_on_one_depot(seed: int, *, half_rations: bool, big_first: bool):
     """Two fleets sharing one colony, and what each has left after an hour.
 
