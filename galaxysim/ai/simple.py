@@ -1716,30 +1716,6 @@ def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
 
     colonies = turn.colonies
     for colony in queries.sorted_by_distance(colonies, scout.position):
-        # Anchor only where the ship could actually be *kept*.
-        #
-        # The leash below is a distance -- ``SUPPLY_RANGE_LY`` times the
-        # doctrine's fraction -- and ``scout_range_fraction`` explains that it
-        # exists because "upkeep is charged from the warehouses nearest a fleet
-        # and there is nothing to draw on past supply range, so a scout sent
-        # further deserts before it arrives". That is the right rule stated
-        # against the wrong quantity: being *near* a colony is not the same as
-        # being near one that makes anything.
-        #
-        # At the frontier they come apart completely. The nearest colony to
-        # unexplored sky is the outpost founded last week, which produces none
-        # of the upkeep basket, so a scout parked beside it is comfortably
-        # inside its distance leash and outside any supply at all. Measured at
-        # day 72: five fleets in two hundred and fifty had *zero percent* of
-        # their bill in reach while every other fleet had between seven and
-        # thirty times theirs, and those five bled continuously -- two thousand
-        # shortfall events from five ships, and civilizations losing half a navy
-        # while their empires ran eight to thirty times solvent.
-        #
-        # So ask the supply question directly. It is the same one buying a hull
-        # already asks; it was simply never asked about the place the ship goes.
-        if not _can_carry_more_upkeep(turn, colonies, turn.fleets, 0.0, at=colony):
-            continue
         for stub in systems_near(
             universe.seed,
             colony.world.system.position,
