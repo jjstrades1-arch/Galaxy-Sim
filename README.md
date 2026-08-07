@@ -922,17 +922,39 @@ how a list like this turns into a backlog nobody can prioritise.
   fix this file exists to prevent. It costs about 10% of a tick and buys
   fairness rather than survival.
 
-  What that leaves: if *who* gets the material does not matter, there is not
-  enough of it at the depots the fleets can reach, and the size of the navy is
-  the only remaining term. `ai/simple.py:1295` and `:1811` set it as
-  `len(colonies) × garrison_per_colony` — an empire-wide count — while upkeep is
-  drawn from whatever sits within `SUPPLY_RANGE_LY` of where the fleets happen to
-  be. A 47% larger empire buys a 47% larger navy; the depots beneath it do not
-  multiply to match. **Still to be measured before it is changed**: the whole
-  empire's hourly output of each upkeep material against the whole navy's hourly
-  bill. Two earlier attempts at that number compared a neighbourhood's output
-  against a *single* fleet's bill, which is why they came back reassuring and
-  meant nothing.
+  **And the navy is not too big either.** The obvious next suspect was
+  `ai/simple.py:1295`, which sets a garrison as `len(colonies) ×
+  garrison_per_colony` — an empire-wide count setting a bill that is paid
+  locally. Measured at day 72, each civilization's whole output against its
+  whole navy's whole bill:
+
+  ```
+  civ    navy  colonies   empire output / navy bill   scarcest line
+  AI-1   77.5        28                       1453%   fuel
+  AI-2   66.5        24                        800%   steel
+  AI-4   33.7        25                       2423%   steel
+  AI-8   62.5        23                       1508%   steel
+  ```
+
+  Between **eight and thirty times** what the fleets cost, on the scarcest line,
+  for every civilization in the run. So the garrison rule is innocent and that
+  change was not made.
+
+  Which leaves only one thing standing: the material exists in quantity and it
+  is **in the wrong place**. Everything else has been eliminated — distance,
+  per-fleet production, the order of payment inside a tick, the order of
+  rationing between fleets, and now the size of the navy against the economy
+  that keeps it. Nothing in the game moves fuel, alloys, steel or ceramics
+  between colonies; routes carry water, food and fertiliser out and ore back,
+  deliberately.
+
+  That is uncomfortably close to the "distribution failure" this file claimed
+  before the fuel work and which that phase struck out. The strike was right on
+  its own terms — the fuel side really was zero production, and the evidence
+  offered for distribution really was a stockpile sampled after the biller had
+  emptied it. But removing the framing entirely went further than the evidence
+  did, and with fuel now made in quantity, what is left looks like the original
+  claim measured properly for the first time.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
