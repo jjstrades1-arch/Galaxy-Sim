@@ -966,12 +966,42 @@ how a list like this turns into a backlog nobody can prioritise.
   bleeding continuously, while the empire behind them is rich.
 
   That is this file's own rule working exactly as written — *a fleet lives where
-  industry is, or it does not live*. What is not established is whether losing
-  half a navy to it is the design or an AI that stations ships where they cannot
-  be kept: nothing checks, when a fleet is built or sent, whether the place it
-  will sit produces what it will be billed for. `_can_carry_more_upkeep` asks
-  that question at the colony doing the *building*, which is by construction a
-  world with industry.
+  industry is, or it does not live*.
+
+  **Those five fleets are scouts, and stopping them made everything worse.**
+  `_maybe_scout` takes idle warships — the same hulls the garrison is made of —
+  and sends them to chart unexplored sky, leashed to a *distance* from the
+  nearest colony. `Doctrine.scout_range_fraction` explains that the leash exists
+  because a ship past supply range deserts before it arrives, which is the right
+  rule measured against the wrong quantity: at the frontier the nearest colony is
+  last week's outpost, which makes none of the upkeep basket, so a scout sits
+  inside its distance leash and outside any supply at all.
+
+  So the leash was made to ask the supply question directly. It fired 4,023 times
+  over 30 days and refused 516 of them — live, selective, exactly the shape a
+  working gate should have. Then the 120-day run:
+
+  ```
+  day              70     84    112    120   shortfalls  colonies
+  distance leash  355.0  287.4  347.6  383.4     7,176      224
+  supply leash    376.1  300.3  272.0  302.2    14,925      227
+  ```
+
+  A higher peak, a deeper collapse, **21% less navy at day 120 and more than
+  twice the shortfalls.** Reverted.
+
+  What it taught is worth more than the fix would have been: **scouts wandering
+  off were load-shedding.** Ships that walked out of supply and quietly deserted
+  were removing upkeep from neighbourhoods that could not carry it. Keep them
+  home and the strength stays concentrated on the same depots, competing — which
+  is why the shortfall count doubled while the colony count did not move.
+
+  That also puts the garrison rule back under suspicion after it was cleared. It
+  was cleared by comparing each empire's *whole* output against its *whole*
+  navy's bill, 8–30× over — and that is a global number answering a local
+  question, which is the one mistake this file records more often than any
+  other. The bill that matters is what the fleets in one neighbourhood ask of the
+  depots in that neighbourhood, and it has still never been measured.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
