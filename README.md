@@ -948,13 +948,30 @@ how a list like this turns into a backlog nobody can prioritise.
   between colonies; routes carry water, food and fertiliser out and ore back,
   deliberately.
 
-  That is uncomfortably close to the "distribution failure" this file claimed
-  before the fuel work and which that phase struck out. The strike was right on
-  its own terms — the fuel side really was zero production, and the evidence
-  offered for distribution really was a stockpile sampled after the biller had
-  emptied it. But removing the framing entirely went further than the evidence
-  did, and with fuel now made in quantity, what is left looks like the original
-  claim measured properly for the first time.
+  **And measured at the neighbourhoods that actually starve, it is not a
+  shortage at all — it is a binary.** Sampling every fleet at day 72 and
+  splitting them by whether they went short, against what their own depots
+  produce per hour versus what every fleet drawing on those depots is billed:
+
+  ```
+  fleets going short      n=5     0% of the shared bill, every one of them
+  fleets fully supplied   n=245   min 681%   median 1096%   max 3067%
+  ```
+
+  No middle. A fleet is either somewhere the materials are made, where it is
+  comfortable seven to thirty times over, or somewhere **nothing** it needs is
+  made, where it starves completely and keeps starving — which is why five
+  fleets generate two thousand shortfall *events*. The collapse is not a navy
+  outgrowing an economy. It is a handful of squadrons parked over dead ground,
+  bleeding continuously, while the empire behind them is rich.
+
+  That is this file's own rule working exactly as written — *a fleet lives where
+  industry is, or it does not live*. What is not established is whether losing
+  half a navy to it is the design or an AI that stations ships where they cannot
+  be kept: nothing checks, when a fleet is built or sent, whether the place it
+  will sit produces what it will be billed for. `_can_carry_more_upkeep` asks
+  that question at the colony doing the *building*, which is by construction a
+  world with industry.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
