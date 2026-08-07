@@ -863,6 +863,12 @@ how a list like this turns into a backlog nobody can prioritise.
   at 392.9 against 402.8. Shortfall events go **1,117 → 6,869** and the worst
   single-civilization drawdown goes from **-34% to -70%**.
 
+  *Read to the end before acting on this entry.* Most of what follows is the
+  record of five wrong answers, two of which were built and one of which was
+  reverted. The part that held is at the bottom, and it narrows the defect rather
+  than closing it: aggregate bleeding is fixed, a single empire losing most of a
+  navy in a fortnight is not.
+
   This is the failure the fuel work closed, arriving through a different door.
   There it was production — nobody made any fuel. Here everything is made and
   the empire is simply *wider* than its supply lines: upkeep is billed from
@@ -1002,6 +1008,58 @@ how a list like this turns into a backlog nobody can prioritise.
   question, which is the one mistake this file records more often than any
   other. The bill that matters is what the fleets in one neighbourhood ask of the
   depots in that neighbourhood, and it has still never been measured.
+
+  **What was actually missing was retreat.** Blocking the scouts failed in an
+  informative direction: it did not stop ships *reaching* bad places, it stopped
+  them **leaving**. And a grep for `withdraw`, `retreat`, `unsupplied` or
+  `upkeep_shortfall` across the whole of `ai/simple.py` returned nothing. Walk
+  every decision it can make and the hole is total — `_maybe_scout` is the only
+  one that ever moves an idle warship and it moves them to *uncharted* systems,
+  places with no colony by definition; `_maybe_scrap` needs a hull docked at a
+  colony *and* surplus to garrison, which a ship dying in empty space is neither;
+  reinforce, raid and annex all send ships **out**. A fleet that ended up
+  somewhere unsupplied had no mechanism whatsoever to save it, and bled at
+  `unpaid_fleet_attrition_per_hour` until it was gone.
+
+  Which is a thing no player would ever suffer. Watch a fleet starve and you move
+  it. The AI could not, because the action did not exist.
+
+  `_maybe_withdraw` asks the biller's own question over the biller's own
+  neighbourhood — do the colonies within `SUPPLY_RANGE_LY` of *this fleet* hold
+  what it is owed this hour? — and if they do not, sends it to the nearest colony
+  that could cover it. One rescue a turn. Fleets in `turn.on_station` are
+  excluded and that exclusion carries more weight than the rule: a cordon deep in
+  somebody else's space is *supposed* to starve, and recalling those would
+  dissolve every war the civilization is prosecuting while reading, on a
+  fleet-strength table, as a triumph.
+
+  **Instrumented before it was trusted**, because four attempts at this collapse
+  had been wrong and two were built on premises that fired zero times. Over days
+  40–90 it was consulted 9,600 times and ordered **229** withdrawals — 2.4% of
+  turns, rising in step with the shortfalls rather than independently of them.
+
+  ```
+  day              42     56     70     84     98    112    120  shortfalls  colonies
+  before        218.5  310.5  355.0  287.4  317.8  347.6  383.4      7,176       224
+  with retreat  225.2  309.2  353.6  313.7  318.9  348.0  383.9      5,670       227
+  ```
+
+  The cliff flattens from **-19.0% peak-to-trough to -11.3%**, shortfall events
+  fall **21% over the run and 62% at day 70**, and the colony count holds — the
+  three things the scout leash failed, which is why peak alone was never allowed
+  to prove anything. The 28-day pace gate is byte-identical, as it must be: the
+  first shortfall lands on day 42, so a rule that only answers starvation cannot
+  touch a 28-day run.
+
+  **It is a narrower defect now, not a closed one.** Aggregate strength at day
+  120 is unchanged (383.4 → 383.9) — the rescued hulls survive, they do not
+  compound — and the *worst single-civilization drawdown got worse*, -66.4% to
+  **-72.1%**, with AI-1 still falling 73.5 → 20.5 between days 70 and 98. So
+  continuous bleeding in dead space is fixed and measured, and whatever takes a
+  single empire's navy apart in a fortnight is a different thing that has not
+  been found. The remaining suspect is the one named directly above: a garrison
+  sized `len(colonies) × garrison_per_colony`, an empire-wide count setting a
+  bill that is paid neighbourhood by neighbourhood, still never measured locally.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
