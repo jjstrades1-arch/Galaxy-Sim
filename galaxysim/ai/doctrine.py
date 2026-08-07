@@ -84,6 +84,16 @@ class Doctrine:
     #: Holding it inside the line also makes scouting and settling leapfrog
     #: outward together rather than one running away from the other.
     scout_range_fraction: float
+    #: Hulls a civ will have standing outside supply at once -- the headcount
+    #: scouting never had. ``scout_range_fraction`` bounds how *far* a survey
+    #: goes and nothing bounded how *many* went, so one ship was dispatched per
+    #: turn, twenty-four turns a day, for as long as an idle warship existed.
+    #:
+    #: Measured over 120 days, 98% of every point of strength that deserted was
+    #: under a scouting order when it starved, and a third to a half of
+    #: everything these civilizations built died that way. A bolder doctrine
+    #: still risks more of its navy at once; it no longer risks all of it.
+    scout_parties: int
     #: Habitability at or below which a settled world is worth reshaping, and
     #: the least construction its neighbourhood must muster before committing.
     #: A bolder doctrine starts campaigns on better worlds and with less behind
@@ -162,6 +172,7 @@ DORMANT = Doctrine(
     build_queue_depth=1,
     scout_candidates=12,
     scout_range_fraction=0.5,
+    scout_parties=1,
     terraform_habitability=0.10,
     terraform_minimum_neighbourhood_work=2.0e6,
     terraform_campaigns=1,
@@ -186,6 +197,7 @@ STEADY = Doctrine(
     build_queue_depth=1,
     scout_candidates=40,
     scout_range_fraction=0.8,
+    scout_parties=2,
     terraform_habitability=0.25,
     terraform_minimum_neighbourhood_work=5.0e5,
     terraform_campaigns=1,
@@ -210,6 +222,7 @@ DRIVEN = Doctrine(
     build_queue_depth=2,
     scout_candidates=60,
     scout_range_fraction=0.9,
+    scout_parties=3,
     terraform_habitability=0.35,
     terraform_minimum_neighbourhood_work=3.0e5,
     terraform_campaigns=2,
@@ -234,6 +247,7 @@ RELENTLESS = Doctrine(
     build_queue_depth=4,
     scout_candidates=80,
     scout_range_fraction=0.95,
+    scout_parties=4,
     terraform_habitability=0.45,
     terraform_minimum_neighbourhood_work=2.0e5,
     terraform_campaigns=4,

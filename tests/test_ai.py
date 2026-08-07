@@ -62,6 +62,7 @@ PERMITTED_FIELDS = {
     "build_queue_depth": "count",
     "scout_candidates": "count",
     "scout_range_fraction": "threshold",
+    "scout_parties": "count",
     "terraform_habitability": "threshold",
     "terraform_minimum_neighbourhood_work": "threshold",
     "terraform_campaigns": "count",
@@ -158,6 +159,7 @@ def test_the_ladder_climbs():
         "build_queue_depth",
         "scout_candidates",
         "scout_range_fraction",
+        "scout_parties",
         "terraform_habitability",
         "terraform_campaigns",
         "garrison_per_colony",
@@ -1499,3 +1501,140 @@ def test_every_order_the_ai_issues_says_why():
         "a hull that starves under one of these cannot be traced to the decision "
         "that sent it"
     )
+
+
+def _idle_warships(*, count: int):
+    """One civ with a stocked capital and ``count`` idle warships parked on it.
+
+    They stand at the capital, so they are supplied where they are; whether the
+    AI sends them anywhere is then entirely the scouting decision's doing.
+    """
+    from galaxysim.materials import FLEET_UPKEEP_PER_STRENGTH
+    from galaxysim.model.entities import Colony, Fleet
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=808, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        civ.is_ai = True
+        civ.difficulty = "driven"
+        home = session.scalar(
+            select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
+        )
+        home.stockpile = {material: 1e9 for material in FLEET_UPKEEP_PER_STRENGTH}
+        system = home.world.system
+        for index in range(count):
+            session.add(
+                Fleet(
+                    universe_id=universe_id,
+                    civ_id=civ.id,
+                    name=f"Picket {index}",
+                    strength=5.0,
+                    colony_pods=0,
+                    speed_ly_per_hour=1.0,
+                    cargo={},
+                    cargo_capacity=0.0,
+                    x=system.x,
+                    y=system.y,
+                    z=system.z,
+                )
+            )
+        civ_id = civ.id
+
+    return engine, universe_id, civ_id
+
+
+def test_a_hull_beyond_every_warehouse_counts_against_the_budget():
+    """``_parties_out`` is the headcount, so it has to count the right thing.
+
+    Not "is it far from home" and not "was it told to scout" -- *is anything in
+    reach able to pay it*. Those come apart exactly where this project keeps
+    getting caught: a two-week-old outpost is a colony in range that makes none
+    of the upkeep basket, so a hull parked over one is as unfed as one in empty
+    space.
+    """
+    from galaxysim.ai.simple import _parties_out
+    from galaxysim.model.entities import Universe as U
+
+    for stranded, expected in ((True, 1), (False, 0)):
+        engine, universe_id, civ_id, _, _ = _stranded_fleet(
+            supplied_where_it_stands=not stranded
+        )
+        with open_session(engine) as session:
+            turn = simple._Turn(session, session.get(U, universe_id), session.get(Civ, civ_id))
+            assert _parties_out(turn) == expected, (
+                f"a {'stranded' if stranded else 'supplied'} hull counted "
+                f"{_parties_out(turn)} against the scouting budget, wanted {expected}"
+            )
+
+    # The case that separates the two questions, and the only one that can:
+    # a hull parked *on* a colony that holds nothing. "In range of a colony"
+    # says it is fine; "can anything in reach pay it" says it is starving, and
+    # the second is the one the biller asks.
+    engine, universe_id, civ_id, _, _ = _stranded_fleet(supplied_where_it_stands=True)
+    with open_session(engine) as session:
+        empty = session.scalar(select(Colony).where(Colony.civ_id == civ_id).order_by(Colony.id))
+        empty.stockpile = {}
+        session.flush()
+        turn = simple._Turn(session, session.get(U, universe_id), session.get(Civ, civ_id))
+        assert _parties_out(turn) == 1, (
+            "a hull sitting on an empty warehouse was counted as supplied; the "
+            "budget is asking whether a colony is near rather than whether it "
+            "can pay, which is the distinction this whole entry turns on"
+        )
+
+
+def _scout_orders(session, civ_id: int) -> list:
+    from galaxysim.model.entities import Intent, IntentKind
+
+    return [
+        intent
+        for intent in session.scalars(select(Intent).where(Intent.civ_id == civ_id))
+        if intent.kind == IntentKind.MOVE_FLEET.value
+        and intent.payload.get("reason") == "scout"
+    ]
+
+
+def test_scouting_stops_at_the_doctrine_headcount():
+    """The budget scouting never had.
+
+    Every other commitment this AI makes is bounded -- ``build_queue_depth``,
+    ``terraform_campaigns``, ``rivals``, the ``sendable`` line a raid spends
+    under. Scouting was bounded by nothing: one hull per civilization per turn,
+    twenty-four turns a day, for as long as an idle warship existed, and a scout
+    that *arrived* stopped being in transit and was sent onward the next turn.
+    Measured over 120 days, **98% of every point of strength that deserted was
+    under a scouting order when it starved.**
+
+    Both halves are asserted, because the half that matters is worthless alone:
+    a rule that never dispatches anything would pass "stops at the cap" while
+    freezing the frontier, which is the trade this must not make.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    for out, wanted in ((DRIVEN.scout_parties, False), (0, True)):
+        engine, universe_id, civ_id = _idle_warships(count=12)
+        real = simple._parties_out
+        simple._parties_out = lambda turn: out
+        try:
+            with open_session(engine) as session:
+                take_turn(
+                    session,
+                    session.get(Universe, universe_id),
+                    session.get(Civ, civ_id),
+                )
+                session.flush()
+                sent = _scout_orders(session, civ_id)
+                if wanted:
+                    assert sent, (
+                        "with nothing out, the AI sent nobody to look at anything; "
+                        "a frontier frozen where it started is the other failure"
+                    )
+                else:
+                    assert not sent, (
+                        f"{len(sent)} more hulls dispatched with "
+                        f"{DRIVEN.scout_parties} already outside supply"
+                    )
+        finally:
+            simple._parties_out = real
