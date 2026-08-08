@@ -94,3 +94,46 @@ def transaction(session: Session) -> Iterator[Session]:
     except Exception:
         session.rollback()
         raise
+
+
+def snapshot(engine: Engine, path: str) -> None:
+    """Copy a SQLite universe to a file, using SQLite's own backup.
+
+    For long soaks, which is how this project finds out whether its economy
+    works. A soak runs in memory because a file-backed engine pays disk on every
+    tick and the tick loop is the whole run -- but an in-memory universe dies
+    with its process, and a measurement that has to survive a process is a
+    measurement that can be resumed rather than restarted.
+
+    Safe to call mid-run: the backup API copies a consistent view without
+    stopping the writer.
+    """
+    _backup(engine, path, restoring=False)
+
+
+def restore(engine: Engine, path: str) -> None:
+    """Load a universe saved by :func:`snapshot` back into ``engine``."""
+    _backup(engine, path, restoring=True)
+
+
+def _backup(engine: Engine, path: str, *, restoring: bool) -> None:
+    import sqlite3
+
+    if engine.dialect.name != "sqlite":
+        raise ValueError("snapshot and restore are SQLite-only")
+
+    raw = engine.raw_connection()
+    try:
+        # SQLAlchemy 2.0 exposes the DBAPI connection as `driver_connection`;
+        # older releases only have `connection`.
+        live = getattr(raw, "driver_connection", None) or raw.connection
+        other = sqlite3.connect(path)
+        try:
+            if restoring:
+                other.backup(live)
+            else:
+                live.backup(other)
+        finally:
+            other.close()
+    finally:
+        raw.close()

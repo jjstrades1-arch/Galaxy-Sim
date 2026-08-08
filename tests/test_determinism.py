@@ -144,3 +144,48 @@ def test_seed_fits_signed_bigint():
     """Seeds live in BIGINT columns, which Postgres treats as signed."""
     for i in range(200):
         assert 0 <= derive_seed("probe", i) <= (1 << 63) - 1
+
+
+def test_a_universe_saved_and_reloaded_is_the_same_universe(tmp_path):
+    """A soak that can be resumed is a soak that can be finished.
+
+    This project's economy is measured by 120-day soaks, and in the environment
+    they run in nothing long-running survives an idle session -- four separate
+    measurements were reaped part-way, one at day 70 of 120, costing tens of
+    CPU-hours and producing partial tables. The answer is to checkpoint the
+    universe and pick it up again, which only works if picking it up is
+    genuinely free of consequence.
+
+    So: run some ticks, save, reload into a fresh engine, and run the rest. The
+    state has to be indistinguishable from never having stopped. A checkpoint
+    that quietly perturbed the run would not look like a bug, it would look like
+    whatever effect was being measured -- which is the most expensive kind of
+    wrong this file exists to prevent.
+    """
+    from galaxysim.model.base import restore as restore_db
+    from galaxysim.model.base import snapshot as snapshot_db
+
+    path = str(tmp_path / "checkpoint.db")
+
+    straight = create_engine_for("sqlite://")
+    universe_id = new_universe(straight, seed=4242, civs=("Terrans", "Vex"))
+    run_ticks(straight, universe_id, 12)
+    expected = snapshot(straight, universe_id)
+
+    broken = create_engine_for("sqlite://")
+    assert new_universe(broken, seed=4242, civs=("Terrans", "Vex")) == universe_id
+    run_ticks(broken, universe_id, 5)
+    snapshot_db(broken, path)
+
+    resumed = create_engine_for("sqlite://")
+    restore_db(resumed, path)
+    with open_session(resumed) as session:
+        assert session.get(Universe, universe_id).tick_number == 5, (
+            "the reloaded universe is not where the saved one stopped"
+        )
+    run_ticks(resumed, universe_id, 7)
+
+    assert snapshot(resumed, universe_id) == expected, (
+        "a universe stopped, saved and resumed diverged from one that never "
+        "stopped; every soak measured through a checkpoint would be fiction"
+    )
