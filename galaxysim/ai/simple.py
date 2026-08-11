@@ -1878,18 +1878,45 @@ def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             SUPPLY_RANGE_LY * turn.doctrine.scout_range_fraction,
             limit=turn.doctrine.scout_candidates,
         ):
-            if stub.key not in charted:
-                intents.move_fleet(
-                    session,
-                    civ,
-                    scout.id,
-                    stub.position.x,
-                    stub.position.y,
-                    stub.position.z,
-                    reason="scout",
-                )
-                turn.claimed.add(scout.id)
-                return
+            if stub.key in charted:
+                continue
+            # **Where it is going, not where it started from.**
+            #
+            # The leash above is a distance -- ``SUPPLY_RANGE_LY`` times the
+            # doctrine's fraction, measured from a colony -- and
+            # ``scout_range_fraction`` says why it exists: "a scout sent further
+            # deserts before it arrives". Right rule, wrong quantity, and the two
+            # come apart exactly here. Uncharted sky is beyond the settled edge,
+            # so the colony this walk anchors on is the newest outpost the
+            # civilization owns, and a two-week-old outpost makes none of fuel,
+            # alloys, steel or ceramics. The ship sits inside its leash and
+            # outside any supply at all.
+            #
+            # Once raid and reinforce stopped starving their fleets, this became
+            # the largest remaining source of desertion on every seed measured --
+            # 51%, 73%, 90%. Same defect as the war one, same fix: ask the biller's
+            # own question, of the place the ship will actually be.
+            #
+            # **Of the destination specifically.** An earlier attempt (`397cb2e`)
+            # gated the *anchor colony* instead and moved on to the next one when
+            # it refused -- which anchored scouts on richer, deeper colonies and
+            # sent them hunting uncharted sky in space that was charted years ago.
+            # It stopped exploration outward altogether and cost 21% of the navy.
+            # Refusing a destination leaves the walk free to try the next
+            # candidate around the same colony, which is the difference.
+            if _is_unsupplied(turn.colonies, stub.position, _hourly_bill(scout.strength)):
+                continue
+            intents.move_fleet(
+                session,
+                civ,
+                scout.id,
+                stub.position.x,
+                stub.position.y,
+                stub.position.z,
+                reason="scout",
+            )
+            turn.claimed.add(scout.id)
+            return
 
 
 def _maybe_build(turn: "_Turn", pending: dict[str, list[Intent]], rng) -> None:

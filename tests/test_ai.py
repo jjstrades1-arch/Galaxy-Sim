@@ -1587,3 +1587,106 @@ def test_supply_is_whether_anything_in_reach_can_pay_not_whether_a_colony_is_nea
             "a hull sitting on an empty warehouse read as supplied; this is "
             "asking whether a colony is near rather than whether it can pay"
         )
+
+
+def _scout_orders(session, civ_id: int) -> list:
+    from galaxysim.model.entities import Intent, IntentKind
+
+    return [
+        intent
+        for intent in session.scalars(select(Intent).where(Intent.civ_id == civ_id))
+        if intent.kind == IntentKind.MOVE_FLEET.value
+        and intent.payload.get("reason") == "scout"
+    ]
+
+
+def _scouting_civ(*, stocked: bool):
+    """One civ with an idle warship and uncharted sky around its capital.
+
+    ``stocked`` is the whole variable: the same border, the same ship, the same
+    unexplored systems, and either a warehouse that can pay a scout or one that
+    cannot.
+    """
+    from galaxysim.materials import FLEET_UPKEEP_PER_STRENGTH
+    from galaxysim.model.entities import Colony, Fleet
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=909, civs=("Terrans",), seconds_per_tick=3600)
+
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        civ.is_ai = True
+        civ.difficulty = "driven"
+        home = session.scalar(
+            select(Colony).where(Colony.civ_id == civ.id).order_by(Colony.id)
+        )
+        home.stockpile = (
+            {material: 1e9 for material in FLEET_UPKEEP_PER_STRENGTH} if stocked else {}
+        )
+        system = home.world.system
+        session.add(
+            Fleet(
+                universe_id=universe_id,
+                civ_id=civ.id,
+                name="Picket",
+                strength=5.0,
+                colony_pods=0,
+                speed_ly_per_hour=1.0,
+                cargo={},
+                cargo_capacity=0.0,
+                x=system.x,
+                y=system.y,
+                z=system.z,
+            )
+        )
+        civ_id = civ.id
+
+    return engine, universe_id, civ_id
+
+
+def test_a_scout_is_not_sent_somewhere_nothing_can_pay_it():
+    """The last big source of desertion, and the same defect as the war one.
+
+    ``_maybe_scout`` leashes a scout to a *distance* from a colony, and
+    ``scout_range_fraction`` says why: "a scout sent further deserts before it
+    arrives". But uncharted sky is beyond the settled edge, so the colony it
+    anchors on is the newest outpost the civilization owns, and a two-week-old
+    outpost makes none of the upkeep basket. The ship sits inside its leash and
+    outside any supply at all.
+
+    Once raid and reinforce stopped starving their fleets, this was 51-90% of
+    all remaining desertion, on every seed.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, civ_id = _scouting_civ(stocked=False)
+    with open_session(engine) as session:
+        take_turn(session, session.get(Universe, universe_id), session.get(Civ, civ_id))
+        session.flush()
+        assert not _scout_orders(session, civ_id), (
+            "it sent a scout somewhere nothing of its own could pay for; the "
+            "ship charts one system and deserts inside a day"
+        )
+
+
+def test_a_scout_is_still_sent_where_it_can_be_kept():
+    """The half that matters more, and the one an earlier attempt failed.
+
+    A rule that never dispatches a scout flattens desertion beautifully and
+    freezes the frontier doing it -- a civilization that stops exploring has a
+    frontier exactly as large as whatever it was charted at the start. That is
+    how ``397cb2e`` failed: it gated the *anchor colony* and moved on to the next
+    when it refused, so scouts anchored on deeper, richer worlds and hunted
+    unexplored sky in space charted years before. Refusing a *destination* leaves
+    the walk free to try the next candidate around the same colony.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, civ_id = _scouting_civ(stocked=True)
+    with open_session(engine) as session:
+        take_turn(session, session.get(Universe, universe_id), session.get(Civ, civ_id))
+        session.flush()
+        assert _scout_orders(session, civ_id), (
+            "nothing was sent to look at anything from a fully supplied capital; "
+            "a frontier frozen where it started is the other way to fail this"
+        )
