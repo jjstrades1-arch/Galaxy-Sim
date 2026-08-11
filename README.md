@@ -1200,6 +1200,68 @@ how a list like this turns into a backlog nobody can prioritise.
   Kept from the attempt because each stands alone: the `reason` tags, the single
   `_is_unsupplied` definition shared with `_maybe_withdraw`, and soak
   checkpointing.
+
+  ### Fifteenth attempt: near a colony is not paid by one — **this one held**
+
+  The ledger blamed raid and reinforce. `_raidable_colony` did already refuse
+  targets past `SUPPLY_RANGE_LY`, for the reason its own docstring gives — a
+  squadron deep in someone else's space deserts within days, so a war is fought
+  along a border. But it measured **distance to a colony**:
+
+  ```python
+  reach = min(distance(home, position) for home in mine)
+  if reach > SUPPLY_RANGE_LY:
+      continue
+  ```
+
+  And the colony nearest a rival's border is *always* this civilization's
+  newest — the outpost it planted while pushing that way — which makes none of
+  fuel, alloys, steel or ceramics. **Every raid was aimed precisely where "in
+  range" was most likely to mean "in range of an empty warehouse."** The same
+  defect `_maybe_withdraw` carried, in the two decisions responsible for 70–82%
+  of all desertion. `tests/test_siege.py` had encoded the correct rule the whole
+  time: `_forward_base` exists because a besieger without a stocked colony in
+  reach starves before the siege can end.
+
+  Both war decisions now ask `_is_unsupplied` — the biller's own question — of
+  the objective before committing, and again before feeding an existing cordon,
+  since a border moves and the outpost paying for a siege can itself be taken.
+
+  ```
+  seed        deserted                colonies              strength
+     1   323.0 -> 140.5 (-56.5%)   227 -> 228 (+0.4%)   383.9 -> 537.7 (+40.1%)
+     2   317.7 -> 113.1 (-64.4%)   269 -> 275 (+2.2%)   664.0 -> 656.0 ( -1.2%)
+     3   200.7 -> 167.7 (-16.4%)   186 -> 182 (-2.2%)   374.4 -> 375.9 ( +0.4%)
+
+  across all three seeds: 841.4 -> 421.3 deserted, -49.9%
+  ```
+
+  **Desertion halves, and the frontier does not pay for it.** The mechanism is
+  confirmed directly rather than inferred from the total — the share of desertion
+  under a raid or reinforce order collapses on every seed:
+
+  ```
+  raid + reinforce, share of deserted strength
+  seed 1   69.5% -> 0.0%      seed 2   92.5% -> 34.4%      seed 3   82.5% -> 18.0%
+  ```
+
+  Wars are now fought instead of evaporating: on seed 2 combat rises from 14.8%
+  of all strength lost to **57.9%**. Ships die to enemies rather than to
+  logistics, which is the game the design describes.
+
+  **One honest caveat.** Seed 3's colony count falls by four (186 → 182, -2.2%),
+  just outside the ±2% band used to fail the previous attempt. Colonies rise on
+  the other two seeds and the spread between seeds is far larger than four
+  worlds, so this reads as noise — but that is a judgement made *after* seeing
+  the number, and it is recorded here as such rather than quietly rounded down.
+
+  **What is left.** Scouting is now the largest remaining share of desertion
+  (51–90%) — the target the fourteenth attempt aimed at with a headcount cap and
+  missed, because it capped how many ships could be out rather than fixing
+  where they were sent. Same class of defect as this entry, and now the whole of
+  it: `_maybe_scout` picks by *distance from a colony* too. That is the next
+  phase, and for the first time in this entry it is a fix with a measured aim
+  rather than a guess.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
