@@ -1144,16 +1144,29 @@ def _maybe_reinforce(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
             if strength <= defenders or not committed:
                 return  # cannot tip it; do not feed it
 
+            # And nothing goes to a cordon the neighbourhood cannot keep. The
+            # objective was chosen by :func:`_raidable_colony` under the same
+            # rule, but a border moves: the outpost that was paying for this
+            # siege can be blockaded, starved or taken while the siege runs, and
+            # feeding more hulls into a cordon that has lost its warehouse is
+            # how a war turns into a queue of ships waiting to desert.
+            if _is_unsupplied(turn.colonies, where, _hourly_bill(strength)):
+                continue
+
             for fleet in committed:
                 turn.claimed.add(fleet.id)
                 intents.move_fleet_to_system(session, civ, fleet.id, system, reason="reinforce")
             return
 
 
-def _hourly_bill(fleet: Fleet) -> dict[str, float]:
-    """One hour of what a hull costs to keep, by material."""
+def _hourly_bill(strength: float) -> dict[str, float]:
+    """One hour of what ``strength`` costs to keep, by material.
+
+    Takes a number rather than a hull because the question is also asked of
+    forces that do not exist yet -- what a raid *would* cost if it were sent.
+    """
     return {
-        material: per_strength * fleet.strength
+        material: per_strength * strength
         for material, per_strength in FLEET_UPKEEP_PER_STRENGTH.items()
     }
 
@@ -1241,7 +1254,7 @@ def _maybe_withdraw(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
         if not _is_fighting_hull(fleet):
             continue  # a freighter's job is to be away from home
 
-        owed = _hourly_bill(fleet)
+        owed = _hourly_bill(fleet.strength)
         if not _is_unsupplied(colonies, fleet.position, owed):
             continue  # it is being fed where it stands
 
@@ -1339,6 +1352,26 @@ def _raidable_colony(turn: "_Turn", committing: float) -> Colony | None:
     for position, colony in candidates:
         reach = min(distance(home, position) for home in mine)
         if reach > SUPPLY_RANGE_LY:
+            continue
+        # **Near a colony is not the same as paid by one**, and the difference
+        # is the whole of the late-run navy collapse.
+        #
+        # This used to stop at the line above, and the docstring above says the
+        # rule it was meant to enforce: a war is fought along a border because a
+        # squadron parked deep in someone else's space deserts within days. But
+        # the colony nearest a rival's border is, always, this civilization's
+        # *newest* one -- the outpost it planted while pushing that way -- and a
+        # two-week-old outpost makes none of fuel, alloys, steel or ceramics.
+        # So every raid was aimed precisely at the place where "in range" was
+        # most likely to mean "in range of an empty warehouse".
+        #
+        # Measured over three 120-day seeds, hulls under a raid or reinforce
+        # order were **70-82% of every point of strength that deserted**, while
+        # the empires behind them ran eight to thirty times solvent.
+        # ``tests/test_siege.py`` has known this the whole time: its
+        # ``_forward_base`` helper exists because a besieger without a stocked
+        # colony in reach starves before the siege can end, and it says so.
+        if _is_unsupplied(turn.colonies, position, _hourly_bill(committing)):
             continue
         # Somewhere the force being sent could actually hold.
         #

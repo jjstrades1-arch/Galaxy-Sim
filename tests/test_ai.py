@@ -635,6 +635,48 @@ def test_it_does_not_send_a_raid_at_a_world_it_cannot_outweigh():
         )
 
 
+def test_it_will_not_besiege_a_world_nothing_of_its_own_can_supply():
+    """Near a colony is not the same as paid by one, and that gap ate the navy.
+
+    ``_raidable_colony`` already refused targets past ``SUPPLY_RANGE_LY``, for
+    the reason its docstring gives: a squadron parked deep in someone else's
+    space deserts within days, so a war is fought along a border. But it
+    measured *distance to a colony*, and the colony nearest a rival's border is
+    always this civilization's newest -- the outpost it planted pushing that
+    way -- which makes none of fuel, alloys, steel or ceramics. Every raid was
+    therefore aimed exactly where "in range" was most likely to mean "in range
+    of an empty warehouse".
+
+    Measured over three 120-day seeds, hulls under a raid or reinforce order
+    were 70-82% of every point of strength that deserted, inside empires running
+    eight to thirty times solvent. ``tests/test_siege.py`` had known it all
+    along: ``_forward_base`` exists because a besieger with no stocked colony in
+    reach starves before the siege can end.
+
+    The companion test directly below is what stops this becoming pacifism: a
+    civilization that can supply a siege must still fight one.
+    """
+    from galaxysim.ai.simple import take_turn
+
+    engine, universe_id, raider_id, _ = _border_universe(
+        "driven", rival_population=50_000.0, warships=40.0, defenders=2.0
+    )
+    with open_session(engine) as session:
+        # Same border, same weak garrison, same fleet -- and nothing in the
+        # warehouses. Only the supply question separates this from the test
+        # below, which declares war on exactly this setup.
+        for colony in session.scalars(select(Colony).where(Colony.civ_id == raider_id)):
+            colony.stockpile = {}
+        session.flush()
+        universe = session.get(Universe, universe_id)
+        take_turn(session, universe, session.get(Civ, raider_id))
+        session.flush()
+        assert not _declared_wars(session, raider_id), (
+            "it declared a war it could not feed; the fleet would blockade "
+            "nothing and desert inside a day, which is not a hard opponent"
+        )
+
+
 def test_it_still_attacks_a_world_it_can_take():
     """The other half, and the one that matters more.
 
@@ -1526,7 +1568,7 @@ def test_supply_is_whether_anything_in_reach_can_pay_not_whether_a_colony_is_nea
             turn = simple._Turn(session, session.get(U, universe_id), session.get(Civ, civ_id))
             fleet = session.get(Fleet, fleet_id)
             assert (
-                _is_unsupplied(turn.colonies, fleet.position, _hourly_bill(fleet)) is expected
+                _is_unsupplied(turn.colonies, fleet.position, _hourly_bill(fleet.strength)) is expected
             ), f"a {'stranded' if stranded else 'supplied'} hull read the wrong way round"
 
     # The case that separates the two questions, and the only one that can: a
@@ -1541,7 +1583,7 @@ def test_supply_is_whether_anything_in_reach_can_pay_not_whether_a_colony_is_nea
         assert queries.sorted_by_distance(
             turn.colonies, fleet.position, within_ly=SUPPLY_RANGE_LY
         ), "the fixture must put a colony in range, or it proves nothing"
-        assert _is_unsupplied(turn.colonies, fleet.position, _hourly_bill(fleet)), (
+        assert _is_unsupplied(turn.colonies, fleet.position, _hourly_bill(fleet.strength)), (
             "a hull sitting on an empty warehouse read as supplied; this is "
             "asking whether a colony is near rather than whether it can pay"
         )
