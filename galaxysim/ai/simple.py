@@ -1178,41 +1178,6 @@ def _is_unsupplied(colonies: list[Colony], where: Vec3, owed: dict[str, float]) 
     return any(held[material] < amount for material, amount in owed.items())
 
 
-def _parties_out(turn: "_Turn") -> int:
-    """Warships currently somewhere that cannot pay them, or on their way there.
-
-    The headcount scouting never had. Every other commitment this AI makes is
-    bounded -- ``build_queue_depth``, ``terraform_campaigns``, ``rivals``, the
-    ``sendable`` line a raid spends under -- and scouting was bounded by
-    nothing at all: one hull dispatched per civilization per turn, twenty-four
-    turns a day, for as long as an idle warship existed.
-
-    Measured, that is where the navy went. Of every point of strength that
-    deserted, **98% was under a scouting order at the moment it starved**, and a
-    third to a half of everything these civilizations build dies this way. The
-    yards were feeding a pump: build toward the garrison line, scouting takes
-    whatever reaches it, the hull dies at the frontier, the line drops, build
-    again. The garrison was a number nothing ever actually held.
-
-    Counted by *destination* rather than by which decision issued the order,
-    because that is the quantity that matters -- a hull is at risk because of
-    where it is standing, not because of what it was told to do. A ship still in
-    transit is counted against the place it is headed.
-    """
-    colonies = turn.colonies
-    if not colonies:
-        return 0
-    out = 0
-    for fleet in turn.fleets:
-        if fleet.strength <= 0 or not _is_only_a_warship(fleet):
-            continue
-        if fleet.id in turn.on_station:
-            continue  # a cordon is a war being prosecuted, not a survey
-        where = _destination(fleet) or fleet.position
-        if _is_unsupplied(colonies, where, _hourly_bill(fleet)):
-            out += 1
-    return out
-
 
 def _maybe_withdraw(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     """Bring a starving ship back to somewhere that can pay it.
@@ -1856,13 +1821,6 @@ def _maybe_scout(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
     if not idle:
         return  # warships only; freighters and settlers have jobs
 
-    # **How many, not only how far.** See :func:`_parties_out`: this had no
-    # headcount at all, and 98% of every point of strength that deserted was
-    # under a scouting order when it starved. A hull held back here falls under
-    # the garrison line instead, where :func:`_maybe_scrap` can break it up for
-    # its materials -- which is worth something, unlike starving.
-    if _parties_out(turn) >= turn.doctrine.scout_parties:
-        return
 
     moving = {i.payload.get("fleet_id") for i in pending.get(IntentKind.MOVE_FLEET.value, [])}
     scout = next((f for f in idle if f.id not in moving), None)

@@ -1144,6 +1144,62 @@ how a list like this turns into a backlog nobody can prioritise.
   So the target is **where the AI sends a new hull**, not how it rescues an old
   one — `_maybe_withdraw` catches what it can and is bounded by the same 6.6-hour
   clock. Successor phase, aimed at dispatch, with these numbers as the baseline.
+
+  ### Fourteenth attempt: a scouting budget, reverted
+
+  Move orders now carry a `reason`, so the ledger can say which decision the
+  hull was under when it starved. Measured at 56 days, **98.1%** of deserted
+  strength was under a scouting order — matching a structural reading of
+  `_maybe_scout`, which had no headcount at all (one hull per civ per turn,
+  forever, re-dispatched onward the moment it arrived). `Doctrine` gained
+  `scout_parties`. Acceptance on three seeds, against gates fixed beforehand:
+
+  ```
+  seed        deserted              colonies              strength
+     1   323.0 -> 257.6 (-20.2%)   227 -> 225 ( -0.9%)   383.9 -> 462.2 (+20.4%)  ok
+     2   317.7 -> 182.6 (-42.5%)   269 -> 256 ( -4.8%)   664.0 -> 563.6 (-15.1%)  FAIL
+     3   200.7 -> 280.5 (+39.8%)   186 -> 160 (-14.0%)   374.4 -> 444.8 (+18.8%)  FAIL
+  ```
+
+  Two of three failed — seed 3 on both gates at once, more desertion *and* a
+  frontier 14% smaller. **Reverted.** Note seed 1 passed handsomely: a change
+  that helps one seed and hurts two is precisely what twelve commits of
+  single-seed steering were producing, and it is only visible because the gate
+  was three seeds and was written down first.
+
+  **The aim was wrong, and the reason is the recurring one.** At full scale the
+  ledger says something else entirely:
+
+  ```
+                       seed 1   seed 2   seed 3
+  reinforce             41.3%    54.5%    56.5%
+  raid                  28.2%    38.0%    26.0%
+  scout                 19.7%     2.5%    10.9%
+  withdraw               8.5%     1.3%     5.4%
+  ```
+
+  Scouting is **2.5–20%**, not 98%. The 56-day sample sat *before the wars
+  start*: early desertion is all scouts because nothing else is happening yet,
+  and from about day 70 it is overwhelmingly fleets sent to **reinforce** and
+  **raid**. That is measuring in a window where the phenomenon is not present —
+  the same error as instrumenting withdrawal over days 0–30 when shortfalls
+  begin at 42, and as reading a single instant as a standing population. The
+  thin sample was even flagged in writing as "thin enough that it could still
+  move", and acted on anyway. **A measurement's window is part of the
+  measurement.**
+
+  **What that leaves is a reframing, not a fix.** Most desertion is war fleets
+  starving where they were deliberately sent — and this file already says a
+  blockade deep in somebody else's space is *supposed* to starve, because that
+  is how a siege ends. So "desertion" is not one defect. It is at least two
+  things summed: hulls lost to a cordon being paid for, which is the design
+  working, and hulls lost to nothing in particular, which is not. Until those
+  are separated, no number here is a defect rate. That is the next phase, and
+  it is a measurement rather than a fifteenth fix.
+
+  Kept from the attempt because each stands alone: the `reason` tags, the single
+  `_is_unsupplied` definition shared with `_maybe_withdraw`, and soak
+  checkpointing.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
