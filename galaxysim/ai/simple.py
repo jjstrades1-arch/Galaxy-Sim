@@ -52,8 +52,6 @@ from galaxysim.engine.resolvers.production import (
     effective_habitability,
     water_per_hour,
 )
-from galaxysim.tech import CONSTRUCTION, INDUSTRY
-from galaxysim.tech import RESEARCH as RESEARCH_STAT
 from galaxysim.worldgen.galaxy import systems_near
 from galaxysim.model.entities import (
     Civ,
@@ -334,59 +332,6 @@ def take_all_turns(session: Session, universe: Universe) -> int:
     return acted
 
 
-def _research_focus(turn: "_Turn") -> str:
-    """What this civilization most needs its laboratories pointed at.
-
-    Read off its own state, and it changes as that state does -- which is the
-    whole reason this exists. A research order used to be queued once, on the
-    first turn, with no preference at all, so every opponent took whatever the
-    opening roll of its frontier happened to offer and kept taking it for a
-    hundred and twenty days. The fairness design promises civilizations that are
-    "equally strong and differently shaped"; shaped *at random* is a different
-    claim, and not one a player can read or counter.
-
-    Three states, in the order they bind:
-
-    **It cannot pay its fleets.** ``upkeep_paid`` is last tick's bill against
-    what was actually met, and it is the AI's existing "am I keeping up" signal
-    for exactly this reason -- see :func:`_can_carry_more_upkeep`, which argues
-    at length that the flow answers a question the stock cannot. Industry-work
-    buys the refining that upkeep is paid out of, so that is where a strained
-    civ points.
-
-    **It is solvent and still expanding.** Cheaper hulls means more colony pods
-    out of the same yard, so construction compounds into the thing it is
-    actually doing.
-
-    **It is solvent and settled.** Nothing urgent binds, so research compounds
-    into everything later.
-    """
-    if turn.civ.upkeep_paid < 1.0 - 1e-9:
-        return INDUSTRY
-    if len(turn.colonies) < turn.doctrine.rivals * 8:
-        return CONSTRUCTION
-    return RESEARCH_STAT
-
-
-def _aim_research(turn: "_Turn", pending: dict[str, list[Intent]]) -> None:
-    """Keep a standing research programme, aimed at what currently binds.
-
-    Only rewritten when the answer *changes*, so a settled civilization is not
-    reissuing the same order every hour for nothing.
-
-    How often this runs is the ladder's own dial and nothing new: a dormant
-    opponent re-aims once a day, a relentless one every hour, because
-    ``decision_interval_hours`` already governs how often it thinks at all.
-    Difficulty here is attention, and noticing sooner that your fleets are
-    starving is exactly what attention should buy.
-    """
-    wanted = _research_focus(turn)
-    standing = pending.get(IntentKind.RESEARCH.value) or []
-    if standing and standing[0].payload.get("prefer") == wanted:
-        return
-    intents.steer_research(turn.session, turn.civ, wanted)
-
-
 def take_turn(
     session: Session, universe: Universe, civ: Civ, *, shared: dict | None = None
 ) -> None:
@@ -400,7 +345,8 @@ def take_turn(
     pending = _pending_by_kind(session, civ)
     turn = _Turn(session, universe, civ, shared)
 
-    _aim_research(turn, pending)
+    if not pending.get(IntentKind.RESEARCH.value):
+        intents.research(session, civ)
 
     # Before anything reads the war: is there still one? A standing attack order
     # outlives the fleet that was prosecuting it, and until this ran the answer

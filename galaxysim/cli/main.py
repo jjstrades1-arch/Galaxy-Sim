@@ -1226,7 +1226,11 @@ def research(
                     f"[red]No such stat {prefer!r}.[/red] Known: {', '.join(STATS)}"
                 )
                 raise typer.Exit(1)
-            intents.research(session, civ, prefer=wanted)
+            # Updates the standing order rather than adding one. Queueing a
+            # second would have both buying every tick, which reads as fast
+            # research rather than as a bug -- measured against a real save,
+            # two `research --prefer` calls left two live orders.
+            intents.steer_research(session, civ, wanted)
             console.print(
                 "[green]Research programme underway"
                 + (f", steering toward {wanted}." if wanted else ", taking what comes.")
