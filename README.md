@@ -662,10 +662,35 @@ galaxysim/
 
 Named explicitly so nobody mistakes scaffolding for design:
 
-- **Tech is a depth counter.** `Civ.techs_known` stands in for the generated
-  lineage of step 7 — genomes, a bounded effect grammar, and a frontier of
-  candidate techs derived from what a civ already knows. The economics of
-  paying for the next step will not change when it lands; only what you receive.
+- **Tech is a lineage now, and it was a counter for a long time.** `Tech` rows
+  carry domains, concepts, an effect and their parents; a frontier of five
+  candidates is derived from what a civ already knows, seeded per civ and depth
+  so replay stays exact. Effects name only stats the engine already reads —
+  industry, research, construction, drive, life support, refining — which is the
+  rule that stops an effect grammar becoming a second counter.
+
+  Worth stating plainly, because it is this project's most-repeated defect at
+  the scale of a whole mechanic: for the entire life of the codebase until now,
+  **`Civ.techs_known` was incremented and read by nothing.** Every civilization
+  in every soak bought it with electronics, polymers, ceramics and fuel out of
+  real colony stockpiles, and received an integer that changed no number
+  anywhere. Research was the most expensive no-op in the game.
+
+  Fairness is enforced at generation rather than by rerolling: magnitude is a
+  pure function of depth and the roll chooses only *shape*, so equal spend buys
+  equal total magnitude, differently arranged. Same-stat effects stack on
+  `1 - Π(1-xᵢ)`, so a deep lineage self-limits. `tests/test_tech.py` asserts
+  both, plus that a lineage actually leaves the domain it started in — the first
+  draft trimmed domains alphabetically, so every descendant of the root stayed
+  "gravitics, propulsion" for ever and every drift was silently discarded, which
+  is a generative system that generates one thing.
+
+  Measured at 120 days, eight driven civs: strength climbs monotonically
+  90.5 → 664.5 with no cliff, colonies 242 against 235 without it, and the
+  strength ledger reconciles at every bucket. Nothing runs away.
+
+  Still deferred, and named: species-affinity weighting and generated flavour,
+  which need a species pipeline that does not exist.
 - **Diplomacy is not simulated.** A standing attack order is the entire
   mechanical surface of "we are at war" — there is nothing to negotiate, ally
   with or surrender to. In a shared universe players would do that among
