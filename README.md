@@ -855,8 +855,15 @@ misbehaving — a number simply never chosen on purpose. A **scaling ceiling** i
 correct today, and growing. Only the first kind is a bug, and conflating them is
 how a list like this turns into a backlog nobody can prioritise.
 
-- *(measured defect)* **A navy still cannot survive the empire it defends.**
-  Correcting construction to take the industry refining could not spend built a
+- *(closed — kept in full as a record of how)* **A navy could not survive the
+  empire it defended.** Desertion is down **83.8%** across three seeds, the
+  frontier is larger and navies are bigger, with the mechanic untouched. Sixteen
+  attempts; the last two worked. The whole account is kept because twelve of the
+  failures were instructive and several were *correct fixes to real defects that
+  moved nothing* — the most expensive kind of progress to mistake for progress.
+
+  **How it originally read**, and everything below is the record of working it
+  out. Correcting construction to take the industry refining could not spend built a
   47% larger galaxy — 227 colonies at day 120 against 154 — and the fleets did
   not survive it. Aggregate warship strength runs ahead of the old numbers until
   day 70, peaks at 353.5, and then **collapses to 297.0 in a fortnight**, ending
@@ -1262,6 +1269,63 @@ how a list like this turns into a backlog nobody can prioritise.
   it: `_maybe_scout` picks by *distance from a colony* too. That is the next
   phase, and for the first time in this entry it is a fix with a measured aim
   rather than a guess.
+
+  ### Sixteenth attempt: the same fix, for exploration — **and the entry closes**
+
+  `_maybe_scout` carried the identical defect, and `scout_range_fraction` even
+  states the rule it was failing to enforce: *"a scout sent further deserts
+  before it arrives."* Uncharted sky is beyond the settled edge, so the colony
+  the walk anchors on is the newest outpost the civilization owns — and it makes
+  none of the upkeep basket. The ship sat inside its leash and outside any
+  supply at all. The destination is now checked with `_is_unsupplied`.
+
+  **Of the destination, which is the whole difference from `397cb2e`.** That
+  attempt gated the *anchor colony* and moved to the next one on refusal, so
+  scouts anchored on deeper, richer worlds and hunted uncharted sky in space
+  charted years before — it stopped exploration outward and cost 21% of the navy.
+  It also asked `_can_carry_more_upkeep`: whether the *civilization* could
+  prudently afford another hull, reserve buffer included. A budget question
+  standing in for a local one, which is the error this file records more than
+  any other. Refusing a destination leaves the walk free to try the next
+  candidate around the same colony.
+
+  ```
+  seed        deserted               colonies              strength
+     1   140.5 -> 25.1  (-82.1%)   228 -> 235 (+3.1%)   537.7 -> 651.9 (+21.2%)
+     2   113.1 -> 38.4  (-66.0%)   275 -> 283 (+2.9%)   656.0 -> 668.7 ( +1.9%)
+     3   167.7 -> 72.8  (-56.6%)   182 -> 183 (+0.5%)   375.9 -> 471.8 (+25.5%)
+
+  scout desertion: 125.9 -> 22.4, 58.2 -> 2.0, 121.8 -> 24.6  (-80% to -97%)
+  ```
+
+  Three of three, the mechanism confirming itself again, and **colonies rise on
+  every seed** — the gate that killed both previous attempts at this idea, now
+  passed rather than merely survived. Exploration got *better*: refusing a
+  destination it cannot keep sends the scout to one it can, instead of spending
+  the hull.
+
+  ### Where the sixteen attempts landed
+
+  ```
+  seed   deserted                 colonies              strength
+     1   323.0 -> 25.1  (-92.2%)  227 -> 235 (+3.5%)   383.9 -> 651.9 (+69.8%)
+     2   317.7 -> 38.4  (-87.9%)  269 -> 283 (+5.2%)   664.0 -> 668.7 ( +0.7%)
+     3   200.7 -> 72.8  (-63.7%)  186 -> 183 (-1.6%)   374.4 -> 471.8 (+26.0%)
+
+  across all three seeds: 841.4 -> 136.3 deserted, -83.8%
+  ```
+
+  A third to a half of everything built used to starve. **Desertion is down 84%,
+  the frontier is larger, and navies are bigger** — while the mechanic that
+  causes it is untouched: unsupplied fleets still starve, and a blockade deep in
+  somebody else's space still has to be paid for. Nothing was softened.
+
+  The twelve attempts that failed all changed *the engine or the budget*. The two
+  that worked changed **what the AI checks before it commits a hull**, and both
+  were the same one-line substitution: ask whether something in reach can pay,
+  not whether something is near. It took a strength ledger to see it, and the
+  ledger only became possible once `upkeep_shortfall` recorded what it cost
+  instead of how often it happened.
 - *(unmade decision)* **A capital cannot generate what it demands.** Two defects
   were hiding this: governors could not build at all, and the brownout rule
   abandoned any plant it could not immediately afford. Both are fixed, three of
