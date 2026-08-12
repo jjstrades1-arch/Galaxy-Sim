@@ -350,3 +350,94 @@ def test_a_frontier_never_offers_the_same_thing_twice():
             )
         ]
         assert len(names) == len(set(names)), f"seed {seed} offered {names}"
+
+
+# --- and an opponent aims it --------------------------------------------------
+
+
+def _ai_turn(*, upkeep_paid: float, colonies: int = 1):
+    """One AI civ in a named state, after a single turn of thinking."""
+    from galaxysim.ai.simple import take_turn
+    from galaxysim.model.entities import Intent, IntentKind, Universe
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=313, civs=("Terrans",), seconds_per_tick=3600)
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        civ.is_ai = True
+        civ.difficulty = "driven"
+        civ.upkeep_paid = upkeep_paid
+        session.flush()
+        take_turn(session, session.get(Universe, universe_id), civ)
+        session.flush()
+        orders = [
+            intent
+            for intent in session.scalars(select(Intent).where(Intent.civ_id == civ.id))
+            if intent.kind == IntentKind.RESEARCH.value
+        ]
+        return [(o.id, o.payload.get("prefer")) for o in orders]
+
+
+def test_a_civ_that_cannot_pay_its_fleets_researches_industry():
+    """Opponents used to research whatever the opening roll offered, for ever.
+
+    The order was queued once, on the first turn, with no preference -- so a
+    civilization whose fleets were deserting at day 100 was still pointed
+    wherever its day-1 frontier happened to point. Industry-work buys the
+    refining that upkeep is paid out of, so that is what a strained civ needs.
+    """
+    orders = _ai_turn(upkeep_paid=0.5)
+    assert orders, "the AI queued no research at all"
+    assert orders[0][1] == "industry", (
+        f"a civ meeting half its upkeep bill aimed at {orders[0][1]!r}"
+    )
+
+
+def test_a_solvent_civ_aims_somewhere_else():
+    """The guard against a rule that is a constant wearing a condition.
+
+    "Always industry" would pass the test above and make every opponent
+    identical again -- which is the failure this whole phase exists to remove,
+    since shaped-the-same is no better than shaped-at-random for a player trying
+    to read an opponent.
+    """
+    orders = _ai_turn(upkeep_paid=1.0)
+    assert orders, "the AI queued no research at all"
+    assert orders[0][1] != "industry", (
+        "a fully solvent civ still aimed at industry; the strain signal is not "
+        "being read, it is being ignored in both directions"
+    )
+
+
+def test_re_aiming_never_leaves_two_standing_programmes():
+    """Two standing orders would both buy, every tick, for ever.
+
+    And it would not look like a bug -- a standing order is *meant* to keep
+    firing, so the symptom is an opponent that researches implausibly fast and
+    an engine with no reason to suspect itself.
+    """
+    from galaxysim.ai.simple import take_turn
+    from galaxysim.model.entities import Intent, IntentKind, Universe
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=313, civs=("Terrans",), seconds_per_tick=3600)
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        civ.is_ai = True
+        civ.difficulty = "driven"
+        universe = session.get(Universe, universe_id)
+        # Flip the state between turns so the aim genuinely changes, which is
+        # the case that would queue a second order.
+        for paid in (1.0, 0.4, 1.0, 0.4):
+            civ.upkeep_paid = paid
+            take_turn(session, universe, civ)
+            session.flush()
+        orders = [
+            intent
+            for intent in session.scalars(select(Intent).where(Intent.civ_id == civ.id))
+            if intent.kind == IntentKind.RESEARCH.value
+        ]
+        assert len(orders) == 1, (
+            f"{len(orders)} standing research orders after four re-aims; each one "
+            "buys every tick"
+        )

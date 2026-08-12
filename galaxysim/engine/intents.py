@@ -335,6 +335,40 @@ def research(session: Session, civ: Civ, *, prefer: str | None = None) -> Intent
     )
 
 
+def steer_research(session: Session, civ: Civ, prefer: str | None) -> Intent:
+    """Re-aim a standing research programme, or start one already aimed.
+
+    Updates the existing order rather than queueing a second one. Two standing
+    research orders would both buy every tick, which reads as unusually fast
+    research rather than as a bug -- and the resolver has no reason to suspect
+    it, since a standing order is *meant* to keep firing.
+
+    Re-aiming exists because what a civilization needs changes. At day one it is
+    expanding; at day one hundred it may be unable to pay its fleets. A
+    preference chosen once and never revisited is aimed at a situation that
+    stopped being true weeks ago.
+    """
+    standing = session.scalars(
+        select(Intent)
+        .where(
+            Intent.civ_id == civ.id,
+            Intent.kind == IntentKind.RESEARCH.value,
+            Intent.status.in_((IntentStatus.QUEUED.value, IntentStatus.IN_PROGRESS.value)),
+        )
+        .order_by(Intent.id)
+    ).first()
+    if standing is None:
+        return research(session, civ, prefer=prefer)
+
+    payload = dict(standing.payload)
+    if prefer:
+        payload["prefer"] = prefer
+    else:
+        payload.pop("prefer", None)
+    standing.payload = payload
+    return standing
+
+
 def cancel(session: Session, intent: Intent) -> None:
     """Cancel a queued or standing order.
 
