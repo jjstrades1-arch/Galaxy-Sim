@@ -827,11 +827,19 @@ def _research_output(
     if workers <= 0:
         return 0.0
 
+    # Research compounds: a civilization that has researched better instruments
+    # discovers faster. Bounded by the same diminishing-returns curve as every
+    # other stat, so a computation lineage accelerates itself without running
+    # away -- and the superlinear cost curve still outruns it.
+    from galaxysim.engine.resolvers.research import effects_for as tech_effects
+    from galaxysim.tech import RESEARCH as RESEARCH_STAT
+
     capacity = ctx.per_tick(
         ctx.rates.research_per_colony_per_hour
         * math.sqrt(workers)
         * productivity_of(ctx, colony)
         * effects.sector(RESEARCH)
+        * tech_effects(ctx, colony.civ_id).of(RESEARCH_STAT)
     )
     if capacity <= 0:
         return 0.0
@@ -1030,7 +1038,19 @@ def industry_output(ctx: TickContext, colony: Colony) -> float:
     construction, shipbuilding and terraforming are all paid out of this pool,
     throttling it throttles all four at once.
     """
-    return industry_capacity(ctx, colony) * power_satisfaction(ctx, colony)
+    # Tech reaches the economy here. `industry` is the stat most of the
+    # engineering domains move, and industry-work pays for refining,
+    # construction, shipbuilding and terraforming alike -- so a civilization
+    # that has researched its way to a better industrial base gets a better one
+    # everywhere at once, which is what makes research worth its materials.
+    from galaxysim.engine.resolvers.research import effects_for as tech_effects
+    from galaxysim.tech import INDUSTRY
+
+    return (
+        industry_capacity(ctx, colony)
+        * power_satisfaction(ctx, colony)
+        * tech_effects(ctx, colony.civ_id).of(INDUSTRY)
+    )
 
 
 # ------------------------------------------------------------------- upkeep
@@ -1391,9 +1411,18 @@ def _start_fleets(ctx: TickContext) -> None:
         intent.payload.pop("paid", None)
         intent.status = IntentStatus.IN_PROGRESS.value
         intent.result = ""
+        # A `construction` lineage buys cheaper hulls rather than better ones:
+        # the same strength for less industry-work, so the effect lands on the
+        # yard's throughput instead of inflating what a ship is worth in combat.
+        # Keeping every point of strength equal across civilizations is what
+        # lets a fleet-strength table mean the same thing for all of them.
+        from galaxysim.engine.resolvers.research import effects_for as tech_effects
+        from galaxysim.tech import CONSTRUCTION
+
+        yard = tech_effects(ctx, colony.civ_id).of(CONSTRUCTION)
         intent.payload["work_remaining"] = (
             ctx.rates.fleet_work_per_strength * strength + COLONY_POD_WORK * pods
-        )
+        ) / yard
         ctx.log(
             "build_started",
             f"Began construction of a {strength:.1f}-strength fleet at {colony.name}"
@@ -1629,6 +1658,14 @@ def _close_orphaned_structure_orders(
         _fail(ctx, intent, reason, "Construction order")
 
 
+def _tech_drive(ctx: TickContext, civ_id: int) -> float:
+    """This civ's drive multiplier, from its propulsion and gravitics lineages."""
+    from galaxysim.engine.resolvers.research import effects_for as tech_effects
+    from galaxysim.tech import DRIVE
+
+    return tech_effects(ctx, civ_id).of(DRIVE)
+
+
 def _commission_fleet(ctx: TickContext, colony: Colony, intent) -> None:
     position = colony.world.system.position
     strength = float(intent.payload.get("strength", 1.0))
@@ -1638,7 +1675,12 @@ def _commission_fleet(ctx: TickContext, colony: Colony, intent) -> None:
         name=str(intent.payload.get("name") or f"{colony.civ.name} Fleet"),
         strength=strength,
         colony_pods=int(intent.payload.get("colony_pods", 0)),
-        speed_ly_per_hour=ctx.rates.base_speed_ly_per_hour,
+        # Propulsion and gravitics are the root's own domains, so this is the
+        # oldest lineage in the game doing what it says on the label. Set at
+        # commissioning: a hull is as fast as the science that built it, and
+        # refitting an existing fleet is not a thing this game has.
+        speed_ly_per_hour=ctx.rates.base_speed_ly_per_hour
+        * _tech_drive(ctx, colony.civ_id),
         # Every ship has some hold. A dedicated freighter is one built with a
         # lot of it and little else, rather than a separate kind of entity --
         # which is why cargo runs reuse the ordinary movement resolver.

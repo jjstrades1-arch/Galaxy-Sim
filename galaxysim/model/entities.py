@@ -320,6 +320,43 @@ class World(Base):
         return f"<World {self.name!r} ({self.world_type})>"
 
 
+class Tech(Base):
+    """One technology a civilization holds.
+
+    ``DESIGN.md`` §1: tech is a *lineage*, generated at the edge of what a civ
+    already knows, never a tree that anybody enumerates. So a tech is a row with
+    parents rather than a node in a fixed graph, and the space it is drawn from
+    exists only as the rule that derives the next one.
+
+    This replaces a counter. ``Civ.techs_known`` used to be the entire
+    representation -- an integer that went up, and that **nothing in the
+    simulation read**, while civilizations paid for it in electronics, polymers,
+    ceramics and fuel out of real colony stockpiles. The column survives as a
+    denormalised count of these rows; what a civ actually gets is here.
+    """
+
+    __tablename__ = "techs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    civ_id: Mapped[int] = mapped_column(ForeignKey("civs.id", ondelete="CASCADE"), index=True)
+
+    name: Mapped[str] = mapped_column(String(120))
+    #: Fixed vocabulary; what a lineage is *about*.
+    domains: Mapped[list] = mapped_column(JSON, default=list)
+    #: Open bag of tags carried down the lineage, freely mutable.
+    concepts: Mapped[list] = mapped_column(JSON, default=list)
+    #: Which engine stat this moves, from :data:`galaxysim.tech.STATS`.
+    effect_stat: Mapped[str] = mapped_column(String(30))
+    #: Fractional improvement. A pure function of :attr:`depth` -- see
+    #: :mod:`galaxysim.tech.genome` for why nothing may roll for it.
+    effect_magnitude: Mapped[float] = mapped_column(Float, default=0.0)
+    #: How many steps along a lineage this was bought at. Sets both its cost and
+    #: its magnitude.
+    depth: Mapped[int] = mapped_column(Integer, default=0)
+    #: Ids of the one or two techs it was derived from. Empty for the root.
+    parents: Mapped[list] = mapped_column(JSON, default=list)
+
+
 class Colony(Base):
     """A civilization's settlement on a world. At most one per world.
 

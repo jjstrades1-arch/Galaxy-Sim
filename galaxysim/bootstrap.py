@@ -47,6 +47,7 @@ from galaxysim.worldgen.materialize import materialize_around, world_from_survey
 from galaxysim.worldgen.serialize import promoted_fields, survey_from_json
 from galaxysim.worldgen.star import Star, roll_star
 from galaxysim.worldgen.survey import plausible_mass, plausible_orbits, survey_world
+from galaxysim.engine.resolvers.research import grant_root
 
 #: How much of its own neighbourhood a civilization starts knowing, and how far
 #: out that reaches. A species with lightspeed travel has charts; it does not
@@ -224,6 +225,13 @@ def add_civ(
         techs_known=0,
     )
     session.add(civ)
+    session.flush()
+
+    # Every lineage in the game descends from one root, and every civilization
+    # starts holding it. `Rates.base_speed_ly_per_hour` has always described the
+    # galaxy as though this were true -- "every civ begins holding Lightspeed
+    # Travel" -- so this makes the claim good rather than adding a new one.
+    grant_root(session, civ)
     session.flush()
 
     # Seat the civ inside the settlement frontier, as far from everybody

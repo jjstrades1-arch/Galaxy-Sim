@@ -215,6 +215,23 @@ class Rates:
     research_cost_base: float = 2.1e6
     research_cost_exponent: float = 1.6
 
+    #: What one technology is worth, as a fractional improvement to the stat it
+    #: moves, and how that grows with depth:
+    #: ``tech_effect_base * (depth + 1) ** tech_effect_exponent``.
+    #:
+    #: **A pure function of depth, never of the roll.** That is the whole
+    #: fairness mechanism -- generation chooses shape and only shape, so two
+    #: civilizations at equal research spend hold equal total magnitude,
+    #: differently arranged, and there is no lucky lineage because there is
+    #: nothing for luck to act on. See :mod:`galaxysim.tech.genome`.
+    #:
+    #: Sized small on purpose. Same-stat effects stack on ``1 - Π(1 - xᵢ)``, so
+    #: twenty steps down one lineage approach a ceiling rather than compounding:
+    #: at 2% a step that is about +35%, which is worth having and does not turn
+    #: a research lead into a runaway.
+    tech_effect_base: float = 0.02
+    tech_effect_exponent: float = 0.15
+
     # --- Movement ----------------------------------------------------------
     #: Starting drive speed. Every civ begins holding Lightspeed Travel, so this
     #: is one light-year per hour: crossing a 10 ly sector takes ten hours.
