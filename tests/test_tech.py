@@ -236,3 +236,117 @@ def test_a_civilization_researching_for_a_month_actually_holds_techs():
         assert all(tech.effect_stat in STATS for tech in techs), (
             "a tech moves a stat nothing in the engine reads"
         )
+
+
+# --- steering it --------------------------------------------------------------
+
+
+def _banked_civ(prefer: str | None):
+    """A civ with a standing programme and enough banked to buy immediately."""
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=717, civs=("Terrans",), seconds_per_tick=3600)
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        intents.research(session, civ, prefer=prefer)
+        # Enough for one step, and no laboratories running, so exactly one tech
+        # is bought and the choice under test is the only thing that moved.
+        civ.research_progress = DEFAULT_RATES.research_cost(civ.techs_known) * 1.01
+    run_ticks(engine, universe_id, 1)
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        return session.scalars(
+            select(Tech).where(Tech.civ_id == civ.id).order_by(Tech.id)
+        ).all()
+
+
+def test_a_preference_steers_the_lineage():
+    """Naming what you are trying to become actually gets you it."""
+    from galaxysim.engine.resolvers import research as resolver
+    from galaxysim.engine.context import TickContext
+    from galaxysim.engine.rates import Cadence
+    from galaxysim.model.entities import Universe
+
+    # Find a stat this civ's own depth-0 frontier actually offers, so the test
+    # is about honouring a preference rather than about which stats exist.
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=717, civs=("Terrans",), seconds_per_tick=3600)
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        universe = session.get(Universe, universe_id)
+        ctx = TickContext(
+            session=session,
+            universe=universe,
+            cadence=Cadence(universe.seconds_per_tick),
+            rates=DEFAULT_RATES,
+            tick=universe.tick_number + 1,
+            seed=universe.seed,
+        )
+        offered = [c.effect.stat for c in resolver.frontier(ctx, civ)]
+    wanted = next(stat for stat in offered if stat != offered[0])
+
+    techs = _banked_civ(wanted)
+    assert len(techs) == 2, "the fixture did not buy exactly one tech"
+    assert techs[-1].effect_stat == wanted, (
+        f"asked for {wanted}, got {techs[-1].effect_stat}; the preference is "
+        "not reaching the choice"
+    )
+
+
+def test_a_preference_can_never_stall_research():
+    """The half that matters, because failing it would be invisible.
+
+    A preference that could refuse would stop a standing order dead -- and a
+    standing order exists so an offline player keeps advancing, so the symptom
+    would be a research programme silently frozen for weeks while everything
+    else carried on. It has to be a bias, never a gate.
+    """
+    from galaxysim.engine.context import TickContext
+    from galaxysim.engine.rates import Cadence
+    from galaxysim.engine.resolvers import research as resolver
+    from galaxysim.model.entities import Universe
+
+    engine = create_engine_for("sqlite://")
+    universe_id = new_universe(engine, seed=717, civs=("Terrans",), seconds_per_tick=3600)
+    with open_session(engine) as session:
+        civ = civ_by_name(session, universe_id, "Terrans")
+        universe = session.get(Universe, universe_id)
+        offered = {
+            c.effect.stat
+            for c in resolver.frontier(
+                TickContext(
+                    session=session,
+                    universe=universe,
+                    cadence=Cadence(universe.seconds_per_tick),
+                    rates=DEFAULT_RATES,
+                    tick=universe.tick_number + 1,
+                    seed=universe.seed,
+                ),
+                civ,
+            )
+        }
+    impossible = next(stat for stat in STATS if stat not in offered)
+    assert impossible, "every stat is on offer; this guard would prove nothing"
+
+    techs = _banked_civ(impossible)
+    assert len(techs) == 2, (
+        f"asking for {impossible!r}, which this frontier does not offer, stopped "
+        "research entirely"
+    )
+
+
+def test_a_frontier_never_offers_the_same_thing_twice():
+    """Five choices that list one thing twice is a menu with a bug in it.
+
+    Collisions are common at depth 0: every candidate derives from the one root,
+    so the name is drawn from the same small pool of domains and concepts. Seen
+    in the real CLI readout before this existed.
+    """
+    known = [Known(1, ("propulsion", "gravitics"), ("coherence",))]
+    for seed in range(1, 30):
+        names = [
+            c.name
+            for c in frontier_for(
+                seed, known, 0, effect_base=BASE, effect_exponent=EXPONENT
+            )
+        ]
+        assert len(names) == len(set(names)), f"seed {seed} offered {names}"

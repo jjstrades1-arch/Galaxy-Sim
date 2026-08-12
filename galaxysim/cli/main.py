@@ -1190,13 +1190,95 @@ def scrap(
 
 
 @app.command()
-def research() -> None:
-    """Begin a standing research programme; it runs while you are away."""
+def research(
+    prefer: str = typer.Option(
+        None,
+        "--prefer",
+        help="Stat to steer the lineage toward, or 'none' for automatic. Omit to look.",
+    ),
+) -> None:
+    """See what you could discover next, and steer where the lineage goes.
+
+    A civilization never sees a tech tree. It sees a handful of candidates
+    derived from what it already knows, and researching one regenerates them --
+    so there is nothing to enumerate and no end to it.
+
+    What you set is a *standing preference*, not a pick. Research runs while you
+    are away, the frontier regenerates at every step, and an order that stopped
+    to ask which one you wanted would stall the moment you logged off. Naming
+    what you are trying to become survives that; a step that does not offer it
+    is taken anyway, because every candidate at a given depth is worth the same
+    and only its shape differs.
+    """
+    from galaxysim.engine.context import TickContext
+    from galaxysim.engine.rates import DEFAULT_RATES, Cadence
+    from galaxysim.engine.resolvers import research as research_resolver
+    from galaxysim.tech import STATS
+
     with open_session(_engine()) as session:
         universe = _require_universe(session)
         civ = _require_player(session, universe)
-        intents.research(session, civ)
-        console.print("[green]Research programme underway.[/green]")
+
+        if prefer is not None:
+            wanted = None if prefer.lower() in ("none", "auto", "any") else prefer.lower()
+            if wanted is not None and wanted not in STATS:
+                console.print(
+                    f"[red]No such stat {prefer!r}.[/red] Known: {', '.join(STATS)}"
+                )
+                raise typer.Exit(1)
+            intents.research(session, civ, prefer=wanted)
+            console.print(
+                "[green]Research programme underway"
+                + (f", steering toward {wanted}." if wanted else ", taking what comes.")
+                + "[/green]"
+            )
+            return
+
+        ctx = TickContext(
+            session=session,
+            universe=universe,
+            cadence=Cadence(universe.seconds_per_tick),
+            rates=DEFAULT_RATES,
+            tick=universe.tick_number + 1,
+            seed=universe.seed,
+        )
+
+        held = research_resolver.effects_for(ctx, civ.id)
+        summary = (
+            ", ".join(
+                f"{stat} +{(value - 1.0) * 100:.1f}%"
+                for stat, value in sorted(held.multipliers.items())
+                if value > 1.0
+            )
+            or "nothing yet"
+        )
+        cost = DEFAULT_RATES.research_cost(civ.techs_known)
+        console.print(
+            f"{civ.techs_known} techs held: {summary}\n"
+            f"Next step costs {format_count(cost)}; "
+            f"{format_count(civ.research_progress)} banked."
+        )
+
+        candidates = research_resolver.frontier(ctx, civ)
+        if not candidates:
+            console.print("[dim]Nothing on the frontier yet.[/dim]")
+            return
+
+        table = Table(title="Frontier")
+        table.add_column("candidate")
+        table.add_column("domains")
+        table.add_column("moves")
+        for candidate in candidates:
+            table.add_row(
+                candidate.name,
+                ", ".join(candidate.domains),
+                f"{candidate.effect.stat} +{candidate.effect.magnitude * 100:.1f}%",
+            )
+        console.print(table)
+        console.print(
+            "[dim]Every candidate is worth the same; only its shape differs. "
+            "Steer with --prefer <stat>.[/dim]"
+        )
 
 
 @app.command()

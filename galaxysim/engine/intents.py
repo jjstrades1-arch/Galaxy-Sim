@@ -317,13 +317,22 @@ def attack(session: Session, civ: Civ, target_civ_id: int) -> Intent:
     return _queue(session, civ, IntentKind.ATTACK, {"target_civ_id": int(target_civ_id)})
 
 
-def research(session: Session, civ: Civ) -> Intent:
+def research(session: Session, civ: Civ, *, prefer: str | None = None) -> Intent:
     """Begin a standing research programme.
 
     Runs indefinitely, buying the next step whenever the civ can afford it, so
     an offline player keeps advancing.
+
+    ``prefer`` names a stat from :data:`galaxysim.tech.STATS` and is a standing
+    *bias*, not a pick. The frontier regenerates at every depth, so choosing a
+    particular candidate would mean stopping to ask on every purchase -- which
+    is precisely what a standing order exists to avoid. Naming what the
+    civilization is trying to become instead survives regeneration, and matches
+    the shape :attr:`Colony.refining` already uses for chains.
     """
-    return _queue(session, civ, IntentKind.RESEARCH, {})
+    return _queue(
+        session, civ, IntentKind.RESEARCH, {"prefer": prefer} if prefer else {}
+    )
 
 
 def cancel(session: Session, intent: Intent) -> None:

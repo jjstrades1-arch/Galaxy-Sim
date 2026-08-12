@@ -143,7 +143,24 @@ def frontier_for(
     if not known:
         return []
     rng = rng_for(civ_seed, "frontier", depth)
-    return [
-        derive(rng, known, depth, effect_base=effect_base, effect_exponent=effect_exponent)
-        for _ in range(width)
-    ]
+
+    # Distinct names, because a menu of five that lists the same thing twice
+    # reads as a bug rather than as a choice. Collisions are common early: with
+    # only the root known, every candidate derives from the same parent and the
+    # name is drawn from that parent's handful of domains and concepts.
+    #
+    # Re-derived rather than renamed, so a candidate is always a whole coherent
+    # roll -- and deterministic either way, since the rng advances with each
+    # attempt and is seeded from the civ and the depth.
+    candidates: list[Candidate] = []
+    seen: set[str] = set()
+    for _ in range(width):
+        for _attempt in range(4):
+            candidate = derive(
+                rng, known, depth, effect_base=effect_base, effect_exponent=effect_exponent
+            )
+            if candidate.name not in seen:
+                break
+        seen.add(candidate.name)
+        candidates.append(candidate)
+    return candidates

@@ -115,6 +115,27 @@ def frontier(ctx: TickContext, civ: Civ):
     )
 
 
+def choose(candidates, prefer: str | None):
+    """Which candidate a standing programme takes.
+
+    ``prefer`` names a stat the civilization is steering toward. It is a *bias*
+    and never a gate: if this depth's frontier offers nothing matching, the
+    first candidate is taken anyway.
+
+    That fallback is the important half. A preference that could refuse would
+    stall a standing order -- and a standing order exists precisely so an
+    offline player keeps advancing, so the failure would be a research
+    programme silently stopped for weeks, looking exactly like nothing
+    happening. Every candidate is worth the same magnitude in any case; only its
+    shape differs, so taking an unpreferred one costs progress nothing.
+    """
+    if prefer:
+        for candidate in candidates:
+            if candidate.effect.stat == prefer:
+                return candidate
+    return candidates[0]
+
+
 def resolve(ctx: TickContext) -> None:
     for intent in queries.pending(ctx, IntentKind.RESEARCH.value):
         civ = ctx.session.get(Civ, intent.civ_id)
@@ -138,12 +159,7 @@ def resolve(ctx: TickContext) -> None:
             if not candidates:
                 break  # no root yet; nothing to derive from
 
-            # Which candidate is taken is a decision the player will make. Until
-            # there is an interface for it, take the first -- the frontier is
-            # already seeded per civ and per depth, so this is a determined
-            # choice rather than an arbitrary one, and every candidate is worth
-            # exactly the same magnitude anyway. Only its shape differs.
-            chosen = candidates[0]
+            chosen = choose(candidates, intent.payload.get("prefer"))
 
             civ.research_progress -= cost
             civ.research_invested += cost
