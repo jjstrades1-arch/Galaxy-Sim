@@ -689,6 +689,50 @@ Named explicitly so nobody mistakes scaffolding for design:
   90.5 → 664.5 with no cliff, colonies 242 against 235 without it, and the
   strength ledger reconciles at every bucket. Nothing runs away.
 
+  **The player can see it and steer it.** `research` with no arguments prints
+  what the civilization holds by stat, what the next step costs, and the five
+  candidates with their domains and effects; `research --prefer drive` sets a
+  standing bias. A preference over *stats* rather than a pick of candidates,
+  because research runs while the player is away and the frontier regenerates at
+  every step — stopping to ask on every purchase is exactly what a standing order
+  exists to avoid. And it is a bias, never a gate: a step offering nothing
+  matching takes the first candidate anyway, since a preference that could refuse
+  would freeze an offline player's research for weeks and look like nothing
+  happening.
+
+  Two bugs found by *running* it rather than trusting it. The readout listed the
+  same candidate twice — at depth 0 every candidate derives from the one root, so
+  names collide out of a small pool, and a five-item menu with a duplicate reads
+  as a bug. And `research --prefer` twice left **two standing orders**, each
+  buying every tick, because the CLI called a function that always queues;
+  checked against a real save, which returned two.
+
+  **Teaching the AI to aim its research failed, and the failure is the useful
+  part.** Opponents take `candidates[0]` — arbitrary rather than strategic, and
+  queued once on turn one and never revisited. The obvious fix was to re-aim from
+  the civ's own state: industry when it cannot pay its fleets, construction while
+  expanding, research when settled. Three 120-day seeds:
+
+  ```
+  seed        deserted                colonies              strength
+     1   25.1 -> 34.8  (+38.6%)   242 -> 225 (-7.0%)   651.9 -> 602.1 ( -7.6%)
+     2   38.4 -> 74.6  (+94.3%)   283 -> 291 (+2.8%)   668.7 -> 807.9 (+20.8%)
+     3   72.8 -> 119.5 (+64.1%)   183 -> 194 (+6.0%)   471.8 -> 538.1 (+14.1%)
+  ```
+
+  Desertion up on every seed, and not merely because more was built — the *share*
+  of everything built that starves rose on all three: 3.7→5.2%, 4.0→7.1%,
+  12.7→18.3%. Colonies and strength moved in both directions and are seed noise.
+
+  Why: cheaper hulls means a civ builds more of them, and what binds a navy is
+  not what a hull costs but whether anything within supply range can pay it —
+  cheaper hulls simply put more ships in front of the same warehouses. Preferring
+  industry when strained is the same mistake once removed, raising output at the
+  colonies that already have industry rather than at the frontier where the
+  fleets are starving. **The rule optimised production while the binding
+  constraint was distribution**, which is the navy entry's whole lesson arriving
+  in a new costume. Reverted.
+
   Still deferred, and named: species-affinity weighting and generated flavour,
   which need a species pipeline that does not exist.
 - **Diplomacy is not simulated.** A standing attack order is the entire
